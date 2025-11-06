@@ -13,6 +13,7 @@ from components import PreflightChecker, DebugPanel, ChatLog   # ★ ここ追�
 
 
 st.set_page_config(page_title="Lyra Engine – フローリア", layout="wide")
+st.write("✅ Lyra Engine 起動テスト：ここまでは通ってます。")
 st.markdown("""<style> ... CSS はそのまま ... </style>""", unsafe_allow_html=True)
 
 
