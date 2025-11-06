@@ -1,14 +1,3 @@
-# lyra_engine.py
-import os
-import streamlit as st
-from personas import get_persona
-from components import PreflightChecker, DebugPanel, ChatLog
-
-
-st.set_page_config(page_title="Lyra Engine – フローリア", layout="wide")
-st.write("✅ Lyra Engine 起動テスト：ここまでは通ってます。")
-
-
 class LyraEngine:
     MAX_LOG = 500
     DISPLAY_LIMIT = 20000
@@ -19,25 +8,31 @@ class LyraEngine:
         self.starter_hint = persona.starter_hint
         self.partner_name = persona.name
 
-        # APIキー
-        self.openai_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
-        self.openrouter_key = st.secrets.get("OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
+        # APIキーなどの処理は省略
 
-        if not self.openai_key:
-            st.error("OPENAI_API_KEY が未設定です。")
-            st.stop()
-
-        os.environ["OPENAI_API_KEY"] = self.openai_key
-        if self.openrouter_key:
-            os.environ["OPENROUTER_API_KEY"] = self.openrouter_key
-
-        # UIコンポーネント生成
         self.preflight = PreflightChecker(self.openai_key, self.openrouter_key)
         self.debug_panel = DebugPanel()
         self.chat_log = ChatLog(self.partner_name, self.DISPLAY_LIMIT)
 
+        # 💡 セッション初期化を呼ぶ
+        self._init_session_state()
+
+    # 🧩 ここにこの関数を追加
+    def _init_session_state(self):
+        if "messages" not in st.session_state:
+            st.session_state["messages"] = []
+
+            # 最初の一言を入れたい場合
+            if self.starter_hint:
+                st.session_state["messages"].append(
+                    {"role": "assistant", "content": self.starter_hint}
+                )
+
+    @property
+    def state(self):
+        return st.session_state
+
     def render(self):
-        """アプリの描画をまとめて行う"""
         st.write("🛫 PreflightChecker.render() 呼び出し前")
         self.preflight.render()
         st.write("🛬 PreflightChecker.render() 呼び出し後")
@@ -45,10 +40,6 @@ class LyraEngine:
         with st.sidebar:
             self.debug_panel.render()
 
-        self.chat_log.render()
-
-
-# === ここがエントリーポイント ===
-if __name__ == "__main__":
-    engine = LyraEngine()
-    engine.render()
+        # ✅ messages を渡して ChatLog 描画
+        messages = self.state.get("messages", [])
+        self.chat_log.render(messages)
