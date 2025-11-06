@@ -32,6 +32,6 @@ FLORIA_JA = Persona(
 )
 
 
-def get_default_persona() -> Persona:
+def get_persona() -> Persona:
     """現時点では、日本語版フローリア一択。将来ここを差し替える。"""
     return FLORIA_JA
