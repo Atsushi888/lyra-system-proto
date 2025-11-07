@@ -94,10 +94,6 @@ class LyraEngine:
         # 会話ログ
         messages: List[Dict[str, str]] = self.state.get("messages", [])
         self.chat_log.render(messages)
-
-        # 会話ログ
-        messages: List[Dict[str, str]] = self.state.get("messages", [])
-        self.chat_log.render(messages)
         
         # 入力欄
         user_text = self.player_input.render()
