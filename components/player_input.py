@@ -1,60 +1,53 @@
-# player_input.py
+# components/player_input.py
 
 from typing import Optional
 import streamlit as st
 
 
 class PlayerInput:
-    # テキストのセッションキー
+    # テキストエリア用のキー
     TEXT_KEY = "player_input_text"
-    # 「次のターンで入力欄までスクロールしてね」フラグ
+    # LyraEngine 側と合わせる
     SCROLL_FLAG_KEY = "scroll_to_input"
 
-    def __init__(self, label: str = "あなたの発言を入力:") -> None:
-        self.label = label
-
-    def render(self) -> Optional[str]:
-        # 入力欄の位置マーカー（ここまでスクロールさせる）
-        st.markdown(
-            '<div id="player-input-anchor"></div>',
-            unsafe_allow_html=True,
-        )
-
-        # 初期値が無ければ空文字で作っておく
+    def __init__(self) -> None:
+        # 最初の一回だけ空文字で初期化（value= は使わない）
         if self.TEXT_KEY not in st.session_state:
             st.session_state[self.TEXT_KEY] = ""
 
-        st.markdown(f"### {self.label}")
+    def render(self) -> str:
+        """
+        プレイヤー入力欄を表示し、「送信」されたテキストだけを返す。
+        送信されなければ "" を返す。
+        """
 
-        text = st.text_area(
-            "",
+        # ここにアンカーを置いておくと、将来 JS でスクロールしやすい
+        st.markdown("<div id='player-input-area'></div>", unsafe_allow_html=True)
+
+        st.write("あなたの発言を入力:")
+
+        # 🔸ここが重要：value= を渡さず、key だけで管理する
+        user_text: str = st.text_area(
+            label="",
             key=self.TEXT_KEY,
             height=160,
-            placeholder="フローリアに語りかけてください…",
         )
 
-        # ▼ フラグが立っていたら一度だけスクロールを実行
-        if st.session_state.get(self.SCROLL_FLAG_KEY):
-            st.markdown(
-                """
-<script>
-const anchor = document.getElementById("player-input-anchor");
-if (anchor) {
-    anchor.scrollIntoView({behavior: "smooth", block: "center"});
-}
-</script>
-""",
-                unsafe_allow_html=True,
-            )
-            # 一回スクロールしたらフラグを戻す
-            st.session_state[self.SCROLL_FLAG_KEY] = False
-
+        # ボタン行
         send = st.button("送信", type="primary")
 
-        if send and text.strip():
-            user_text = text.strip()
-            # 入力欄をクリア
-            st.session_state[self.TEXT_KEY] = ""
-            return user_text
+        # 押されていて、かつ非空なら「今回の発言」として返す
+        if send and user_text.strip():
+            text_to_send = user_text
 
-        return None
+            # 次のターンのために入力欄をクリア
+            # （key が既に存在しているのでこの代入はOK）
+            st.session_state[self.TEXT_KEY] = ""
+
+            # 次回レンダリング時に、LyraEngine 側で
+            # scroll_to_input フラグを見てスクロールする想定
+            # → フラグ自体のセットは LyraEngine.render() 側でやっている
+            return text_to_send
+
+        # 送信されなかった場合
+        return ""
