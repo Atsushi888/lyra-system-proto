@@ -7,7 +7,7 @@ import streamlit as st
 from personas import get_persona
 from components import PreflightChecker, DebugPanel, ChatLog, PlayerInput
 from conversation_engine import LLMConversation
-
+from lyra_core import LyraCore
 
 # ページ全体の基本設定
 st.set_page_config(page_title="Lyra Engine – フローリア", layout="wide")
@@ -68,18 +68,21 @@ class LyraEngine:
         if self.openrouter_key:
             os.environ["OPENROUTER_API_KEY"] = self.openrouter_key
 
-        # UI コンポーネント生成
-        self.preflight = PreflightChecker(self.openai_key, self.openrouter_key)
-        self.debug_panel = DebugPanel()
-        self.chat_log = ChatLog(self.partner_name, self.DISPLAY_LIMIT)
-        self.player_input = PlayerInput()
-
         # LLM 会話エンジン（中で llm_router を呼ぶ）
         self.conversation = LLMConversation(
             system_prompt=self.system_prompt,
             temperature=0.7,
             max_tokens=800,
         )
+
+        # コア（1ターン会話制御）
+        self.core = LyraCore(self.conversation)
+
+        # UI コンポーネント生成
+        self.preflight = PreflightChecker(self.openai_key, self.openrouter_key)
+        self.debug_panel = DebugPanel()
+        self.chat_log = ChatLog(self.partner_name, self.DISPLAY_LIMIT)
+        self.player_input = PlayerInput()
 
         # セッション状態の初期化
         self._init_session_state()
@@ -117,43 +120,15 @@ class LyraEngine:
             # DebugPanel 側が meta: Optional[Dict[str, Any]] を受け取る前提
             self.debug_panel.render(llm_meta)
 
-        # 入力欄 → messages に追加 → conversation_engine に丸投げ
-        user_text = self.player_input.render()
-        if user_text:
-            # ユーザー発言を履歴に追加
-            self.state["messages"].append(
-                {"role": "user", "content": user_text}
-            )
-
-            # ===== LLM 呼び出し（すべて conversation_engine 側に委譲） =====
-            try:
-                reply_text, meta = self.conversation.generate_reply(
-                    self.state["messages"]
-                )
-            except Exception as e:
-                reply_text = f"⚠️ 応答生成中にエラーが発生しました: {e}"
-                meta = {"route": "error", "exception": str(e)}
-
-            # メタ情報をセッションに保存（DebugPanel 用）
-            self.state["llm_meta"] = meta
-
-            # もし空文字だったら、フォールバックメッセージ
-            if not reply_text or not reply_text.strip():
-                reply_text = (
-                    "……うまく返答を生成できなかったみたい。"
-                    "もう一度試してくれる？"
-                )
-
-            # フローリアの発言として履歴に追加
-            self.state["messages"].append(
-                {"role": "assistant", "content": reply_text}
-            )
-            # ===== ここまで LLM 呼び出し =====
-
-        # 最後に会話ログを描画
+        # 先に会話ログを表示
         messages: List[Dict[str, str]] = self.state.get("messages", [])
         self.chat_log.render(messages)
 
+        # 入力欄 → LyraCore に1ターン処理を委譲
+        user_text = self.player_input.render()
+        if user_text:
+            self.state["messages"], _ = self.core.proceed_turn(user_text, self.state)
+            # 入力欄クリアしたいなら、PlayerInput 側で key をリセットする実装にしておく
 
 # ★★★ エントリーポイント ★★★
 if __name__ == "__main__":
