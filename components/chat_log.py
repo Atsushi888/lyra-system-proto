@@ -1,38 +1,25 @@
-# components/chat_log.py
-from typing import List, Dict
-import html
+# components/player_input.py
 import streamlit as st
 
+class PlayerInput:
+    """ユーザーの入力欄＋送信処理を担当"""
 
-class ChatLog:
-    """会話ログの描画だけを担当"""
+    def __init__(self, key_input="user_input_box", key_button="send_btn"):
+        self.key_input = key_input
+        self.key_button = key_button
 
-    def __init__(self, partner_name: str, display_limit: int = 20000):
-        self.partner_name = partner_name
-        self.display_limit = display_limit
+    def render(self) -> str:
+        """入力欄を描画して、送信時に文字列を返す"""
+        user_input = st.text_area(
+            "あなたの発言を入力:",
+            value="",
+            height=160,            # ← 高さをここで調整（お好みで 200 でも 240 でもOK）
+            key=self.key_input,
+        )
+        send_clicked = st.button("送信", key=self.key_button)
 
-    def render(self, messages: List[Dict[str, str]]) -> None:
-        st.subheader("💬 会話ログ")
-
-        dialog = [m for m in messages if m["role"] in ("user", "assistant")]
-
-        for m in dialog:
-            role = m["role"]
-            raw = m["content"].strip()
-            shown = (
-                raw
-                if len(raw) <= self.display_limit
-                else (raw[: self.display_limit] + " …[truncated]")
-            )
-            txt = html.escape(shown)
-
-            if role == "user":
-                st.markdown(
-                    f"<div class='chat-bubble user'><b>あなた：</b><br>{txt}</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f"<div class='chat-bubble assistant'><b>{self.partner_name}：</b><br>{txt}</div>",
-                    unsafe_allow_html=True,
-                )
+        if send_clicked:
+            text = user_input.strip()
+            if text:
+                return text
+        return ""
