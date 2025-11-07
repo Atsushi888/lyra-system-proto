@@ -3,45 +3,48 @@ import streamlit as st
 
 
 class PlayerInput:
-    """ユーザーの入力欄＋送信処理を担当"""
+    """
+    プレイヤーの発言入力欄と送信ボタンを管理するコンポーネント。
+
+    ・ユーザー入力を安全に取得して返す
+    ・送信ボタン押下後はテキストを自動的にクリア
+    ・空文字は送信されないように防止
+    """
 
     def __init__(
         self,
         key_input: str = "user_input_box",
-        key_button: str = "send_btn",
-        key_submitted: str = "user_input_submitted",
+        key_button: str = "send_button",
+        label: str = "あなたの発言を入力:",
+        height: int = 160,
     ):
         self.key_input = key_input
         self.key_button = key_button
-        self.key_submitted = key_submitted
+        self.label = label
+        self.height = height
 
     def render(self) -> str:
-        """入力欄を描画して、送信ボタンが押されたときだけ文字列を返す"""
-
-        # セッションステートの初期化
-        if self.key_input not in st.session_state:
-            st.session_state[self.key_input] = ""
-        if self.key_submitted not in st.session_state:
-            st.session_state[self.key_submitted] = ""
-
-        # --- コールバック関数（ボタンが押されたときにだけ呼ばれる） ---
-        def _on_click():
-            # 入力済みテキストを「submitted」に退避してからクリア
-            st.session_state[self.key_submitted] = st.session_state[self.key_input]
-            st.session_state[self.key_input] = ""
-
-        # テキストエリア本体
-        st.text_area(
-            "あなたの発言を入力:",
+        """
+        入力欄と送信ボタンを描画し、送信時のテキストを返す。
+        戻り値が空文字列のときは送信なし。
+        """
+        # 入力欄を表示
+        user_input = st.text_area(
+            self.label,
             key=self.key_input,
-            height=160,
+            height=self.height,
         )
 
-        # 送信ボタン（押されたときに _on_click が実行される）
-        st.button("送信", key=self.key_button, on_click=_on_click)
+        # 送信ボタン
+        send_clicked = st.button("送信", key=self.key_button)
 
-        # コールバックが退避させたテキストを取り出す
-        text = st.session_state.get(self.key_submitted, "")
-        # 一度返したらすぐ消す（「使い切りキュー」にする）
-        st.session_state[self.key_submitted] = ""
-        return text.strip()
+        # ボタン押下時に入力を取得
+        if send_clicked:
+            text = user_input.strip()
+            if text:
+                # 入力内容を返す前にクリア
+                st.session_state[self.key_input] = ""
+                return text
+
+        # 押されなかった or 空文字なら何も返さない
+        return ""
