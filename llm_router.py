@@ -7,12 +7,11 @@ from typing import Any, Dict, List, Tuple
 from openai import OpenAI
 
 
-# ====== 環境変数 ======
+# ====== 環境変数（初期値として保持するが "参考値" 扱い） ======
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # メイン側（GPT系）のモデル名
-# 好きなものに変えてOK（例: "gpt-4o-mini" など）
 MAIN_MODEL = os.getenv("OPENAI_MAIN_MODEL", "gpt-4o")
 
 # Hermes 側のモデル名（OpenRouter の公式 ID）
@@ -21,8 +20,8 @@ HERMES_MODEL = os.getenv(
     "nousresearch/hermes-3-llama-3.1-70b",
 )
 
-# 新 API 形式のクライアント（ChatCompletion ではなく client.chat.completions）
-client_openai = OpenAI(api_key=OPENAI_API_KEY)
+# ★ ここはもう使わないのでコメントアウト or 削除してOK
+# client_openai = OpenAI(api_key=OPENAI_API_KEY)
 
 
 # ====== GPT系（メイン） ======
@@ -31,8 +30,13 @@ def _call_gpt(
     temperature: float,
     max_tokens: int,
 ) -> Tuple[str, Dict[str, Any]]:
-    if not OPENAI_API_KEY:
+    # ★ 呼び出し時点での環境変数を見る（LyraEngine が後からセットした値も拾える）
+    api_key = os.getenv("OPENAI_API_KEY") or OPENAI_API_KEY
+    if not api_key:
         raise RuntimeError("OPENAI_API_KEY が設定されていません。")
+
+    # ★ 毎回、その時点のキーでクライアントを作る
+    client_openai = OpenAI(api_key=api_key)
 
     resp = client_openai.chat.completions.create(
         model=MAIN_MODEL,
@@ -60,14 +64,15 @@ def _call_hermes(
     temperature: float,
     max_tokens: int,
 ) -> Tuple[str, Dict[str, Any]]:
-    if not OPENROUTER_API_KEY:
+    # ★ こちらも都度 getenv で見る
+    api_key = os.getenv("OPENROUTER_API_KEY") or OPENROUTER_API_KEY
+    if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY が設定されていません。")
 
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        # 以下２つはランキング用なので、テキトーでOK / なくても動く
         "HTTP-Referer": "https://streamlit.io",
         "X-Title": "Lyra-Engine-Floria",
     }
@@ -123,6 +128,4 @@ def call_with_fallback(
     except Exception as e2:
         meta["route"] = "error"
         meta["hermes_error"] = str(e2)
-        # app.py 側で「返答の生成に失敗しました…」に差し替える前提で、
-        # ここでは空文字を返す
         return "", meta
