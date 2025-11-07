@@ -1,8 +1,6 @@
 # lyra_engine.py
 import os
-import json
-import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import streamlit as st
 
@@ -65,7 +63,7 @@ class LyraEngine:
             )
             st.stop()
 
-        # llm_router 用に環境変数へも流しておく
+        # llm_router 用に環境変数へも流しておく（中で os.getenv する前提）
         os.environ["OPENAI_API_KEY"] = self.openai_key
         if self.openrouter_key:
             os.environ["OPENROUTER_API_KEY"] = self.openrouter_key
@@ -76,7 +74,7 @@ class LyraEngine:
         self.chat_log = ChatLog(self.partner_name, self.DISPLAY_LIMIT)
         self.player_input = PlayerInput()
 
-        # LLM 会話エンジン（llm_router ラッパ）
+        # LLM 会話エンジン（中で llm_router を呼ぶ）
         self.conversation = LLMConversation(
             system_prompt=self.system_prompt,
             temperature=0.7,
@@ -119,7 +117,7 @@ class LyraEngine:
             # DebugPanel 側が meta: Optional[Dict[str, Any]] を受け取る前提
             self.debug_panel.render(llm_meta)
 
-        # 先に「入力 → messages への追加 ＆ LLM 呼び出し」まで済ませる
+        # 入力欄 → messages に追加 → conversation_engine に丸投げ
         user_text = self.player_input.render()
         if user_text:
             # ユーザー発言を履歴に追加
@@ -127,7 +125,7 @@ class LyraEngine:
                 {"role": "user", "content": user_text}
             )
 
-            # ===== LLM 呼び出し（LLMConversation に委譲） =====
+            # ===== LLM 呼び出し（すべて conversation_engine 側に委譲） =====
             try:
                 reply_text, meta = self.conversation.generate_reply(
                     self.state["messages"]
