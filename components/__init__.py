@@ -4,3 +4,7 @@
 # from components.player_input import PlayerInput
 
 # __all__ = ["PreflightChecker", "DebugPanel", "ChatLog", "PlayerInput" ]
+self.preflight = preflight.PreflightChecker(self.openai_key, self.openrouter_key)
+self.debug_panel = debug_panel.DebugPanel()
+self.chat_log = chat_log.ChatLog(self.partner_name, self.DISPLAY_LIMIT)
+self.player_input = player_input.PlayerInput()
