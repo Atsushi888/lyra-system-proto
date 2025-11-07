@@ -66,20 +66,14 @@ class LyraEngine:
         self._init_session_state()
 
     # ★★★ ここは必ず class の中（__init__ と同じインデント）に置く ★★★
-    def _init_session_state(self):
+    def _init_session_state(self) -> None:
         if "messages" not in st.session_state:
             st.session_state["messages"] = []
             if self.starter_hint:
                 st.session_state["messages"].append(
                     {"role": "assistant", "content": self.starter_hint}
                 )
-        else:
-            # ✅ すでに starter_hint が入っている場合は追加しない
-            if not any(m.get("content") == self.starter_hint for m in st.session_state["messages"]):
-                st.session_state["messages"].append(
-                    {"role": "assistant", "content": self.starter_hint}
-                )
-    
+
     @property
     def state(self):
         return st.session_state
