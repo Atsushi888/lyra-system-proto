@@ -20,7 +20,7 @@ class ChatLog:
                 border-radius: 8px;
 
                 /* ← 上の余白を限界まで削る */
-                padding: 0 10px 8px 10px;   /* 上0, 右10, 下8, 左10 */
+                padding: 0px 0px 8px 0px;   /* 上0, 右10, 下8, 左10 */
 
                 margin: 0;
                 background-color: #f9f9f9;
