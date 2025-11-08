@@ -1,43 +1,67 @@
-# components/player_input.py
-from dataclasses import dataclass
+# components/chat_log.py
+
+from typing import List, Dict
 import streamlit as st
+import html
 
 
-@dataclass
-class PlayerInput:
-    TEXT_KEY: str = "player_input_text"
-    CLEAR_FLAG_KEY: str = "player_input_clear_next"
+class ChatLog:
+    def __init__(self, partner_name: str, display_limit: int = 20000):
+        self.partner_name = partner_name
+        self.display_limit = display_limit
 
-    def render(self) -> str:
-        """プレイヤーの入力欄と送信ボタン。
-        送信後の rerun でテキストをクリアする。
-        """
+        # CSSの注入
+        st.markdown("""
+        <style>
+        .chat-bubble {
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin: 8px 0;
+            background-color: #f9f9f9;
+            white-space: pre-wrap;  /* ← 改行保持の要 */
+        }
+        .chat-bubble.assistant {
+            background-color: #f2f2f2;
+            border-color: #999;
+        }
+        .chat-bubble.user {
+            background-color: #e8f2ff;
+            border-color: #66aaff;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
-        # --- ① クリアフラグが立っていたら、ウィジェット生成 前 に消す ---
-        if st.session_state.get(self.CLEAR_FLAG_KEY, False):
-            st.session_state[self.TEXT_KEY] = ""
-            st.session_state[self.CLEAR_FLAG_KEY] = False
+    def render(self, messages: List[Dict[str, str]]) -> None:
+        st.subheader("💬 会話ログ")
 
-        # --- ② ラベル + 入力欄 ---
-        st.markdown("**あなたの発言を入力：**")
+        if not messages:
+            st.text("（まだ会話は始まっていません）")
+            return
 
-        user_text: str = st.text_area(
-            "",
-            key=self.TEXT_KEY,
-            height=160,
-            label_visibility="collapsed",
-        )
+        for msg in messages[-self.display_limit:]:
+            role = msg.get("role", "")
+            txt = msg.get("content", "")
 
-        # --- ③ 送信ボタン ---
-        submitted = st.button("送信", type="primary")
+            if role == "assistant":
+                name = self.partner_name
+                role_class = "assistant"
+            elif role == "user":
+                name = "あなた"
+                role_class = "user"
+            else:
+                name = role or "system"
+                role_class = "assistant"
 
-        if submitted:
-            text_to_return = user_text.strip()
+            # HTMLエスケープで安全に
+            safe_txt = html.escape(txt)
 
-            # 次の run でクリアさせるフラグを立てる
-            st.session_state[self.CLEAR_FLAG_KEY] = True
-            
-            # st.text(f"DEBUG: {repr(text_to_return)}")
-            return text_to_return
-
-        return ""
+            # HTMLで描画（white-space: pre-wrapで改行保持）
+            st.markdown(
+                f"""
+                <div class="chat-bubble {role_class}">
+                    <b>{name}:</b><br>{safe_txt}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
