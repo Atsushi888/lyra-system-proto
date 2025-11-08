@@ -71,7 +71,7 @@ class ChatLog:
                 f"""
                 <div class="chat-bubble-container">
                     <div class="chat-bubble {role_class}">
-                        <b>{name}:</b><br>{safe_txt}
+                        <div style="text-align:left;">{name}:</b><br>{safe_txt}
                     </div>
                 </div>
                 """,
