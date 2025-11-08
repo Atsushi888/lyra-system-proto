@@ -1,8 +1,8 @@
 # components/chat_log.py
 
 from typing import List, Dict
-import html
 import streamlit as st
+import html
 
 
 class ChatLog:
@@ -10,40 +10,40 @@ class ChatLog:
         self.partner_name = partner_name
         self.display_limit = display_limit
 
-        # CSS を一度だけ注入
-        st.markdown("""
-        <style>
-        .chat-bubble-container {
-            margin: 16px 0;          /* ← コマ（人物ごとの間隔） */
-            display: flex;
-            justify-content: flex-start;
-        }
-        
-        .chat-bubble {
-            border: 1px solid #ccc;
-            border-radius: 8px;
-            padding: 10px 14px;
-            background-color: #f9f9f9;
-            white-space: pre-wrap;
-            max-width: 95%;
-            margin-left: 0;          /* ← 左詰め */
-            margin-top: 0;           /* ← 上詰め */
-        }
-        
-        .chat-bubble.assistant {
-            background-color: #f2f2f2;
-            border-color: #999;
-        }
-        
-        .chat-bubble.user {
-            background-color: #e8f2ff;
-            border-color: #66aaff;
-        }
-        </style>
-        """, unsafe_allow_html=True)
+        # CSSの注入
+        st.markdown(
+            """
+            <style>
+            /* 1人分の吹き出し全体（上下の間隔担当） */
+            .chat-bubble-container {
+                margin: 10px 0;          /* 吹き出し同士の間隔だけをここで管理 */
+            }
+
+            /* 吹き出し本体（内側の余白・枠・左上寄せ担当） */
+            .chat-bubble {
+                border: 1px solid #ccc;
+                border-radius: 8px;
+                padding: 6px 10px;       /* 上下左右の内側余白を控えめに */
+                margin: 0;               /* 外側マージンはコンテナに任せる */
+                background-color: #f9f9f9;
+                white-space: pre-wrap;   /* 改行保持 */
+                text-align: left;        /* 左寄せ */
+                line-height: 1.55;
+            }
+            .chat-bubble.assistant {
+                background-color: #f2f2f2;
+                border-color: #999;
+            }
+            .chat-bubble.user {
+                background-color: #e8f2ff;
+                border-color: #66aaff;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
     def render(self, messages: List[Dict[str, str]]) -> None:
-        """会話ログを枠付き＋改行保持で表示"""
         st.subheader("💬 会話ログ")
 
         if not messages:
@@ -64,13 +64,15 @@ class ChatLog:
                 name = role or "system"
                 role_class = "assistant"
 
-            # HTMLエスケープして安全に
             safe_txt = html.escape(txt)
 
+            # 吹き出しコンテナ＋本体をまとめて描画
             st.markdown(
                 f"""
-                <div class="chat-bubble {role_class}">
-                    <b>{name}:</b><br>{safe_txt}
+                <div class="chat-bubble-container">
+                    <div class="chat-bubble {role_class}">
+                        <b>{name}:</b><br>{safe_txt}
+                    </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
