@@ -1,33 +1,28 @@
-# components/chat_log.py
-
-from typing import List, Dict
+import html
 import streamlit as st
-
 
 class ChatLog:
     def __init__(self, partner_name: str, display_limit: int = 20000):
         self.partner_name = partner_name
         self.display_limit = display_limit
 
-    def render(self, messages: List[Dict[str, str]]) -> None:
-        """会話ログをシンプルなテキストで表示する"""
+    def render(self, messages):
         st.subheader("💬 会話ログ")
 
-        if not messages:
-            st.text("（まだ会話は始まっていません）")
-            return
-
-        # 直近 display_limit 件のみ表示
         for msg in messages[-self.display_limit:]:
             role = msg.get("role", "")
-            txt = msg.get("content", "")
+            txt  = msg.get("content", "")
+            css_class = "assistant" if role == "assistant" else "user"
+            name = self.partner_name if role == "assistant" else "あなた"
 
-            if role == "assistant":
-                name = self.partner_name
-            elif role == "user":
-                name = "あなた"
-            else:
-                name = role or "system"
+            # HTML特殊文字をエスケープ（安全）
+            safe_txt = html.escape(txt)
 
-            # ★ここがポイント：プレーンテキスト＋改行だけ
-            st.text(f"{name}:\n{txt}")
+            # <pre> で改行維持、div で枠を適用
+            html_block = f"""
+            <div class="chat-bubble {css_class}">
+                <b>{name}:</b><br>
+                <pre style="margin:0; white-space:pre-wrap;">{safe_txt}</pre>
+            </div>
+            """
+            st.markdown(html_block, unsafe_allow_html=True)
