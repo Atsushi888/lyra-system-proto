@@ -128,7 +128,6 @@ class LyraEngine:
         # ② プレイヤー入力欄
         user_text = self.player_input.render()
 
-        # ③ 入力があれば LLM に投げて結果更新
         if user_text:
             with st.spinner("フローリアが返事を考えています…"):
                 updated_messages, meta = self.core.proceed_turn(
@@ -140,9 +139,14 @@ class LyraEngine:
             self.state["messages"] = updated_messages
             self.state["llm_meta"] = meta
 
-            # 再描画
-            st.rerun()
+            # ★ 入力欄をクリア
+            st.session_state[PlayerInput.KEY] = ""
 
+            # ★ 次のターンでは入力欄までスクロールしてもらう
+            # self.state["scroll_to_input"] = True
+
+            # ページを「丸ごと」描き直す
+            st.rerun()
 
 # ===== エントリーポイント =====
 if __name__ == "__main__":
