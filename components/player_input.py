@@ -37,7 +37,7 @@ class PlayerInput:
             # 次の run でクリアさせるフラグを立てる
             st.session_state[self.CLEAR_FLAG_KEY] = True
             
-            st.text(f"DEBUG: {repr(text_to_return)}")
+            # st.text(f"DEBUG: {repr(text_to_return)}")
             return text_to_return
 
         return ""
