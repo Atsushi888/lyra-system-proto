@@ -135,11 +135,6 @@ class LyraEngine:
                     self.state,
                 )
         
-            # Markdownで改行が生きるように整形
-            for m in updated_messages:
-                if "content" in m and isinstance(m["content"], str):
-                    m["content"] = m["content"].replace("\n", "  \n")
-        
             # 整形後のメッセージを state に反映
             self.state["messages"] = updated_messages
             self.state["llm_meta"] = meta
