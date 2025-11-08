@@ -6,7 +6,8 @@ from typing import Any, Dict, List
 import streamlit as st
 
 from personas.persona_floria_ja import get_persona
-from components import PreflightChecker, DebugPanel, ChatLog, PlayerInput
+# from components import PreflightChecker, DebugPanel, ChatLog, PlayerInput
+from components import PreflightChecker
 from conversation_engine import LLMConversation
 from lyra_core import LyraCore
 
@@ -84,9 +85,9 @@ class LyraEngine:
 
         # UI コンポーネント生成
         self.preflight = PreflightChecker(self.openai_key, self.openrouter_key)
-        self.debug_panel = DebugPanel()
-        self.chat_log = ChatLog(self.partner_name, self.DISPLAY_LIMIT)
-        self.player_input = PlayerInput()
+        # self.debug_panel = DebugPanel()
+        # self.chat_log = ChatLog(self.partner_name, self.DISPLAY_LIMIT)
+        # self.player_input = PlayerInput()
 
         # セッション状態の初期化
         self._init_session_state()
@@ -117,32 +118,32 @@ class LyraEngine:
         st.write("🛬 PreflightChecker.render() 呼び出し後")
 
         # デバッグパネル（サイドバー）
-        llm_meta = self.state.get("llm_meta")
-        with st.sidebar:
-            self.debug_panel.render(llm_meta)
+        # llm_meta = self.state.get("llm_meta")
+        # with st.sidebar:
+        #     self.debug_panel.render(llm_meta)
 
         # ① 現在の会話ログを表示
-        messages: List[Dict[str, str]] = self.state.get("messages", [])
-        self.chat_log.render(messages)
+        # messages: List[Dict[str, str]] = self.state.get("messages", [])
+        # self.chat_log.render(messages)
 
         # ② プレイヤー入力欄
-        user_text = self.player_input.render()
+        # user_text = self.player_input.render()
 
-        if user_text:
-            with st.spinner("フローリアが返事を考えています…"):
-                updated_messages, meta = self.core.proceed_turn(
-                    user_text,
-                    self.state,
-                )
+        # if user_text:
+        #     with st.spinner("フローリアが返事を考えています…"):
+        #         updated_messages, meta = self.core.proceed_turn(
+        #             user_text,
+        #             self.state,
+        #         )
         
             # 整形後のメッセージを state に反映
-            self.state["messages"] = updated_messages
-            self.state["llm_meta"] = meta
+        #     self.state["messages"] = updated_messages
+        #     self.state["llm_meta"] = meta
             
             # （必要ならスクロール用のフラグもここで立てる）
             # self.state["scroll_to_input"] = True
 
-            st.rerun()
+         #    st.rerun()
 
 # ===== エントリーポイント =====
 if __name__ == "__main__":
