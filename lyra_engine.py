@@ -80,7 +80,7 @@ class LyraEngine:
         )
 
         # コア（1ターン会話制御）
-        self.core = LyraCore()
+        self.core = LyraCore( self.conversation )
 
         # UI コンポーネント生成
         self.preflight = PreflightChecker(self.openai_key, self.openrouter_key)
