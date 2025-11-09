@@ -13,10 +13,8 @@ class AIResponder:
             temperature=0.7,
             max_tokens=800,
             style_hint=style_hint,
-            model_name=model_name,
         )
-        self.model_name = model_name
 
-    def reply(self, messages: List[Dict[str, str]]) -> Tuple[str, Dict]:
+    def reply(self, messages):
         text, meta = self.conversation.generate(messages)
         return text, meta
