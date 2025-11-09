@@ -4,24 +4,20 @@ from typing import Dict, List, Tuple
 from personas.persona_floria_ja import get_persona
 from multi_ai import AIResponder
 
-
 class LyraCore:
-    def __init__(self, conversation=None):
-        self.conversation = conversation or []
+    def __init__(self, conversation):
         persona = get_persona()
+        self.conversation = conversation  # 使うなら保持
 
-        # 各モデルのResponderを準備
         self.responder_4o = AIResponder(
-            model_name="gpt-4o",
             system_prompt=persona.system_prompt,
             style_hint=persona.style_hint,
         )
         self.responder_hermes = AIResponder(
-            model_name="hermes",
             system_prompt=persona.system_prompt,
             style_hint=persona.style_hint,
         )
-
+        
     def proceed_turn(self, user_text: str, state) -> Tuple[List[Dict[str, str]], Dict]:
         messages = state.get("messages", [])
         messages.append({"role": "user", "content": user_text})
