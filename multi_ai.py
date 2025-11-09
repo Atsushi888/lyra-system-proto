@@ -35,5 +35,5 @@ class AIResponder:
         )
 
     def reply(self, messages: List[Dict[str, str]]) -> Tuple[str, Dict]:
-        text, meta = self.conversation.generate(messages)
+        text, meta = self.conversation.generate_reply(messages)
         return text, meta
