@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Tuple
 
-from llm_router import call_with_fallback
+from llm_router import call_with_fallback, call_hermes
 
 
 class LLMConversation:
