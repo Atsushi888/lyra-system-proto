@@ -92,7 +92,7 @@ class JudgeAI:
                 "winner": "gpt4o",
                 "score_diff": 0.6,
                 "comment": "...",
-                "raw": "<LLM の生出力>",
+                "raw": {... または 文字列 ...},
                 "route": "gpt",
                 "pair": {"A": "gpt4o", "B": "hermes"},
             }
@@ -136,11 +136,12 @@ class JudgeAI:
             max_tokens=300,
         )
 
+        # raw は最初は None にしておく
         result: Dict[str, Any] = {
             "winner": None,
             "score_diff": 0.0,
             "comment": "",
-            "raw": text,
+            "raw": None,  # ← ここ
             "route": meta.get("route"),
             "pair": {"A": label_a, "B": label_b},
         }
@@ -148,6 +149,7 @@ class JudgeAI:
         parsed = self._safe_parse_json(text)
 
         if isinstance(parsed, dict):
+            # パースに成功したら、JSONの中身を使う
             winner_raw = parsed.get("winner")
             if winner_raw == "A":
                 result["winner"] = label_a
@@ -162,6 +164,12 @@ class JudgeAI:
             comment = parsed.get("comment")
             if isinstance(comment, str):
                 result["comment"] = comment.strip()
+
+            # ★ raw には dict のまま格納
+            result["raw"] = parsed
+        else:
+            # JSON として読めなかった場合だけ、生テキストを raw に入れる
+            result["raw"] = text
 
         # winner が決まらなかった場合のフォールバック
         if result["winner"] is None:
