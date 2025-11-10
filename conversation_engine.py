@@ -3,7 +3,7 @@
 from typing import Any, Dict, List, Tuple
 
 from llm_router import call_with_fallback
-from components.multi_ai_response import PARTICIPATING_MODELS
+from deliberation.multi_ai_response import PARTICIPATING_MODELS
 
 
 class LLMConversation:
