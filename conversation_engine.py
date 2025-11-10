@@ -1,14 +1,15 @@
 # conversation_engine.py — LLM 呼び出しを統括する会話エンジン層
 
 from typing import Any, Dict, List, Tuple
-from deliberation.ai_response_collector import MultiAIResponseCollector
-from deliberation.multi_ai_response import PARTICIPATING_MODELS
+
+from llm_router import call_with_fallback
 
 
 class LLMConversation:
     """
     system プロンプト（フローリア人格など）と LLM 呼び出しをまとめた会話エンジン。
-    GPT-4o と Hermes(dummy) の両方から応答を収集する。
+    GPT-4o の応答をメインとしつつ、
+    同じ内容を Hermes(dummy) としても models に載せる。
     """
 
     def __init__(
@@ -30,12 +31,6 @@ class LLMConversation:
             "直前のユーザーの発言や行動を読み、その続きを自然に描写してください。\n"
             "文体は自然で感情的に。見出し・記号・英語タグ（onstage:, onscreen: など）は使わず、"
             "純粋な日本語の物語文として出力してください。"
-        )
-
-        # ★ ここで「審議に参加させるAI」を定義して Collector に渡す
-        self.multi_ai = MultiAIResponseCollector(
-            participants=list(PARTICIPATING_MODELS.keys()),
-            primary="gpt4o",
         )
 
     # ===== LLMに渡すmessageを構築 =====
@@ -60,30 +55,55 @@ class LLMConversation:
             messages.append(
                 {
                     "role": "user",
-                    "content": "（ユーザーはまだ発言していません。あなた＝フローリアとして、軽く自己紹介してください）",
+                    "content": "（ユーザーはまだ発言していません。"
+                               "あなた＝フローリアとして、軽く自己紹介してください）",
                 }
             )
         return messages
 
-    # ===== 実際にマルチAIへ投げる =====
+    # ===== GPT-4o に投げ、gpt4o & Hermes(dummy) を models に詰める =====
     def generate_reply(
         self,
         history: List[Dict[str, str]],
     ) -> Tuple[str, Dict[str, Any]]:
         messages = self.build_messages(history)
 
-        # Collectorにまるっとお任せ
-        text, meta = self.multi_ai.collect(
+        # GPT-4o メイン
+        text, meta = call_with_fallback(
             messages=messages,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
 
         meta = dict(meta)
+
         meta["prompt_messages"] = messages
         meta["prompt_preview"] = "\n\n".join(
             f"[{m['role']}] {m['content'][:300]}"
             for m in messages
         )
+
+        usage_main = meta.get("usage_main") or meta.get("usage") or {}
+
+        # GPT-4o 本体
+        gpt_entry = {
+            "reply": text,
+            "usage": usage_main,
+            "route": meta.get("route", "gpt"),
+            "model_name": meta.get("model_main", "gpt-4o"),
+        }
+
+        # Hermes は今はダミー：同じ内容を別モデル扱いにする
+        hermes_entry = {
+            "reply": text,
+            "usage": usage_main,
+            "route": "dummy-hermes",
+            "model_name": "Hermes (dummy)",
+        }
+
+        meta["models"] = {
+            "gpt4o": gpt_entry,
+            "hermes": hermes_entry,
+        }
 
         return text, meta
