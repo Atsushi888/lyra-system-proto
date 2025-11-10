@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional
 import streamlit as st
 
 
-class MultiAIResponce:
+class MultiAIResponse:
     """
     マルチAIの返答を縦に並べて表示するビューアの土台クラス。
 
