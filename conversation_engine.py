@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Tuple
 
 from deliberation.ai_response_collector import MultiAIResponseCollector
+from components.multi_ai_response import PARTICIPATING_MODELS
 
 
 class LLMConversation:
@@ -23,9 +24,8 @@ class LLMConversation:
         self.default_style_hint = ( ... 省略 ... )
 
         # ★ ここで「審議に参加させるAI」を指定
-        #   → いまは gpt4o と hermes(dmy)
         self.multi_ai = MultiAIResponseCollector(
-            participants=["gpt4o", "hermes"],
+            participants=list(PARTICIPATING_MODELS.keys()),
             primary="gpt4o",
         )
 
