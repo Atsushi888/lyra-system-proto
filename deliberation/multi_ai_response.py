@@ -1,4 +1,4 @@
-# components/multi_ai_response.py
+# deliberation/multi_ai_response.py
 
 from __future__ import annotations
 
