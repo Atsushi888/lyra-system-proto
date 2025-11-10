@@ -2,7 +2,7 @@
 
 import os
 from typing import Any, Dict, List, Tuple
-from openai import OpenAI
+from openai import OpenAI, BadRequestError  # ← 追加
 
 OPENAI_API_KEY_INITIAL = os.getenv("OPENAI_API_KEY")
 MAIN_MODEL = os.getenv("OPENAI_MAIN_MODEL", "gpt-4o")
@@ -41,31 +41,40 @@ def _call_gpt(
         }
     return text, usage
 
-
 def _call_hermes(
     messages: List[Dict[str, str]],
     temperature: float,
     max_tokens: int,
 ) -> Tuple[str, Dict[str, Any]]:
-    """
-    OpenRouter 経由で Hermes 系モデルを呼び出す。
-    実際のモデルIDは OPENROUTER_HERMES_MODEL 環境変数で差し替え推奨。
-    """
     api_key = os.getenv("OPENROUTER_API_KEY") or OPENROUTER_API_KEY_INITIAL
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY が設定されていません。")
+        # キーが無いなら即ダミー返し
+        return "[Hermes: OPENROUTER_API_KEY 未設定]", {
+            "error": "OPENROUTER_API_KEY not set",
+        }
 
     client_or = OpenAI(
         api_key=api_key,
         base_url=OPENROUTER_BASE_URL,
     )
 
-    resp = client_or.chat.completions.create(
-        model=HERMES_MODEL,
-        messages=messages,
-        temperature=float(temperature),
-        max_tokens=int(max_tokens),
-    )
+    try:
+        resp = client_or.chat.completions.create(
+            model=HERMES_MODEL,
+            messages=messages,
+            temperature=float(temperature),
+            max_tokens=int(max_tokens),
+        )
+    except BadRequestError as e:
+        # ★ ここで 400 を受け止めて、テキストとして返す
+        return f"[Hermes BadRequestError: {e}]", {
+            "error": str(e),
+        }
+    except Exception as e:
+        # それ以外のエラーも一応
+        return f"[Hermes Error: {e}]", {
+            "error": str(e),
+        }
 
     text = resp.choices[0].message.content or ""
     usage: Dict[str, Any] = {}
@@ -76,7 +85,6 @@ def _call_hermes(
             "total_tokens": getattr(resp.usage, "total_tokens", None),
         }
     return text, usage
-
 
 def call_with_fallback(
     messages: List[Dict[str, str]],
