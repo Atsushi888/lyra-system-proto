@@ -7,7 +7,7 @@ import json
 
 import streamlit as st
 
-from components.multi_ai_response import MultiAIResponse
+from deliveration.multi_ai_response import MultiAIResponse
 
 
 class DebugPanel:
