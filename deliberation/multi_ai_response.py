@@ -86,26 +86,42 @@ class MultiAIResponse:
             return models
         return None
             
-    def _ensure_judge(self, llm_meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _ensure_judge(self, llm_meta: Dict[str, Any]) -> Dict[str, Any]:
         """
         llm_meta の状態を見て、必要であれば JudgeAI を実行し、
         llm_meta["judge"] を埋めて返す。
         """
         if not isinstance(llm_meta, dict):
-            return None
-
+            return {"winner": None, "reason": "llm_meta not available"}
+    
+        # 既に judge が dict で存在すればそのまま使う
         judge = llm_meta.get("judge")
-        models = llm_meta.get("models")
-
         if isinstance(judge, dict):
             return judge
-
+    
+        # models が無い or 少なければ判定できない
+        models = llm_meta.get("models")
         if not isinstance(models, dict) or len(models) < 2:
-            # 2モデル未満ならそもそも判定しない
-            return None
-
-        judge = self.judge_ai.run(llm_meta)
-        return judge
+            return {
+                "winner": None,
+                "reason": "有効なモデル数が不足しています。",
+                "score_diff": 0.0,
+            }
+    
+        # ここで初めて判定実行
+        try:
+            judge = self.judge_ai.run(llm_meta)
+            return judge if isinstance(judge, dict) else {
+                "winner": None,
+                "reason": "JudgeAI returned invalid data.",
+                "score_diff": 0.0,
+            }
+        except Exception as e:
+            return {
+                "winner": None,
+                "reason": f"JudgeAI 実行中にエラー: {e}",
+                "score_diff": 0.0,
+            }
 
     def render(self, llm_meta: Optional[Dict[str, Any]]) -> None:
         if not isinstance(llm_meta, dict) or not llm_meta:
