@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 import streamlit as st
 
-from personas.persona_floria_ja import get_persona
+from personas.persona_floria_ja import get_personaf
 from components import PreflightChecker, DebugPanel, ChatLog, PlayerInput
 from deliveration.multi_ai_response import MultiAIResponse
 from conversation_engine import LLMConversation
@@ -129,8 +129,8 @@ class LyraEngine:
             st.caption(f"現在: {mode_label}")
 
             # 既存のデバッグパネル（llm_meta の簡易表示など）
-            llm_meta = self.state.get("llm_meta")
-            self.debug_panel.render(llm_meta)
+            # llm_meta = self.state.get("llm_meta")
+            # self.debug_panel.render(llm_meta)
 
         # 表 / 裏 切り替え
         if st.session_state["debug_mode"]:
