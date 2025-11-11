@@ -1,6 +1,7 @@
 # persona_floria_ja.py — Lyra Engine / Floria persona (Japanese)
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict, Any
 
 
 @dataclass
@@ -10,6 +11,7 @@ class Persona:
     system_prompt: str  # LLM用のシステムプロンプト
     starter_hint: str   # 入力ヒント（あれば）
     style_hint: str = ""  # 文体・感情トーン指示（任意）
+    model_params: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # ★追加
 
 
 FLORIA_JA = Persona(
@@ -32,7 +34,6 @@ FLORIA_JA = Persona(
         "一人称は『わたし』。"
         "出力は素の文章。行頭に装飾記号（*,・,•,★ など）を付けない。"
         "見出しや箇条書きは使わない。"
-
     ),
     starter_hint="……白い霧の向こうに気配がする。そこにいるのは誰？",
     style_hint=(
@@ -43,6 +44,16 @@ FLORIA_JA = Persona(
         "感情表現は繊細で、愛しさや安心感を感じさせる方向に寄せる。\n"
         "見出しや記号を使わず、純粋な日本語の文章のみで応答する。"
     ),
+    model_params={
+        "gpt4o": {
+            "temperature": 0.7,
+            "max_tokens": 800,
+        },
+        "hermes": {
+            "temperature": 1.0,
+            "max_tokens": 900,
+        },
+    },
 )
 
 
