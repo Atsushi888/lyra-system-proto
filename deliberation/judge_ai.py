@@ -1,3 +1,94 @@
+# judge_ai.py — マルチAI審議用ジャッジクラス
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional, Tuple
+import json
+
+from llm_router import call_with_fallback
+
+
+class JudgeAI:
+    """
+    複数モデルの応答を比較して「どちらがより良いか」を判定するクラス。
+
+    責務:
+        - llm_meta["models"] から比較対象モデルを選ぶ
+        - LLM に評価を依頼する
+        - winner / score_diff / comment を含む dict を返す
+        - 必要であれば llm_meta["judge"] に結果を書き込む
+
+    UI（Streamlit 等）には一切依存しません。
+    """
+
+    def __init__(self) -> None:
+        # 将来的に「審判専用モデル」を切り替えたくなった場合、
+        # ここに設定を増やす余地を残しておきます。
+        pass
+
+    # ===== エントリポイント =====
+    def run(self, llm_meta: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        llm_meta を受け取り、models から 2 つを選んで審議を行います。
+
+        - models が 2 つ未満の場合も、ビューが扱いやすい dict を必ず返す
+        - 成功時は judge dict を返し、llm_meta["judge"] にも同じものを格納します
+        """
+        # 想定外の型への防御
+        if not isinstance(llm_meta, dict):
+            judge = self._build_empty_result(
+                comment="llm_meta が dict ではないため、審議できません。"
+            )
+            llm_meta["judge"] = judge
+            return judge
+
+        models = llm_meta.get("models")
+        if not isinstance(models, dict) or len(models) < 2:
+            judge = self._build_empty_result(
+                comment="有効なモデル数が 2 未満のため、審議できません。"
+            )
+            llm_meta["judge"] = judge
+            return judge
+
+        # 比較対象ペアを決める
+        a_key, b_key = self._choose_pair(models)
+
+        prompt = llm_meta.get("prompt_preview") or ""
+        reply_a = str(models[a_key].get("reply") or models[a_key].get("text") or "")
+        reply_b = str(models[b_key].get("reply") or models[b_key].get("text") or "")
+
+        judge = self._evaluate_pair(
+            prompt=prompt,
+            reply_a=reply_a,
+            reply_b=reply_b,
+            label_a=a_key,
+            label_b=b_key,
+        )
+
+        llm_meta["judge"] = judge
+        return judge
+
+    # ===== モデル選択 =====
+    def _choose_pair(self, models: Dict[str, Any]) -> Tuple[str, str]:
+        """
+        比較対象とする 2 モデルのキーを選びます。
+
+        優先順位:
+            1. "gpt4o" と "hermes" の組み合わせが両方あれば固定でそれを使う
+            2. そうでなければ models の先頭 2 件
+        """
+        if "gpt4o" in models and "hermes" in models:
+            return "gpt4o", "hermes"
+
+        keys = list(models.keys())
+        if len(keys) >= 2:
+            return keys[0], keys[1]
+
+        # ここに来るのは len(models) < 2 のときだけだが、
+        # 型安全のため一応同じキーを返しておく。
+        return keys[0], keys[0]
+
+    # ===== LLM による評価本体 =====
     def _evaluate_pair(
         self,
         prompt: str,
@@ -8,6 +99,17 @@
     ) -> Dict[str, Any]:
         """
         実際に LLM に A/B 比較を依頼し、判定結果を dict で返します。
+
+        戻り値の例:
+            {
+                "winner": "gpt4o",
+                "score_diff": 0.6,
+                "comment": "...",
+                "raw_text": "... LLM の生出力 ...",
+                "raw_json": { "winner": "A", "score_diff": 0.6, "comment": "…" },
+                "route": "gpt",
+                "pair": {"A": "gpt4o", "B": "hermes"},
+            }
         """
         system_prompt = (
             "あなたは物語文の審査員です。\n"
@@ -48,38 +150,38 @@
             max_tokens=300,
         )
 
-        # 生テキストは必ず保持、JSON は成功したら別フィールドに
+        # ベースとなる結果（ここに上書きしていく）
         result: Dict[str, Any] = {
-            "winner": None,
+            "winner": None,           # 後で label_a / label_b になる
             "score_diff": 0.0,
             "comment": "",
-            "raw_text": text,   # ← LLMそのまま
-            "raw_json": None,   # ← 解析に成功したら dict を入れる
+            "raw_text": text,         # LLM の生出力
+            "raw_json": None,         # パースに成功したら dict を入れる
             "route": meta.get("route"),
             "pair": {"A": label_a, "B": label_b},
         }
 
         parsed = self._safe_parse_json(text)
-
         if isinstance(parsed, dict):
-            # パースに成功したら JSON の中身で上書き
+            result["raw_json"] = parsed
+
+            # winner の決定
             winner_raw = parsed.get("winner")
             if winner_raw == "A":
                 result["winner"] = label_a
             elif winner_raw == "B":
                 result["winner"] = label_b
 
+            # スコア差
             try:
                 result["score_diff"] = float(parsed.get("score_diff", 0.0))
             except Exception:
                 result["score_diff"] = 0.0
 
+            # コメント
             comment = parsed.get("comment")
             if isinstance(comment, str):
                 result["comment"] = comment.strip()
-
-            # 解析済み JSON はここにだけ持つ
-            result["raw_json"] = parsed
 
         # winner が決まらなかった場合のフォールバック
         if result["winner"] is None:
@@ -91,3 +193,33 @@
                 )
 
         return result
+
+    # ===== ヘルパ =====
+    def _build_empty_result(self, comment: str) -> Dict[str, Any]:
+        """
+        審議不能なケース用の共通フォーマット。
+        """
+        return {
+            "winner": "―",
+            "score_diff": 0.0,
+            "comment": comment,
+            "raw_text": "",
+            "raw_json": None,
+            "route": None,
+            "pair": {},
+        }
+
+    def _safe_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        LLM の出力から JSON らしき部分を抜き出してパースする簡易ヘルパ。
+        """
+        try:
+            stripped = text.strip()
+            start = stripped.find("{")
+            end = stripped.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return None
+            json_str = stripped[start : end + 1]
+            return json.loads(json_str)
+        except Exception:
+            return None
