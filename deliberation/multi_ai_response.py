@@ -11,7 +11,14 @@ from components.multi_ai_model_viewer import MultiAIModelViewer
 from components.multi_ai_judge_result_view import MultiAIJudgeResultView
 from deliberation.judge_ai import JudgeAI
 from deliberation.composer_ai import ComposerAI
+from deliberation.participating_models import PARTICIPATING_MODELS
 
+# deliberation/multi_ai_response.py
+# ------------------------------------------------------------
+# 参加AIモデル一覧（PARTICIPATING_MODELS）
+# 本定義は、AI間の審議・比較において、
+# 名称と簡単な説明を与えるための静的リストです。
+# ------------------------------------------------------------
 
 class MultiAIResponse:
     """
