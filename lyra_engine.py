@@ -7,7 +7,7 @@ import streamlit as st
 
 from personas.persona_floria_ja import get_persona
 from components.preflight import PreflightChecker
-# from components.debug_panel import DebugPanel
+from components.dp import DebugPanel
 from components.chat_log import ChatLog
 from components.player_input import PlayerInput
 from conversation_engine import LLMConversation
