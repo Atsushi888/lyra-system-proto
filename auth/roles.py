@@ -1,8 +1,7 @@
-from __future__ import annotations
 from enum import IntEnum
 
 class Role(IntEnum):
     GUEST = 0
-    USER  = 1
-    ADMIN = 2
-    DEV   = 3  # 任意
+    USER  = 10
+    DEV   = 20
+    ADMIN = 30
