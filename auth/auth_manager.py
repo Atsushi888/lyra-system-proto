@@ -1,103 +1,135 @@
-# auth/auth_manager.py
 from __future__ import annotations
-import traceback
 import streamlit as st
+from dataclasses import dataclass
+from typing import Dict, Any
+import bcrypt
 
 try:
     import streamlit_authenticator as stauth
-    AUTH_AVAILABLE = True
 except Exception:
-    AUTH_AVAILABLE = False
+    stauth = None
 
-# 任意のロール数値（必要に応じて調整）
-ROLE_MAP = {"ADMIN": 9, "DEV": 7, "USER": 5, "VIEWER": 1}
+from auth.roles import Role
 
-def _get_role_from_secrets(username: str) -> int:
-    try:
-        creds = st.secrets["credentials"]
-        users = creds.get("usernames") or {}
-        role = (users.get(username, {}) or {}).get("role", "USER")
-        return ROLE_MAP.get(str(role).upper(), ROLE_MAP["USER"])
-    except Exception:
-        return ROLE_MAP["ADMIN"]  # フォールバック（あとでUSERに下げてもOK）
+
+@dataclass
+class AuthResult:
+    name: str | None
+    status: bool | None
+    username: str | None
+
 
 class AuthManager:
-    """Secrets/Authenticatorが無くても絶対に落ちないログイン管理。"""
-
+    """
+    1) 可能なら streamlit-authenticator でログインUIを描画
+    2) 失敗したら自前フォームにフォールバック（bcrypt 検証）
+    """
     def __init__(self) -> None:
-        self._auth_ok = False
-        self._username: str | None = None
-        self._role: int = ROLE_MAP["ADMIN"]  # フォールバックの初期値
-        self._error: str | None = None
+        self._secrets = st.secrets
+        self._creds  = dict(self._secrets.get("credentials", {}))
+        self._cookie = dict(self._secrets.get("cookie", {}))
+        self._bypass = bool(self._secrets.get("auth", {}).get("bypass", False))
 
-        # ここでは何もしない（遅延初期化）
-        # 画面描画時に初期化＆フォールバック判定を行う
-
-    # ---- 公開API ---------------------------------------------------------
-    def role(self) -> int:
-        return self._role
-
-    def username(self) -> str | None:
-        return self._username
-
-    def render_login(self, location: str = "main") -> None:
-        """タイトル＋必要ならフォームを描画。例外時はフォールバックして継続。"""
-        st.title("🔐 Lyra System ログイン")
-        st.caption("※ 現在ログインシステムは段階的に復帰中です。")
-
-        # すでに認証済なら何もしない
-        if st.session_state.get("_lyra_auth_ok"):
-            self._auth_ok = True
-            self._username = st.session_state.get("_lyra_username")
-            self._role = st.session_state.get("_lyra_role", ROLE_MAP["USER"])
-            return
-
-        try:
-            # 認証器の用意を試みる
-            if AUTH_AVAILABLE and "credentials" in st.secrets:
-                creds = st.secrets["credentials"]
-                cookie = st.secrets.get("cookie", {})
-                auth = stauth.Authenticate(
-                    credentials=creds,          # ここは dict をそのまま渡せばOK
-                    cookie_name=cookie.get("name", "lyra_auth"),
-                    key=cookie.get("key", "lyra_secret"),
-                    cookie_expiry_days=int(cookie.get("expiry_days", 30)),
-                    auto_hash=False,            # ハッシュは事前生成（Hashed値）
+        self.authenticator = None
+        if stauth is not None:
+            try:
+                self.authenticator = stauth.Authenticate(
+                    credentials=self._creds,
+                    cookie_name=self._cookie.get("name", "lyra_auth"),
+                    key=self._cookie.get("key", "lyra_secret"),
+                    cookie_expiry_days=int(self._cookie.get("expiry_days", 30)),
+                    auto_hash=False,
                 )
-                # フォーム描画（location: 'main' or 'sidebar'）
-                name, auth_status, username = auth.login("Lyra System ログイン", location)
-                if auth_status:
-                    self._auth_ok = True
-                    self._username = username
-                    self._role = _get_role_from_secrets(username or "")
-                    st.session_state["_lyra_auth_ok"] = True
-                    st.session_state["_lyra_username"] = self._username
-                    st.session_state["_lyra_role"] = self._role
-                    st.success(f"ようこそ、{name} さん")
-                elif auth_status is False:
-                    st.error("認証に失敗しました。ユーザー名/パスワードをご確認ください。")
-                else:
-                    st.info("ユーザー名とパスワードを入力してください。")
+            except Exception:
+                self.authenticator = None
+
+    # ---------- 公開API ----------
+    def render_login(self, location: str = "main") -> AuthResult:
+        """ログインフォーム描画（タイトル含む）"""
+        st.markdown(
+            "<h1 style='text-align:center;'>🔒 Lyra System ログイン</h1>",
+            unsafe_allow_html=True,
+        )
+
+        if self._bypass:
+            st.session_state["authentication_status"] = True
+            st.session_state["name"] = "Bypass Admin"
+            st.session_state["username"] = list(
+                self._creds.get("usernames", {"admin": {}}).keys()
+            )[0]
+            return AuthResult("Bypass Admin", True, st.session_state["username"])
+
+        if self.authenticator is not None:
+            try:
+                loc = location if location in ("main", "sidebar", "unrendered") else "main"
+                name, auth_status, username = self.authenticator.login(
+                    "Lyra System ログイン", loc
+                )
+                return AuthResult(name, auth_status, username)
+            except Exception as e:
+                st.warning(
+                    "ログインフォームの標準描画に失敗しました。フォールバックに切り替えます。"
+                    f"\n\nReason: {type(e).__name__}"
+                )
+
+        return self._fallback_login()
+
+    def role(self) -> Role:
+        if bool(self._secrets.get("auth", {}).get("bypass", False)):
+            return Role.ADMIN
+        if not st.session_state.get("authentication_status"):
+            return Role.ANON
+        uname = st.session_state.get("username")
+        meta = self._creds.get("usernames", {}).get(uname, {}) if uname else {}
+        r = str(meta.get("role", "USER")).upper()
+        return Role.ADMIN if r == "ADMIN" else Role.USER
+
+    def logout(self, location: str = "sidebar"):
+        if self.authenticator is not None:
+            try:
+                loc = location if location in ("main", "sidebar", "unrendered") else "sidebar"
+                self.authenticator.logout("Logout", loc)
+                return
+            except Exception:
+                pass
+        for k in ("authentication_status", "name", "username"):
+            st.session_state.pop(k, None)
+        st.success("Logged out.")
+
+    # ---------- 内部：フォールバック ----------
+    def _fallback_login(self) -> AuthResult:
+        st.info("フォールバック・ログイン（管理者用簡易UI）")
+        with st.form("fallback_login", clear_on_submit=False):
+            uname = st.text_input("Username / ID")
+            pwd   = st.text_input("Password", type="password")
+            ok    = st.form_submit_button("Login")
+
+        name = None
+        status = None
+        if ok:
+            user_tbl: Dict[str, Any] = self._creds.get("usernames", {})
+            meta = user_tbl.get(uname)
+            if not meta:
+                st.error("ユーザーが見つかりません。")
+                status = False
             else:
-                # Secrets なし／パッケージなし → フォールバック
-                st.warning("Credentials 未設定のため、簡易モードで継続します。")
-                self._auth_ok = True
-                self._username = "guest"
-                self._role = ROLE_MAP["ADMIN"]  # とりあえず通す（後でUSERに変更可）
-                st.session_state["_lyra_auth_ok"] = True
-                st.session_state["_lyra_username"] = self._username
-                st.session_state["_lyra_role"] = self._role
+                hashed = str(meta.get("password", ""))
+                if self._check_bcrypt(pwd, hashed):
+                    st.session_state["authentication_status"] = True
+                    st.session_state["name"] = meta.get("name") or uname
+                    st.session_state["username"] = uname
+                    name = st.session_state["name"]
+                    status = True
+                    st.success("Login success.")
+                else:
+                    st.error("パスワードが違います。")
+                    status = False
 
-        except Exception as e:
-            self._error = f"{type(e).__name__}: {e}"
-            st.caption("⚠ ログインフォームの標準描画に失敗。フォールバックに切替えます。")
-            with st.expander("詳細（デバッグ）", expanded=False):
-                st.code("".join(traceback.format_exc()), language="text")
+        return AuthResult(name, status, st.session_state.get("username"))
 
-            # フォールバックで通す（開発優先）
-            self._auth_ok = True
-            self._username = "guest"
-            self._role = ROLE_MAP["ADMIN"]
-            st.session_state["_lyra_auth_ok"] = True
-            st.session_state["_lyra_username"] = self._username
-            st.session_state["_lyra_role"] = self._role
+    @staticmethod
+    def _check_bcrypt(plain: str, hashed: str) -> bool:
+        try:
+            return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        except Exception:
+            return False
