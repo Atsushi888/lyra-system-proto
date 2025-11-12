@@ -29,11 +29,18 @@ class AuthManager:
         )
 
     def render_login(self, location: str = "main"):
-        # stauth は 'main' | 'sidebar' | 'unrendered' のみ許容
+        # 許容値に正規化
         loc = location if location in ("main", "sidebar", "unrendered") else "main"
-        name, auth_status, username = self.authenticator.login("Lyra System ログイン", location=loc)
-        return type("AuthResult", (), {"name": name, "status": auth_status, "username": username})
-
+    
+        # ✅ location は位置引数で渡す（キーワードにしない）
+        name, auth_status, username = self.authenticator.login("Lyra System ログイン", loc)
+    
+        return type("AuthResult", (), {
+            "name": name,
+            "status": auth_status,
+            "username": username,
+        })
+    
     def role(self) -> int:
         user = st.session_state.get("username")
         if not user:
