@@ -38,8 +38,8 @@ class LyraSystem:
         # ============================
         #  開発モード：常に ADMIN 扱い
         # ============================
-        # role = Role.ADMIN
-        role = Role.USER
+        role = Role.ADMIN
+        # role = Role.USER
 
         # サイドバーに「開発中・認証バイパス中」の注意を出しておく
         # with st.sidebar:
