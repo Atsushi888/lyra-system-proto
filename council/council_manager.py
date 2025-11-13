@@ -1,182 +1,152 @@
 # council/council_manager.py
 
 from __future__ import annotations
-from typing import Any, Dict, List
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Literal
 
 import streamlit as st
-from personas.persona_floria_ja import get_persona
+
+
+Speaker = Literal["player", "floria", "system"]
+Mode = Literal["idle", "ongoing", "ended"]
+
+
+@dataclass
+class CouncilState:
+    round: int = 0
+    speaker: Speaker = "player"
+    mode: Mode = "idle"
+    log: List[Dict[str, Any]] = field(default_factory=list)
+    input: str = ""
 
 
 class CouncilManager:
     """
-    会談システムの中核クラス。
-    ・状態管理（session_state）
-    ・UI描画（render）
-    をすべてここに集約する。
+    会談システムの中核ロジック。
+    - Streamlit の session_state をラップして状態を保持
+    - 画面描画もここでまとめて行う
     """
 
-    SESSION_PREFIX = "council_"
+    SESSION_PREFIX = "council_"  # ★ 空文字は禁止。必ずプレフィックスを付ける
 
-    def __init__(self, state: Dict[str, Any]) -> None:
-        self.state = state
-        self.persona = get_persona()
+    def __init__(self) -> None:
+        self.state = st.session_state
         self._ensure_state()
 
-    # ===== 内部：状態初期化 =====
+    # ===== 状態管理ヘルパ =====
+    def _key(self, name: str) -> str:
+        """session_state 用のキーを一元生成"""
+        return f"{self.SESSION_PREFIX}{name}"
+
     def _ensure_state(self) -> None:
-        s = self.state
-        s.setdefault(self.SESSION_PREFIX + "log", [])          # List[Dict[str,str]]
-        s.setdefault(self.SESSION_PREFIX + "round", 0)         # int
-        s.setdefault(self.SESSION_PREFIX + "mode", "idle")     # "idle" / "running" / "finished"
-        s.setdefault(self.SESSION_PREFIX + "speaker", "player")  # "player" / "floria" / "system"
+        """初期値がなければ作る"""
+        defaults = CouncilState()
+        for field_name, value in defaults.__dict__.items():
+            key = self._key(field_name)
+            if key not in self.state:
+                self.state[key] = value
 
-    # ===== プロパティ =====
-    @property
-    def log(self) -> List[Dict[str, str]]:
-        return self.state[self.SESSION_PREFIX + "log"]
+    def _get(self, name: str) -> Any:
+        return self.state[self._key(name)]
 
-    @property
-    def round(self) -> int:
-        return int(self.state[self.SESSION_PREFIX + "round"])
+    def _set(self, name: str, value: Any) -> None:
+        self.state[self._key(name)] = value
 
-    @property
-    def mode(self) -> str:
-        return str(self.state[self.SESSION_PREFIX + "mode"])
-
-    @property
-    def speaker(self) -> str:
-        return str(self.state[self.SESSION_PREFIX + "speaker"])
-
-    # ===== 状態操作メソッド =====
+    # ===== API =====
     def reset(self) -> None:
-        """会談をリセットして導入テキストをセット。"""
-        self.state[self.SESSION_PREFIX + "log"] = []
-        self.state[self.SESSION_PREFIX + "round"] = 0
-        self.state[self.SESSION_PREFIX + "mode"] = "running"
-        self.state[self.SESSION_PREFIX + "speaker"] = "system"
+        """会談をリセットして idle に戻す"""
+        self._set("round", 0)
+        self._set("speaker", "player")
+        self._set("mode", "idle")
+        self._set("log", [])
+        self._set("input", "")
 
-        intro = (
-            "君は今、ある田舎町の近くにいる。人通りは多くないが、"
-            "どこか張り詰めた気配が漂っている。"
-        )
-        self.append_entry("system", intro)
+    def start(self) -> None:
+        """会談開始"""
+        self._set("round", 1)
+        self._set("speaker", "player")
+        self._set("mode", "ongoing")
+        self._set("log", [])
+        self._set("input", "")
 
-        # 次はプレイヤーのターン
-        self.state[self.SESSION_PREFIX + "speaker"] = "player"
-
-    def append_entry(self, speaker: str, text: str) -> None:
-        self.log.append(
-            {
-                "speaker": speaker,
-                "text": text,
-            }
-        )
-
-    def can_player_speak(self) -> bool:
-        return (self.mode == "running") and (self.speaker == "player")
-
-    def handle_player_utterance(self, text: str) -> None:
-        """
-        プレイヤーの発言処理。
-        今はモックとしてフローリア固定応答を返す。
-        後で LLM / Referee / Fortuna をここに差し込む。
-        """
-        text = text.strip()
-        if not text:
-            return
-
-        # プレイヤー発言
-        self.append_entry("player", text)
-        self.state[self.SESSION_PREFIX + "round"] += 1
-
-        # フローリアの仮応答
-        mock_reply = (
-            "……ううん、その言い方、ずるいよ。"
-            "でも、そうやって悩んでくれるのは、ちょっと嬉しい。"
-        )
-        self.append_entry("floria", mock_reply)
-
-        # ひとまずまたプレイヤーのターン（後でターン制ロジックを洗練）
-        self.state[self.SESSION_PREFIX + "speaker"] = "player"
+    def _append_log(self, speaker: Speaker, text: str) -> None:
+        log: List[Dict[str, Any]] = list(self._get("log"))
+        log.append({"speaker": speaker, "text": text})
+        self._set("log", log)
 
     # ===== メイン描画 =====
     def render(self) -> None:
-        """
-        会談システムの UI をまとめて描画。
-        View 側は manager.render() を呼ぶだけ。
-        """
-        st.title("🗣 会談システム（Council Prototype）")
-        st.caption("※ ロジックとUIはCouncilManagerに集約。ここから拡張していく。")
+        # ※毎回呼ばれるので保険として
+        self._ensure_state()
 
-        col_top_left, col_top_right = st.columns([2, 1])
+        round_ = self._get("round")
+        speaker: Speaker = self._get("speaker")
+        mode: Mode = self._get("mode")
+        log: List[Dict[str, Any]] = self._get("log")
 
-        # ---- 右上：コントロール ----
-        with col_top_right:
-            if st.button("🔁 会談リセット / 開始", use_container_width=True):
-                self.reset()
+        # --- ヘッダ ---
+        st.markdown("## 🗣️ 会談システム（Council Prototype）")
+        st.caption("※ ロジックとUIは CouncilManager に集約。ここから拡張していく。")
+
+        # --- 上部コントロール ---
+        col_left, col_right = st.columns([3, 1])
+        with col_right:
+            if st.button("🔁 会談リセット / 開始", key=self._key("reset_start")):
+                # idle → start / それ以外 → reset & start
+                self.start()
                 st.rerun()
 
-            st.markdown("---")
-            st.write(f"ラウンド: {self.round}")
-            st.write(f"話者: {self.speaker}")
-            st.write(f"モード: {self.mode}")
+        # --- ログ表示 ---
+        st.markdown("### 会談ログ")
+        if not log:
+            st.caption("（まだ会談が始まっていません。「会談リセット / 開始」でスタート）")
+        else:
+            for i, entry in enumerate(log, start=1):
+                role = entry.get("speaker", "?")
+                text = entry.get("text", "")
+                if role == "player":
+                    name = "プレイヤー"
+                elif role == "floria":
+                    name = "フローリア"
+                else:
+                    name = "システム"
+                st.markdown(f"**[{i}] {name}**")
+                st.markdown(text)
+                st.markdown("---")
 
-        # ---- 左上：ログ表示 ----
-        with col_top_left:
-            st.subheader("会談ログ")
+        # --- 右側ステータス ---
+        with st.sidebar.expander("会談ステータス", expanded=True):
+            st.write(f"ラウンド: {round_}")
+            st.write(f"話者: {speaker}")
+            st.write(f"モード: {mode}")
 
-            if not self.log:
-                st.caption("（まだ会談が始まっていません。「会談リセット / 開始」でスタート）")
-            else:
-                for entry in self.log:
-                    speaker = entry.get("speaker", "system")
-                    text = entry.get("text", "")
+        st.markdown("### プレイヤー入力")
 
-                    if speaker == "player":
-                        css = "background-color:#e8f2ff;border-left:4px solid #66aaff;"
-                        label = "あなた"
-                    elif speaker == "floria":
-                        css = "background-color:#f9f0ff;border-left:4px solid #cc66ff;"
-                        label = self.persona.name
-                    else:
-                        css = "background-color:#f2f2f2;border-left:4px solid #999999;"
-                        label = "（システム）"
-
-                    st.markdown(
-                        f"""
-<div style="
-    margin:6px 0;
-    padding:6px 10px;
-    border-radius:6px;
-    {css}
-">
-  <div style="font-size:0.8rem;color:#555;">{label}</div>
-  <div>{text}</div>
-</div>
-""",
-                        unsafe_allow_html=True,
-                    )
-
-        # ---- 下部：プレイヤー入力 ----
-        st.markdown("---")
-        st.subheader("プレイヤー入力")
-
-        if not self.can_player_speak():
+        if mode != "ongoing":
             st.caption("（今はプレイヤーのターンではありません。会談を開始してから話してね）")
             return
 
-        user_text = st.text_area(
-            "あなたの発言",
-            key=self.SESSION_PREFIX + "input",
-            placeholder="封印のこと、フローリアの気持ち、自分の覚悟……何を話す？",
+        if speaker != "player":
+            st.caption("（現在の話者はプレイヤーではありません。ターン待ちです）")
+            return
+
+        # --- 入力欄 ---
+        input_key = self._key("input")
+        # ここで key を固定して、session_state[council_input] に紐づける
+        user_text: str = st.text_area(
+            "あなたの発言：",
+            key=input_key,
+            placeholder="ここにフローリアや他の登場人物への発言を書いてください。",
         )
 
-        if st.button("▶ この内容で発言する", use_container_width=True):
-            if not user_text.strip():
-                st.warning("何か話してあげて。")
-                return
-
-            self.handle_player_utterance(user_text)
-            # 入力欄クリア
-            self.state[self.SESSION_PREFIX + "input"] = ""
-            st.rerun()
+        col_input_btn, _ = st.columns([1, 3])
+        with col_input_btn:
+            if st.button("送信", key=self._key("send")):
+                text = (self.state.get(input_key) or "").strip()
+                if text:
+                    self._append_log("player", text)
+                    # ★ 送信後に入力欄をクリア
+                    self.state[input_key] = ""
+                    # 将来的にはここで AI に渡して、次の話者・ラウンドを更新する
+                st.rerun()
