@@ -19,8 +19,8 @@ class LyraSystem:
         st.set_page_config(page_title="Lyra System", layout="wide")
 
         # 本来は AuthManager() だが、今はスキップ
-        # from auth.auth_manager import AuthManager
-        # self.auth = AuthManager()
+        from auth.auth_manager import AuthManager
+        self.auth = AuthManager()
 
         # ModeSwitcher は存在すれば使う
         self.switcher = ModeSwitcher(default_key="PLAY", session_key="view_mode") if ModeSwitcher else None
