@@ -18,11 +18,27 @@ class UserView:
             os.environ["OPENROUTER_API_KEY"] = openrouter_key        
         self.preflight  = PreflightChecker(openai_key, openrouter_key)
 
-    def render(self) -> None:
-        st.caption("公開向けの軽量設定のみを表示")
+def render(self) -> None:
+    st.caption("公開向けの軽量設定のみを表示")
+
+    # 上段：preflight
+    with st.container():
         self.preflight.render()
-        # col1, col2 = st.columns(2)
-        # with col1:
-        #     st.toggle("字幕を表示", key="ui_show_subtitle", value=st.session_state.get("ui_show_subtitle", True))
-        # with col2:
-        #     st.toggle("効果音を有効にする", key="ui_sfx", value=st.session_state.get("ui_sfx", True))
+
+    st.markdown("---")  # 仕切り線はお好みで
+
+    # 下段：トグル群
+    with st.container():
+        col1, col2 = st.columns(2)
+        with col1:
+            st.toggle(
+                "字幕を表示",
+                key="ui_show_subtitle",
+                value=st.session_state.get("ui_show_subtitle", True),
+            )
+        with col2:
+            st.toggle(
+                "効果音を有効にする",
+                key="ui_sfx",
+                value=st.session_state.get("ui_sfx", True),
+            )
