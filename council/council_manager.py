@@ -18,6 +18,7 @@ class CouncilState:
     speaker: Speaker = "player"
     mode: Mode = "idle"
     log: List[Dict[str, Any]] = field(default_factory=list)
+    # input はロジックでは使わないが、将来用に残しておく
     input: str = ""
 
 
@@ -28,7 +29,8 @@ class CouncilManager:
     - 画面描画もここでまとめて行う
     """
 
-    SESSION_PREFIX = "council_"  # ★ 空文字は禁止。必ずプレフィックスを付ける
+    # ★ 空文字は禁止。必ずプレフィックスを付ける
+    SESSION_PREFIX = "council_"
 
     def __init__(self) -> None:
         self.state = st.session_state
@@ -36,7 +38,7 @@ class CouncilManager:
 
     # ===== 状態管理ヘルパ =====
     def _key(self, name: str) -> str:
-        """session_state 用のキーを一元生成"""
+        """session_state / widget 用のキーを一元生成"""
         return f"{self.SESSION_PREFIX}{name}"
 
     def _ensure_state(self) -> None:
@@ -132,8 +134,10 @@ class CouncilManager:
             return
 
         # --- 入力欄 ---
-        input_key = self._key("input")
-        # ここで key を固定して、session_state[council_input] に紐づける
+        # ログの長さを key に混ぜることで、送信のたびに新しい widget key になり、
+        # テキストエリアの内容が自動的にクリアされる。
+        input_key = self._key(f"input_{len(log)}")
+
         user_text: str = st.text_area(
             "あなたの発言：",
             key=input_key,
@@ -143,10 +147,8 @@ class CouncilManager:
         col_input_btn, _ = st.columns([1, 3])
         with col_input_btn:
             if st.button("送信", key=self._key("send")):
-                text = (self.state.get(input_key) or "").strip()
+                text = (user_text or "").strip()
                 if text:
                     self._append_log("player", text)
-                    # ★ 送信後に入力欄をクリア
-                    self.state[input_key] = ""
-                    # 将来的にはここで AI に渡して、次の話者・ラウンドを更新する
+                    # ★ widget の key が次回は変わるので、明示的にクリアする必要なし
                 st.rerun()
