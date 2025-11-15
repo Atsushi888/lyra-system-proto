@@ -74,9 +74,13 @@ class CouncilView:
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
 
+        # ★ ラウンドごとに key を変えることで、送信後に自動で空になるようにする
+        round_no = int(status.get("round") or 1)
+        input_key = f"council_user_input_r{round_no}"
+
         user_text = st.text_area(
             "あなたの発言：",
-            key="council_user_input",
+            key=input_key,
             placeholder="ここにフローリアへの発言を書いてください。",
         )
 
@@ -90,7 +94,5 @@ class CouncilView:
                     # ★ フローリア思考中スピナー
                     with st.spinner("フローリアは少し考えています…"):
                         manager.proceed(cleaned)
-
-                    # 入力欄クリア
-                    st.session_state["council_user_input"] = ""
+                    # 入力欄は、ラウンドが進んで key が変わることで自動的に空になる
                     st.rerun()
