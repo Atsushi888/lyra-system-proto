@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional
 
 import streamlit as st
+
+# ★ 追加：Actor クラス（登場人物）を受け取れるようにする
+from actors.actor import Actor
 
 
 Speaker = Literal["player", "floria", "system"]
@@ -18,7 +21,6 @@ class CouncilState:
     speaker: Speaker = "player"
     mode: Mode = "idle"
     log: List[Dict[str, Any]] = field(default_factory=list)
-    # input はロジックでは使わないが、将来用に残しておく
     input: str = ""
 
 
@@ -27,18 +29,36 @@ class CouncilManager:
     会談システムの中核ロジック。
     - Streamlit の session_state をラップして状態を保持
     - 画面描画もここでまとめて行う
+    - ★ Actor クラス（player / floria / system など）を受け取って保持できる
     """
 
-    # ★ 空文字は禁止。必ずプレフィックスを付ける
-    SESSION_PREFIX = "council_"
+    SESSION_PREFIX = "council_"  # ★ 空文字は禁止。必ずプレフィックスを付ける
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        actors: Optional[Dict[Speaker, Actor]] = None,
+    ) -> None:
+        """
+        actors:
+            - "player" → プレイヤー Actor（任意）
+            - "floria" → フローリア Actor（任意）
+            - "system" → GM / フォルティナ用 Actor（任意）
+
+        まだ現在は「誰が接続されているか」を保持して表示するだけ。
+        実際に Actor.speak() を呼ぶのは、次のステップで実装する。
+        """
         self.state = st.session_state
         self._ensure_state()
 
+        # ★ Actor の接続情報（session_state ではなくインスタンス変数で持つ）
+        #   → Streamlit は Python オブジェクトも普通に保持できるが、
+        #     まずは「発注側」でだけ使うので、ここに抱えておく。
+        self.actors: Dict[Speaker, Actor] = actors or {}
+
     # ===== 状態管理ヘルパ =====
     def _key(self, name: str) -> str:
-        """session_state / widget 用のキーを一元生成"""
+        """session_state 用のキーを一元生成"""
         return f"{self.SESSION_PREFIX}{name}"
 
     def _ensure_state(self) -> None:
@@ -54,6 +74,25 @@ class CouncilManager:
 
     def _set(self, name: str, value: Any) -> None:
         self.state[self._key(name)] = value
+
+    # ===== Actor 管理（発注先） =====
+
+    def attach_actor(self, speaker: Speaker, actor: Actor) -> None:
+        """
+        後からでも Actor を差し込めるようにしておく。
+        例:
+            manager.attach_actor("floria", floria_actor)
+        """
+        self.actors[speaker] = actor
+
+    def get_actor(self, speaker: Speaker) -> Optional[Actor]:
+        """
+        話者ラベル → Actor を取得。
+        まだこのメソッドは使わないが、将来的に
+        「floria のターンになったら floria_actor.speak(...) を呼ぶ」
+        ための入り口になる。
+        """
+        return self.actors.get(speaker)
 
     # ===== API =====
     def reset(self) -> None:
@@ -123,6 +162,14 @@ class CouncilManager:
             st.write(f"話者: {speaker}")
             st.write(f"モード: {mode}")
 
+            # ★ どの話者に Actor がアタッチされているかも表示（デバッグ用）
+            if self.actors:
+                st.caption("接続中 Actor")
+                for spk, act in self.actors.items():
+                    st.write(f"- {spk}: {act.display_name} (id={act.id})")
+            else:
+                st.caption("接続中 Actor: なし")
+
         st.markdown("### プレイヤー入力")
 
         if mode != "ongoing":
@@ -134,10 +181,7 @@ class CouncilManager:
             return
 
         # --- 入力欄 ---
-        # ログの長さを key に混ぜることで、送信のたびに新しい widget key になり、
-        # テキストエリアの内容が自動的にクリアされる。
-        input_key = self._key(f"input_{len(log)}")
-
+        input_key = self._key("input")
         user_text: str = st.text_area(
             "あなたの発言：",
             key=input_key,
@@ -147,8 +191,13 @@ class CouncilManager:
         col_input_btn, _ = st.columns([1, 3])
         with col_input_btn:
             if st.button("送信", key=self._key("send")):
-                text = (user_text or "").strip()
+                text = (self.state.get(input_key) or "").strip()
                 if text:
                     self._append_log("player", text)
-                    # ★ widget の key が次回は変わるので、明示的にクリアする必要なし
+                    # ★ 送信後に入力欄をクリア
+                    self.state[input_key] = ""
+                    # ★ 将来的にはここで：
+                    #   - floria Actor に text を渡して次の返答をもらう
+                    #   - speaker を "floria" に切り替える
+                    #   などを行う予定。
                 st.rerun()
