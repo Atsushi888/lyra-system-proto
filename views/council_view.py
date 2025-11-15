@@ -21,7 +21,8 @@ class CouncilView:
         for idx, msg in enumerate(self.manager.conversation_log):
             role = msg['role']
             content = msg['content']
-            st.markdown(f"[{idx+1}] **{role}**: {content}")
+            # st.markdown(f"[{idx+1}] **{role}**: {content}")
+            st.markdown(msg["content"], unsafe_allow_html=True)
                 st.subheader("プレイヤー入力")
                 user_text = st.text_area("あなたの発言:", "")
 
