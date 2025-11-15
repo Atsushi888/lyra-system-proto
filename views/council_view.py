@@ -61,7 +61,6 @@ class CouncilView:
             st.write(f"ラウンド: {state.get('round', 1)}")
             st.write(f"話者: {state.get('speaker', 'player')}")
             st.write(f"モード: {state.get('mode', 'ongoing')}")
-            # 参加者一覧を明示
             st.write("参加者: プレイヤー / フローリア")
             last_speaker = state.get("last_speaker")
             if last_speaker:
@@ -75,16 +74,21 @@ class CouncilView:
             return
 
         user_key = "council_user_input"
-        user_text: str = st.text_area(
+
+        # テキストエリア（値を読むのはここだけ）
+        st.text_area(
             "あなたの発言：",
             key=user_key,
             placeholder="ここにフローリアへの発言を書いてください。",
         )
 
-        if st.button("送信", key="council_send"):
+        # 送信時のコールバック
+        def on_send() -> None:
             text = (st.session_state.get(user_key) or "").strip()
             if text:
                 mgr.proceed(text)
-                # 入力欄をクリア
-                st.session_state[user_key] = ""
-                st.rerun()
+            # ★ コールバック内なら session_state を安全に書き換えられる
+            st.session_state[user_key] = ""
+
+        # ボタンにコールバックを紐づけ
+        st.button("送信", key="council_send", on_click=on_send)
