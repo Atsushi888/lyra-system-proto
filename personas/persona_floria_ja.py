@@ -162,3 +162,12 @@ class Persona:
             })
 
         return messages
+
+    def get_persona() -> Persona:
+        """
+        旧バージョンとの互換用。
+        ゲームエンジンや他モジュールから従来どおり
+        `from personas.persona_floria_ja import get_persona`
+        で呼べるようにするためのラッパー。
+        """
+        return Persona()
