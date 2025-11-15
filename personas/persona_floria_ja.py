@@ -70,6 +70,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict
 
+class Persona:
 
 # ===== ここに、これまでのフローリア用システムプロンプトを入れる =====
 DEFAULT_SYSTEM_PROMPT = """
@@ -160,6 +161,16 @@ class Persona:
     model_params: Dict[str, Dict[str, Any]] = field(
         default_factory=lambda: DEFAULT_MODEL_PARAMS.copy()
     )
+
+    def __init__(self, system_prompt):
+        self.system_prompt = system_prompt
+
+    def build_messages(self, user_text):
+        # LLM へのメッセージ形式を構築する
+        return [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_text}
+        ]
 
 
 # ===== 互換用ファクトリ関数 =====
