@@ -1,132 +1,98 @@
 # council/council_manager.py
 
 from __future__ import annotations
-from typing import List, Dict, Any
-
-import streamlit as st
+from typing import List, Dict, Any, Optional
 
 from actors.actor import Actor
-from personas.persona_floria_ja import Persona, get_persona
+from personas.persona_floria_ja import Persona
 
 
 class CouncilManager:
     """
-    会談システムのロジック側（β）。
-    Actor ベースで応答を生成しつつ、状態はすべて session_state に保持する。
+    会談システムのロジック中核（β）。
+
+    - conversation_log: [{ "role": "player" | "floria" | "system", "content": "<br>付き本文" }, ...]
+    - state:
+        round        : 直近の発言番号（conversation_log の長さ）
+        speaker      : 次に話すべき話者（今は常に "player" 固定運用）
+        mode         : "ongoing" / "ended" など（今は "ongoing" のみ使用）
+        participants : 参加者リスト
+        last_speaker : 直近に発言した話者
     """
 
-    PREFIX = "council_"  # session_state 用キーのプレフィックス
-
     def __init__(self) -> None:
-        self.ss = st.session_state
-        self._ensure_state()
+        # 会話ログ
+        self.conversation_log: List[Dict[str, str]] = []
 
-        # フローリアのペルソナを取得
-        floria_persona: Persona = get_persona()
-
-        # Actor インスタンス（LLM ラッパ）
-        # Actor 自体は毎フレーム作り直しても、状態は session_state 側で持つので OK
+        # 参加 Actor（とりあえずフローリアだけ）
         self.actors: Dict[str, Actor] = {
-            "floria": Actor("フローリア", floria_persona)
+            "floria": Actor("フローリア", Persona()),
         }
 
-    # ===== 内部ヘルパ =====
-    def _key(self, name: str) -> str:
-        return f"{self.PREFIX}{name}"
-
-    def _ensure_state(self) -> None:
-        """初期状態がなければ作る。"""
-        if self._key("log") not in self.ss:
-            self.ss[self._key("log")] = []  # List[Dict[str, str]]
-        if self._key("state") not in self.ss:
-            self.ss[self._key("state")] = {
-                "round": 1,
-                "speaker": "player",   # 現在のターンの話者（今は player 固定）
-                "mode": "ongoing",     # "ongoing" / "ended" など将来拡張
-            }
-
-    # プロパティで見やすく
-    @property
-    def conversation_log(self) -> List[Dict[str, str]]:
-        return self.ss[self._key("log")]
-
-    @property
-    def state(self) -> Dict[str, Any]:
-        return self.ss[self._key("state")]
-
-    # ===== 公開 API =====
-    def reset(self) -> None:
-        """会談をリセットして最初からやり直し。"""
-        self.ss[self._key("log")] = []
-        self.ss[self._key("state")] = {
-            "round": 1,
+        # 会談状態
+        self.state: Dict[str, Any] = {
+            "round": 0,                      # ★ 発言数と一致させる
             "speaker": "player",
             "mode": "ongoing",
+            "participants": ["player", "floria"],
+            "last_speaker": None,
         }
+
+    # ===== 基本操作 =====
+
+    def reset(self) -> None:
+        """会談を最初からやり直す。"""
+        self.conversation_log.clear()
+        self.state.update(
+            {
+                "round": 0,
+                "speaker": "player",
+                "mode": "ongoing",
+                "participants": ["player", "floria"],
+                "last_speaker": None,
+            }
+        )
 
     def _append_log(self, role: str, content: str) -> None:
         """
-        会話ログに 1 件追加。
-        改行は Markdown で効くように "  \n" に変換する。
+        ログに 1 発言追加し、round / last_speaker を更新する。
+        改行は <br> に変換しておく（表示側で markdown + unsafe_allow_html を使う前提）。
         """
-        safe_text = content.replace("\n", "  \n")
+        safe_text = content.replace("\n", "<br>")
         self.conversation_log.append(
             {
                 "role": role,
                 "content": safe_text,
             }
         )
+        # 発言番号は conversation_log の長さと一致させる
+        self.state["last_speaker"] = role
+        self.state["round"] = len(self.conversation_log)
 
-    def proceed(self, user_text: str) -> str:
+    # ===== メイン処理 =====
+
+    def proceed(self, user_text: str) -> Optional[str]:
         """
-        プレイヤー発言 → フローリア応答までをまとめて処理する。
-        戻り値: フローリアの生返答（整形前のテキスト）
+        プレイヤーの発言を受け取り、フローリアの返答までをまとめて処理する。
+
+        戻り値: フローリアの返答（Actor が存在しなければ None）
         """
+        user_text = user_text or ""
+        user_text = user_text.strip()
+        if not user_text:
+            return None
 
-        if self.state.get("mode") != "ongoing":
-            # 将来、会談終了後などに備えて一応ガード
-            return ""
-
-        # 1) プレイヤー発言をログに積む
+        # 1) プレイヤー発言をログに追加
         self._append_log("player", user_text)
 
-        # 2) フローリア（Actor）に会話ログを渡して返事をもらう
-        ai_reply = ""
+        # 2) フローリア Actor による応答生成
         actor = self.actors.get("floria")
+        ai_reply: Optional[str] = None
         if actor is not None:
-            ai_reply = actor.speak(self._build_llm_history())
-
-            # 3) フローリアの返答もログに積む
+            ai_reply = actor.speak(self.conversation_log) or ""
             self._append_log("floria", ai_reply)
 
-        # 4) ラウンドを進める
-        self.state["round"] = int(self.state.get("round", 1)) + 1
-
-        # 「話者が player 一人だけに見える」問題への、とりあえずの軽い対処として
-        # 「最後に発言した人」を記録しておく（今はフローリア）
-        self.state["last_speaker"] = "floria"
+        # 3) 次のターンの話者はプレイヤーに戻しておく
+        self.state["speaker"] = "player"
 
         return ai_reply
-
-    # ===== LLM 用履歴変換 =====
-    def _build_llm_history(self) -> List[Dict[str, str]]:
-        """
-        Actor.speak() に渡すための LLM 風 history を構築する。
-        今は簡易的に:
-          - player → {"role": "user", "content": ...}
-          - floria → {"role": "assistant", "content": ...}
-        """
-        history: List[Dict[str, str]] = []
-        for entry in self.conversation_log:
-            role = entry.get("role")
-            text = entry.get("content", "").replace("  \n", "\n")  # LLM 向けに戻す
-
-            if role == "player":
-                history.append({"role": "user", "content": text})
-            elif role == "floria":
-                history.append({"role": "assistant", "content": text})
-            else:
-                # 将来 system / 他参加者など
-                history.append({"role": "system", "content": text})
-
-        return history
