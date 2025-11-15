@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import List, Dict
 
-from llm_router import call_gpt4o
+from llm.llm_router import call_gpt4o
 
 
 class Actor:
