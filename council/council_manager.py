@@ -30,8 +30,11 @@ class CouncilManager:
 
     # ---- 会話ログ操作 ----
     def _append_log(self, role: str, content: str):
-        self.conversation_log.append({"role": role, "content": content})
-
+        self.conversation_log.append({
+            "role": "player",
+            "content": safe_text
+        })    
+    
     # ---- リセット ----
     def reset(self):
         self.conversation_log.clear()
@@ -43,6 +46,7 @@ class CouncilManager:
 
     # ---- メイン処理 ----
     def proceed(self, user_text: str):
+        safe_text = user_text.replace("\n", "<br>")
         """
         プレイヤー発言 → AI応答までをまとめて処理する。
         """
