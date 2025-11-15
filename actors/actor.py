@@ -13,7 +13,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY が設定されていないため Actor を初期化できません。")
 
-# メインで使うモデル（未設定なら gpt-4o）
+# メインモデル（未設定なら gpt-4o）
 OPENAI_MAIN_MODEL = os.getenv("OPENAI_MAIN_MODEL", "gpt-4o")
 
 _client = OpenAI(api_key=OPENAI_API_KEY)
@@ -57,10 +57,10 @@ def _call_gpt4o(
 
 class Actor:
     """
-    会談システム用の「話し手」クラス。
+    会談システム用「話し手」クラス。
 
     - name: 画面表示用の名前（例: "フローリア"）
-    - persona: 将来的に system プロンプト生成などに使うため保持
+    - persona: いまは未使用だが、将来 system プロンプト生成等に使うため保持
     """
 
     def __init__(self, name: str, persona: object | None = None) -> None:
@@ -82,7 +82,7 @@ class Actor:
         # LLM には <br> ではなく改行で渡す
         last_user_text = last_user_text.replace("<br>", "\n")
 
-        # ★ とりあえず persona はまだ使わず、固定の system プロンプト
+        # ひとまず persona はまだ使わず、固定の system プロンプト
         system_prompt = (
             "あなたは『フローリア』という名の、水と氷の精霊の乙女です。"
             "プレイヤーの恋人として、優しく穏やかに日本語で会話してください。\n"
