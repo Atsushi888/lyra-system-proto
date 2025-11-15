@@ -46,6 +46,27 @@ class Actor:
                 break
 
         messages = self.persona.build_messages(user_text)
-        reply_text, _usage, _meta = self.router.call_gpt4o(messages)
-
+        
+        result = self.router.call_gpt4o(messages)
+        
+        # 戻り値の形に応じて柔軟に受け取る
+        reply_text = None
+        _usage = None
+        _meta = {}
+        
+        if isinstance(result, tuple):
+            if len(result) == 3:
+                reply_text, _usage, _meta = result
+            elif len(result) == 2:
+                reply_text, _usage = result
+                _meta = {}
+            elif len(result) == 1:
+                reply_text = result[0]
+            else:
+                # それ以上は想定外だけど、とりあえず先頭だけ採用
+                reply_text = result[0]
+        else:
+            # ただの文字列やオブジェクトが返ってきた場合
+            reply_text = result
+        
         return reply_text
