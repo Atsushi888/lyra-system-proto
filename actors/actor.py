@@ -8,11 +8,12 @@ from openai import OpenAI
 
 
 # ==== OpenAI クライアント設定 ====
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY が設定されていないため Actor を初期化できません。")
 
-# メインモデル（なければ gpt-4o を使う）
+# メインで使うモデル（未設定なら gpt-4o）
 OPENAI_MAIN_MODEL = os.getenv("OPENAI_MAIN_MODEL", "gpt-4o")
 
 _client = OpenAI(api_key=OPENAI_API_KEY)
@@ -24,8 +25,8 @@ def _call_gpt4o(
     max_tokens: int = 600,
 ) -> tuple[str, Dict[str, Any]]:
     """
-    会談用のシンプルな GPT 呼び出しヘルパ。
-    返り値: (text, meta)
+    会談用のシンプルな GPT 呼び出し。
+    戻り値: (text, meta)
     """
     resp = _client.chat.completions.create(
         model=OPENAI_MAIN_MODEL,
@@ -33,10 +34,11 @@ def _call_gpt4o(
         temperature=temperature,
         max_tokens=max_tokens,
     )
+
     text = resp.choices[0].message.content or ""
+
     usage: Dict[str, Any] = {}
     try:
-        # usage があればメタに入れておく（無くても動く）
         usage = {
             "prompt_tokens": resp.usage.prompt_tokens,
             "completion_tokens": resp.usage.completion_tokens,
@@ -45,7 +47,7 @@ def _call_gpt4o(
     except Exception:
         pass
 
-    meta = {
+    meta: Dict[str, Any] = {
         "route": "gpt",
         "model_name": OPENAI_MAIN_MODEL,
         "usage": usage,
@@ -55,21 +57,21 @@ def _call_gpt4o(
 
 class Actor:
     """
-    会談システム用のシンプルな「話し手」クラス。
+    会談システム用の「話し手」クラス。
 
     - name: 画面表示用の名前（例: "フローリア"）
-    - persona: いずれ system プロンプト生成に使う前提で保持しておく
+    - persona: 将来的に system プロンプト生成などに使うため保持
     """
 
     def __init__(self, name: str, persona: object | None = None) -> None:
         self.name = name
         self.persona = persona
 
-    # --- LLM に渡す messages を組み立て ---
+    # ---- LLM に投げるメッセージを組み立て ----
     def _build_messages(self, conversation_log: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
-        いまのところ「直近のプレイヤー発言」だけを user に渡す。
-        前後文脈などは、後でちゃんと設計するときに拡張する。
+        いまは「直近のプレイヤー発言」だけを user に渡す簡易版。
+        前後文脈はあとで拡張する。
         """
         last_user_text = ""
         for m in reversed(conversation_log):
@@ -77,15 +79,15 @@ class Actor:
                 last_user_text = m.get("content", "")
                 break
 
-        # HTML の <br> を改行に戻してから LLM に渡す
+        # LLM には <br> ではなく改行で渡す
         last_user_text = last_user_text.replace("<br>", "\n")
 
-        # ★ persona 未使用だけど、とりあえず直書き system プロンプト
+        # ★ とりあえず persona はまだ使わず、固定の system プロンプト
         system_prompt = (
             "あなたは『フローリア』という名の、水と氷の精霊の乙女です。"
-            "プレイヤーの恋人として、優しく、穏やかに、日本語で会話してください。\n"
+            "プレイヤーの恋人として、優しく穏やかに日本語で会話してください。\n"
             "一人称は「わたし」。\n"
-            "会話はロマンチックで感情豊かに。ただし露骨な性描写は用いず、"
+            "会話はロマンチックで感情豊かに。ただし露骨な性描写は避け、"
             "ソフトで甘い雰囲気を大事にしてください。"
         )
 
@@ -98,7 +100,7 @@ class Actor:
         ]
         return messages
 
-    # --- 会話を 1 ターン進める ---
+    # ---- 1ターン発言 ----
     def speak(self, conversation_log: List[Dict[str, str]]) -> str:
         messages = self._build_messages(conversation_log)
         text, _meta = _call_gpt4o(
