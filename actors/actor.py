@@ -6,6 +6,10 @@ import os
 
 from openai import OpenAI
 
+from personas.persona_floria_ja import Persona  # 実際の型名はそのままでOK
+from llm.llm_router import LLMRouter
+
+
 
 # ==== OpenAI クライアント設定 ====
 
@@ -62,10 +66,11 @@ class Actor:
     - name: 画面表示用の名前（例: "フローリア"）
     - persona: いまは未使用だが、将来 system プロンプト生成等に使うため保持
     """
-
-    def __init__(self, name: str, persona: object | None = None) -> None:
+    def __init__(self, name: str, persona: Persona) -> None:
         self.name = name
         self.persona = persona
+        # 各 Actor は自分専用の LLMRouter を持つ
+        self.router = LLMRouter()
 
     # ---- LLM に投げるメッセージを組み立て ----
     def _build_messages(self, conversation_log: List[Dict[str, str]]) -> List[Dict[str, str]]:
