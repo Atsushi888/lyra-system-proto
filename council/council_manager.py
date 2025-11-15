@@ -1,7 +1,7 @@
 # council/council_manager.py
 
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from actors.actor import Actor
 from personas.persona_floria_ja import Persona
@@ -9,43 +9,44 @@ from personas.persona_floria_ja import Persona
 
 class CouncilManager:
     """
-    会談システムのロジック中核（β）。
-
-    - conversation_log: [{ "role": "player" | "floria" | "system", "content": "<br>付き本文" }, ...]
-    - state:
-        round        : 直近の発言番号（conversation_log の長さ）
-        speaker      : 次に話すべき話者（今は常に "player" 固定運用）
-        mode         : "ongoing" / "ended" など（今は "ongoing" のみ使用）
-        participants : 参加者リスト
-        last_speaker : 直近に発言した話者
+    会談システムのロジック側（β）。
+    - conversation_log: 画面に出すログ
+    - state: ラウンド数や参加者などのメタ情報
     """
 
     def __init__(self) -> None:
-        # 会話ログ
+        # 会話ログ：List[{role:"player"|"floria", content:"..."}]
         self.conversation_log: List[Dict[str, str]] = []
 
-        # 参加 Actor（とりあえずフローリアだけ）
+        # ひとまずフローリア1人だけ
         self.actors: Dict[str, Actor] = {
-            "floria": Actor("フローリア", Persona()),
+            "floria": Actor("フローリア", Persona())
         }
 
-        # 会談状態
         self.state: Dict[str, Any] = {
-            "round": 0,                      # ★ 発言数と一致させる
+            "round": 1,
             "speaker": "player",
             "mode": "ongoing",
             "participants": ["player", "floria"],
             "last_speaker": None,
         }
 
-    # ===== 基本操作 =====
+    # ---- 内部ヘルパ ----
+    def _append_log(self, role: str, content: str) -> None:
+        # HTML 表示用に改行を <br> に変換
+        safe_text = content.replace("\n", "<br>")
+        self.conversation_log.append({"role": role, "content": safe_text})
+        # ラウンド番号は「発言の番号」と一致させる
+        self.state["round"] = len(self.conversation_log)
+        self.state["last_speaker"] = role
+        self.state["speaker"] = "player" if role != "player" else "floria"
 
+    # ---- 公開 API ----
     def reset(self) -> None:
-        """会談を最初からやり直す。"""
         self.conversation_log.clear()
         self.state.update(
             {
-                "round": 0,
+                "round": 1,
                 "speaker": "player",
                 "mode": "ongoing",
                 "participants": ["player", "floria"],
@@ -53,46 +54,30 @@ class CouncilManager:
             }
         )
 
-    def _append_log(self, role: str, content: str) -> None:
+    def proceed(self, user_text: str) -> str:
         """
-        ログに 1 発言追加し、round / last_speaker を更新する。
-        改行は <br> に変換しておく（表示側で markdown + unsafe_allow_html を使う前提）。
+        プレイヤー発言 → フローリア応答 までをまとめて処理。
+        戻り値はフローリアの発言テキスト。
         """
-        safe_text = content.replace("\n", "<br>")
-        self.conversation_log.append(
-            {
-                "role": role,
-                "content": safe_text,
-            }
-        )
-        # 発言番号は conversation_log の長さと一致させる
-        self.state["last_speaker"] = role
-        self.state["round"] = len(self.conversation_log)
-
-    # ===== メイン処理 =====
-
-    def proceed(self, user_text: str) -> Optional[str]:
-        """
-        プレイヤーの発言を受け取り、フローリアの返答までをまとめて処理する。
-
-        戻り値: フローリアの返答（Actor が存在しなければ None）
-        """
-        user_text = user_text or ""
-        user_text = user_text.strip()
+        user_text = (user_text or "").strip()
         if not user_text:
-            return None
+            return ""
 
-        # 1) プレイヤー発言をログに追加
+        # プレイヤー発言をログへ
         self._append_log("player", user_text)
 
-        # 2) フローリア Actor による応答生成
+        # フローリアの番
         actor = self.actors.get("floria")
-        ai_reply: Optional[str] = None
+        ai_reply = ""
         if actor is not None:
-            ai_reply = actor.speak(self.conversation_log) or ""
+            ai_reply = actor.speak(self.conversation_log)
             self._append_log("floria", ai_reply)
 
-        # 3) 次のターンの話者はプレイヤーに戻しておく
-        self.state["speaker"] = "player"
-
         return ai_reply
+
+    # ---- View 向けのゲッター ----
+    def get_log(self) -> List[Dict[str, str]]:
+        return list(self.conversation_log)
+
+    def get_state(self) -> Dict[str, Any]:
+        return dict(self.state)
