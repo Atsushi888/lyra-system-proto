@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import List, Dict, Any
 
 from actors.actor import Actor
-from personas.persona_floria_ja import Persona
+from personas.persona_floria_ja import Persona  # いまは未使用でも OK
 
 
 class CouncilManager:
@@ -18,10 +18,10 @@ class CouncilManager:
         self.conversation_log: List[Dict[str, str]] = []
 
         # ひとまずフローリア AI 一人だけ
-        # ★ persona は渡しても渡さなくても動くが、ここでは渡さない形にしておく
+        # Persona() はまだ使っていないが、将来の拡張用として import だけしてある
         self.actors: Dict[str, Actor] = {
             "floria": Actor("フローリア")
-            # Persona() を渡したい場合は: Actor("フローリア", Persona())
+            # Persona を渡したくなったら: Actor("フローリア", Persona())
         }
 
         self.state: Dict[str, Any] = {
@@ -43,6 +43,11 @@ class CouncilManager:
             }
         )
         self.state["last_speaker"] = role
+
+    # ---- 公開 API：ログ取得 ----
+    def get_log(self) -> List[Dict[str, str]]:
+        """View 側から参照するためのログ取得メソッド"""
+        return list(self.conversation_log)
 
     # ---- リセット ----
     def reset(self) -> None:
@@ -75,7 +80,7 @@ class CouncilManager:
             ai_reply = actor.speak(self.conversation_log)
             self._append_log("floria", ai_reply)
 
-        # ラウンド更新（プレイヤーとフローリアで 1 ラウンド進めるイメージ）
+        # ラウンド更新（player→floria までで 1 ラウンド進むイメージ）
         self.state["round"] += 1
         self.state["speaker"] = "player"
 
