@@ -4,88 +4,81 @@ from __future__ import annotations
 from typing import List, Dict, Any
 
 from actors.actor import Actor
-from personas.persona_floria_ja import Persona  # いまは未使用でも OK
+from personas.persona_floria_ja import Persona
 
 
 class CouncilManager:
     """
     会談システムのロジック側（β）。
-    Actor ベースで応答を生成する最小構成。
+    - conversation_log: 会話の生ログ（プレイヤー/フローリア両方）
+    - round は「発言の総数」として len(conversation_log) から毎回計算する
     """
 
     def __init__(self) -> None:
-        # 会話ログ：List[{role:"", content:""}]
+        # 会話ログ：List[{"role": "...", "content": "..."}]
         self.conversation_log: List[Dict[str, str]] = []
 
-        # ひとまずフローリア AI 一人だけ
-        # Persona() はまだ使っていないが、将来の拡張用として import だけしてある
+        # いまはフローリア AI だけ
         self.actors: Dict[str, Actor] = {
-            "floria": Actor("フローリア")
-            # Persona を渡したくなったら: Actor("フローリア", Persona())
+            "floria": Actor("フローリア", Persona())
         }
 
+        # 状態（round は持たず、都度計算）
         self.state: Dict[str, Any] = {
-            "round": 1,
-            "speaker": "player",   # 現在の話者（player / floria）
-            "mode": "ongoing",     # idle / ongoing / ended
+            "mode": "ongoing",
             "participants": ["player", "floria"],
             "last_speaker": None,
         }
 
-    # ---- 会話ログ操作 ----
+    # ===== 内部ヘルパ =====
     def _append_log(self, role: str, content: str) -> None:
-        """内部用：ログに1件追加（改行 → <br> に変換して保存）"""
-        safe_text = content.replace("\n", "<br>")
-        self.conversation_log.append(
-            {
-                "role": role,
-                "content": safe_text,
-            }
-        )
+        """ログに 1 発言を追加。改行は <br> に変換して保存。"""
+        safe = (content or "").replace("\n", "<br>")
+        self.conversation_log.append({"role": role, "content": safe})
         self.state["last_speaker"] = role
 
-    # ---- 公開 API：ログ取得 ----
+    # ===== 外向け API =====
+    def reset(self) -> None:
+        """会談を最初からやり直す。"""
+        self.conversation_log.clear()
+        self.state["mode"] = "ongoing"
+        self.state["last_speaker"] = None
+
     def get_log(self) -> List[Dict[str, str]]:
-        """View 側から参照するためのログ取得メソッド"""
+        """会談ログのコピーを返す（表示用）。"""
         return list(self.conversation_log)
 
-    # ---- リセット ----
-    def reset(self) -> None:
-        self.conversation_log.clear()
-        self.state.update(
-            {
-                "round": 1,
-                "speaker": "player",
-                "mode": "ongoing",
-                "last_speaker": None,
-            }
-        )
+    def get_status(self) -> Dict[str, Any]:
+        """
+        サイドバー表示用のステータス。
+        round は「これからプレイヤーが行う発言の番号」として計算する。
+        """
+        # すでに終わった発言数 + 1 = 次の自分の発言番号
+        round_ = len(self.conversation_log) + 1
 
-    # ---- メイン処理 ----
+        return {
+            "round": round_,
+            "speaker": "player",  # いまは常にプレイヤーのターン開始とみなす
+            "mode": self.state.get("mode", "ongoing"),
+            "participants": self.state.get("participants", ["player", "floria"]),
+            "last_speaker": self.state.get("last_speaker"),
+        }
+
     def proceed(self, user_text: str) -> str:
         """
-        プレイヤー発言 → フローリア応答までをまとめて処理。
-        戻り値: フローリアの返答テキスト
+        プレイヤーの発言を受け取り、
+        - ログに追加
+        - フローリアに conversation_log 丸ごと渡して返事を生成
+        - 返事もログに追加
+        を行う。
         """
-        if not user_text.strip():
-            return ""
-
         # プレイヤー発言
         self._append_log("player", user_text)
 
-        # 返事を生成する AI（いまはフローリア固定）
+        reply = ""
         actor = self.actors.get("floria")
-        ai_reply = ""
-        if actor:
-            ai_reply = actor.speak(self.conversation_log)
-            self._append_log("floria", ai_reply)
+        if actor is not None:
+            reply = actor.speak(self.conversation_log)
+            self._append_log("floria", reply)
 
-        # ラウンド更新（player→floria までで 1 ラウンド進むイメージ）
-        self.state["round"] += 1
-        self.state["speaker"] = "player"
-
-        return ai_reply
-
-    # ---- ステータス取得（view から参照用）----
-    def get_status(self) -> Dict[str, Any]:
-        return dict(self.state)
+        return reply
