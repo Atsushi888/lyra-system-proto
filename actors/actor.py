@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from actors.Judge_ai2 import JudgeAI2
+from actors.judge_ai2 import JudgeAI2
 from typing import List, Dict, Any
 
 from personas.persona_floria_ja import Persona
