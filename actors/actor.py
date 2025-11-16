@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from actors.Judge_ai2 import JudgeAI2
 from typing import List, Dict, Any
 
 from personas.persona_floria_ja import Persona
@@ -24,6 +25,7 @@ class Actor:
         persona: Persona,
         router: LLMRouter | None = None,
     ) -> None:
+        self.judge2 = JudgeAI2()
         self.name = name
         self.persona = persona
         # router 引数が省略された場合は、自前でインスタンスを作る
@@ -69,4 +71,5 @@ class Actor:
             # ただの文字列やオブジェクトが返ってきた場合
             reply_text = result
         
-        return reply_text
+        judged = self.judge2.process_single_result(result)
+        return judged.get("text", "")
