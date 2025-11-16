@@ -72,4 +72,4 @@ class Actor:
             reply_text = result
         
         judged = self.judge2.process_single_result(result)
-        return judged.get("text", "")
+        return reply_text
