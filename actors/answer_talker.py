@@ -1,36 +1,54 @@
 # actors/answer_talker.py
 
 from __future__ import annotations
+from typing import Dict, Any
 
-from typing import Any, Dict
+import streamlit as st
+
+from actors.models_ai import ModelsAI   # ← 修正ポイント
 
 
 class AnswerTalker:
     """
     回答生成パイプラインの中核ベースクラス。
 
-    将来的に:
-      - models: 各AIからの回答収集
-      - judge:  JudgeAI2 による選別
-      - composer: ComposerAI による整形
-    をまとめて扱う。
-
-    現段階では:
-      - llm_meta の器だけ持つ
-      - speak() は何もせず reply_text をそのまま返す
+    現段階：
+      - llm_meta の器だけ保持
+      - speak は reply_text をそのまま返す
+      - ModelsAI から「AIごとの回答一覧」を集める
     """
 
     def __init__(self) -> None:
-        # 将来ここに llm_meta を正式に載せていく
-        self.llm_meta: Dict[str, Any] = {}
+
+        llm_meta = st.session_state.get("llm_meta")
+
+        if not isinstance(llm_meta, dict):
+            llm_meta = {
+                "models": {},
+                "judge": {},
+                "composer": {},
+            }
+
+        self.llm_meta: Dict[str, Any] = llm_meta
+        st.session_state["llm_meta"] = self.llm_meta
+
+        # Models → ModelsAI に変更
+        self.models_ai = ModelsAI()
+
+    def run_models(self, user_text: str) -> None:
+        """ModelsAI を走らせて llm_meta['models'] を更新する"""
+
+        if not user_text:
+            return
+
+        results = self.models_ai.collect(user_text)
+
+        if not isinstance(self.llm_meta.get("models"), dict):
+            self.llm_meta["models"] = {}
+
+        self.llm_meta["models"] = results
+        st.session_state["llm_meta"] = self.llm_meta
 
     def speak(self, reply_text: str, raw_result: Any | None = None) -> str:
-        """
-        将来的には:
-          - raw_result / llm_meta をもとに
-            models → judge → composer を駆動して最終回答を返す。
-
-        現状:
-          - 何もせず、受け取った reply_text をそのまま返す。
-        """
+        """今はまだ reply_text をそのまま返すだけ"""
         return reply_text
