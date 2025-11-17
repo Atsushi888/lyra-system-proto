@@ -1,49 +1,94 @@
 # views/answertalker_view.py
 
+from __future__ import annotations
+
+from typing import Optional, Dict, Any
+
 import streamlit as st
-from actors.answer_talker import AnswerTalker
+
+from actors.actor import Actor
 
 
 class AnswerTalkerView:
-    """AnswerTalker 動作確認用の裏画面。"""
+    """
+    AnswerTalker の動作確認用ビュー（閲覧専用）。
 
-    def __init__(self) -> None:
-        # ここで AnswerTalker インスタンスを持つ
-        self.talker = AnswerTalker()
+    - Actor インスタンスを受け取り、その中の AnswerTalker に紐づく llm_meta を“見るだけ”
+    - 自分から AnswerTalker.run_models() を呼んだりはしない
+    - llm_meta["models"] に入っている各AIの回答を一覧表示する
+    """
+
+    def __init__(self, actor: Actor) -> None:
+        self.actor = actor  # いまは未使用だが、将来 Actor 情報を表示したいときのために保持
 
     def render(self) -> None:
-        st.title("AnswerTalker Backstage")
+        st.title("AnswerTalker / ModelsAI デバッグビュー（閲覧専用）")
 
-        st.markdown("#### テスト用入力")
-        user_text = st.text_input(
-            "プレイヤー発言（テスト用）",
-            value="",
-            key="answertalker_input",
+        st.markdown(
+            "この画面では、Actor に紐づく AnswerTalker / ModelsAI が収集した "
+            "`llm_meta['models']` の内容を参照できます。"
+        )
+        st.markdown(
+            "> ※ この画面からは AnswerTalker.run_models() は実行しません。"
+            " 会談システムや別の処理でパイプラインを走らせたあとに開いてください。"
         )
 
-        if st.button("AnswerTalker を実行", key="answertalker_run"):
-            if user_text.strip():
-                self.talker.run_models(user_text)
-                st.success("AnswerTalker を実行しました。")
-
-        # ここから下は「中身を覗き込みすぎない」表示
-        llm_meta = self.talker.llm_meta
-
         st.markdown("---")
-        st.markdown("#### llm_meta の状態（概要のみ）")
+        st.markdown("### llm_meta に登録された AI 回答一覧（models）")
 
-        # 初期化されているかどうかだけ表示
-        st.write("llm_meta 初期化済み:", isinstance(llm_meta, dict))
+        llm_meta: Optional[Dict[str, Any]] = st.session_state.get("llm_meta")
+        if not isinstance(llm_meta, dict):
+            st.info(
+                "llm_meta がまだ初期化されていません。\n\n"
+                "- 会談システムや AnswerTalker を利用する処理を一度実行してから、\n"
+                "- 再度この画面を開いてください。"
+            )
+            return
 
-        # models の件数だけ軽く見る（中身は表示しない）
-        models = llm_meta.get("models") if isinstance(llm_meta, dict) else None
-        if isinstance(models, dict):
-            st.write("models に登録されている件数:", len(models))
-        else:
-            st.write("models はまだ dict として初期化されていません。")
+        models = llm_meta.get("models")
+        if not isinstance(models, dict) or not models:
+            st.info(
+                "llm_meta['models'] に情報がありません。\n\n"
+                "- AnswerTalker.run_models() がどこかでまだ実行されていないか、\n"
+                "- もしくはモデルから有効な回答が返ってきていない可能性があります。"
+            )
+            return
+
+        # ★ 各 AI の回答をシンプルに表示（json.dumps などは使わない）
+        for model_name, info in models.items():
+            st.markdown(f"#### モデル: `{model_name}`")
+
+            if isinstance(info, dict):
+                status = info.get("status", "unknown")
+                text = info.get("text", "")
+                st.write(f"- status: `{status}`")
+
+                if text:
+                    st.write("**回答テキスト:**")
+                    # 長すぎるときは少しだけ切って表示
+                    if len(text) > 400:
+                        st.text_area(
+                            "text（先頭400文字）",
+                            value=text[:400] + " ...",
+                            height=120,
+                            key=f"models_text_{model_name}",
+                        )
+                    else:
+                        st.text_area(
+                            "text",
+                            value=text,
+                            height=120,
+                            key=f"models_text_{model_name}",
+                        )
+                else:
+                    st.write("（text フィールドがありません）")
+            else:
+                st.write("想定外の形式です:", info)
+
+            st.markdown("---")
 
 
-def render() -> None:
-    """app.py などから呼ぶ用のラッパ。"""
-    view = AnswerTalkerView()
+# ModeSwitcher などから呼びやすくするラッパ
+def render(actor: Actor) -> None:
+    view = AnswerTalkerView(actor)
     view.render()
