@@ -19,4 +19,5 @@ class ComposerAI:
 
     # いずれ:
     def compose(self, judge_result: Dict[str, Any]) -> str:
+        pass
     #     ...
