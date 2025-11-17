@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Protocol
+from typing import Dict, Protocol, Any, Callable
 import streamlit as st
 from auth.roles import Role
 
@@ -8,7 +8,7 @@ from views.user_view import UserView
 from views.backstage_view import BackstageView
 from views.private_view import PrivateView
 from views.council_view import CouncilView
-from views.answertalker_view import AnswerTalkerView   # ★ 追加
+from council_ai import create_answertalker_view   # ★ 追加
 
 
 class View(Protocol):
@@ -27,7 +27,7 @@ class ModeSwitcher:
         "BACKSTAGE":     "🧠 AIリプライシステム",
         "PRIVATE":       "⚙️ （※非公開※）",
         "COUNCIL":       "🗣 会談システム（β）",
-        "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",   # ★ 追加
+        "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",
     }
 
     def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
@@ -35,41 +35,40 @@ class ModeSwitcher:
         self.session_key = session_key
 
         # 内蔵ルーティング
-        self.routes: Dict[str, Dict] = {
+        # view には「インスタンス」か「ビューを返す関数(callable)」のどちらかを入れてよい。
+        self.routes: Dict[str, Dict[str, Any]] = {
             "PLAY": {
                 "label": self.LABELS["PLAY"],
-                "view": GameView(),
-                "min_role": Role.USER
+                "view": GameView(),              # インスタンス
+                "min_role": Role.USER,
             },
             "USER": {
                 "label": self.LABELS["USER"],
                 "view": UserView(),
-                "min_role": Role.USER
+                "min_role": Role.USER,
             },
             "BACKSTAGE": {
                 "label": self.LABELS["BACKSTAGE"],
                 "view": BackstageView(),
-                "min_role": Role.ADMIN
+                "min_role": Role.ADMIN,
             },
             "PRIVATE": {
                 "label": self.LABELS["PRIVATE"],
                 "view": PrivateView(),
-                "min_role": Role.ADMIN
+                "min_role": Role.ADMIN,
             },
             "COUNCIL": {
                 "label": self.LABELS["COUNCIL"],
                 "view": CouncilView(),
-                "min_role": Role.ADMIN
+                "min_role": Role.ADMIN,
             },
-            # ★ AnswerTalkerページ追加
             "ANSWERTALKER": {
                 "label": self.LABELS["ANSWERTALKER"],
-                "view": AnswerTalkerView(),
-                "min_role": Role.ADMIN
+                "view": create_answertalker_view,   # ★ ファクトリ関数
+                "min_role": Role.ADMIN,
             },
         }
 
-        # 初期モード設定
         if self.session_key not in st.session_state:
             st.session_state[self.session_key] = self.default_key
 
@@ -84,19 +83,16 @@ class ModeSwitcher:
     def render(self, user_role: Role) -> None:
         st.sidebar.markdown("## 画面切替")
 
-        # 権限により表示可能なキーを決定
         visible_keys = [
             k for k, cfg in self.routes.items()
             if user_role >= cfg.get("min_role", Role.USER)
         ]
 
-        # 現在のキーが表示可能かチェック
         cur = self.current
         if cur not in visible_keys and visible_keys:
             cur = visible_keys[0]
             st.session_state[self.session_key] = cur
 
-        # ボタン列の描画
         for key in visible_keys:
             label = self.routes[key]["label"]
             disabled = (key == cur)
@@ -104,14 +100,22 @@ class ModeSwitcher:
                 st.session_state[self.session_key] = key
                 st.rerun()
 
-        # 現在表示中
         if visible_keys:
             st.sidebar.caption(f"現在: {self.routes[cur]['label']}")
         else:
             st.sidebar.warning("アクセス可能な画面がありません。")
 
-        # 選択された画面の描画
-        if visible_keys:
-            st.subheader(self.routes[cur]["label"])
-            view = self.routes[cur]["view"]
-            view.render()
+        if not visible_keys:
+            return
+
+        st.subheader(self.routes[cur]["label"])
+
+        view_or_factory = self.routes[cur]["view"]
+
+        # ★ インスタンス or ファクトリ関数の両対応
+        if callable(view_or_factory):
+            view: View = view_or_factory()
+        else:
+            view: View = view_or_factory
+
+        view.render()
