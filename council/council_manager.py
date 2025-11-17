@@ -1,10 +1,44 @@
-# council/council_manager.py
+# council_manager.py
 
 from __future__ import annotations
-from typing import List, Dict, Any
+from typing import Optional
+
+import streamlit as st
 
 from actors.actor import Actor
 from personas.persona_floria_ja import Persona
+from llm.llm_router import LLMRouter
+from views.answertalker_view import AnswerTalkerView
+
+
+def get_or_create_council_actor() -> Actor:
+    """
+    会談システム用の Actor を1つだけ生成・再利用する。
+    （CouncilView で使っている Actor と揃えてもOK）
+    """
+    actor_key = "council_actor"
+
+    if actor_key not in st.session_state:
+        # ここは実際に CouncilView で使っているのと
+        # 同じ初期化処理に揃えるのがベスト
+        st.session_state[actor_key] = Actor(
+            name="フローリア",
+            persona=Persona(),
+            router=LLMRouter(),
+        )
+
+    return st.session_state[actor_key]
+
+
+def create_answertalker_view() -> AnswerTalkerView:
+    """
+    ModeSwitcher から呼ばれる AnswerTalkerView の“工場”。
+
+    - Actor を council_ai 側で用意し
+    - AnswerTalkerView(actor) を生成して返す
+    """
+    actor = get_or_create_council_actor()
+    return AnswerTalkerView(actor)
 
 
 class CouncilManager:
