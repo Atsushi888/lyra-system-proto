@@ -1,0 +1,42 @@
+# actors/models.py
+
+from __future__ import annotations
+
+from typing import Dict, Any
+
+
+class Models:
+    """
+    各AIから回答を収集し、llm_meta["models"] に格納する責務を持つ。
+
+    現段階では:
+      - Router はまだ呼ばない
+      - モック結果で「形」だけ作る
+    """
+
+    def __init__(self) -> None:
+        # 将来ここに LLMRouter や設定を持たせる
+        # from llm.llm_router import LLMRouter
+        # self.router = LLMRouter()
+        pass
+
+    def collect(self, user_text: str) -> Dict[str, Any]:
+        """
+        将来:
+          - gpt4o / hermes / etc を LLMRouter 経由で叩き、
+            { model_name: per_model_result_dict } を構築する。
+
+        現在:
+          - モックで 1 モデル分だけ返す。
+        """
+        # ここで返す dict の「型」だけ決めておくと、
+        # JudgeAI2 / Composer / Debug パネルへの接続が楽になる。
+        return {
+            "gpt4o": {
+                "text": f"(mock) GPT-4o の回答: {user_text}",
+                "status": "ok",   # or "error" / "refuse" なども将来あり得る
+                "usage": None,    # トークン情報など（今は空）
+                "meta": {},       # 将来スコアやタグをぶら下げる余地
+            },
+            # "hermes": {...} などは後で追加
+        }
