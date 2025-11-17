@@ -2,61 +2,35 @@
 
 from __future__ import annotations
 
-from typing import Dict, Any
-
-import streamlit as st
-
-from actors.models import Models
+from typing import Any, Dict
 
 
 class AnswerTalker:
     """
-    回答生成パイプラインのハブ役:
-      - models: 各AIから回答を集める
-      - judge:  JudgeAI2（将来）
-      - composer: 最終整形（将来）
+    回答生成パイプラインの中核ベースクラス。
 
-    現段階の責務:
-      a. llm_meta の初期設定
-      b. Models クラスのコール
+    将来的に:
+      - models: 各AIからの回答収集
+      - judge:  JudgeAI2 による選別
+      - composer: ComposerAI による整形
+    をまとめて扱う。
+
+    現段階では:
+      - llm_meta の器だけ持つ
+      - speak() は何もせず reply_text をそのまま返す
     """
 
     def __init__(self) -> None:
-        # Streamlit のセッションから既存 llm_meta を取得
-        llm_meta = st.session_state.get("llm_meta")
+        # 将来ここに llm_meta を正式に載せていく
+        self.llm_meta: Dict[str, Any] = {}
 
-        if not isinstance(llm_meta, dict):
-            # なければ新規初期化
-            llm_meta = {
-                "models": {},    # 各AIの生回答
-                "judge": {},     # JudgeAI2 の結果（現時点では空）
-                "composer": {},  # Composer の結果（現時点では空）
-            }
-
-        # インスタンス側でも保持
-        self.llm_meta: Dict[str, Any] = llm_meta
-
-        # セッションにも戻しておく（他画面からも見えるように）
-        st.session_state["llm_meta"] = self.llm_meta
-
-        # Models モジュール初期化
-        self.models = Models()
-
-    def run_models(self, user_text: str) -> None:
+    def speak(self, reply_text: str, raw_result: Any | None = None) -> str:
         """
-        Models モジュールを実行し、llm_meta["models"] を更新する。
-        いまは「集めるだけ」。Judge/Composer はまだ触らない。
+        将来的には:
+          - raw_result / llm_meta をもとに
+            models → judge → composer を駆動して最終回答を返す。
+
+        現状:
+          - 何もせず、受け取った reply_text をそのまま返す。
         """
-        if not user_text:
-            return
-
-        model_results = self.models.collect(user_text)
-
-        if not isinstance(self.llm_meta.get("models"), dict):
-            self.llm_meta["models"] = {}
-
-        # 今回は丸ごと置き換えでOK（将来はマージも検討）
-        self.llm_meta["models"] = model_results
-
-        # セッションにも反映
-        st.session_state["llm_meta"] = self.llm_meta
+        return reply_text
