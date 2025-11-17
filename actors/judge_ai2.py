@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
-class JudgeAI2(AnswerTalker):
+class JudgeAI2:
     """
     AnswerTalker を継承した裁定モジュール。
 
