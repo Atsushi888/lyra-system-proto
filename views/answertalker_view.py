@@ -86,8 +86,6 @@ class AnswerTalkerView:
                 st.write("想定外の形式です:", info)
 
             st.markdown("---")
-            # views/answertalker_view.py の該当箇所
-            
             if isinstance(info, dict):
                 status = info.get("status", "unknown")
                 text = info.get("text", "")
@@ -96,6 +94,7 @@ class AnswerTalkerView:
                 st.write(f"- status: `{status}`")
                 if err:
                     st.write(f"- error: `{err}`")
+            st.markdown("---")
 
 
 # ModeSwitcher などから呼びやすくするラッパ
