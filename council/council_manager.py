@@ -40,8 +40,7 @@ def create_answertalker_view() -> AnswerTalkerView:
     - AnswerTalkerView(actor) を生成して返す
     """
     actor = get_or_create_council_actor()
-    # return AnswerTalkerView(actor)
-    return actor
+    return AnswerTalkerView(actor)
 
 
 class CouncilManager:
