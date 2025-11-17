@@ -2,33 +2,87 @@
 
 from __future__ import annotations
 from typing import Dict, Any
+
 from llm.llm_router import LLMRouter
 
 
 class ModelsAI:
     """
-    各AI(GPT-4o / Hermes / その他モデル)から回答を収集し、
+    各AI(GPT-4o / Hermes / GPT-5.1 など)から回答を収集し、
     llm_meta["models"] に格納する責務を持つクラス。
+
+    現段階では：
+      - LLMRouter を保持
+      - collect() で複数モデルの回答を取得
+      - Python辞書(JSON相当の構造)で返す
     """
 
     def __init__(self) -> None:
-        # Routerインスタンスを持つ（今後はここが全モデル呼び出しの中枢）
+        # すべてのモデル呼び出しの窓口
         self.router = LLMRouter()
 
     def collect(self, user_text: str) -> Dict[str, Any]:
         """
-        将来:
-          - GPT-4o / Hermes / etc を Router 経由で叩く
-          - 各結果を辞書にまとめる
+        LLMRouter を使って複数モデルから回答を取得する。
 
-        現在:
-          - モック 1 モデル分だけ返す
-        """
-        return {
+        返却形式(例):
+        {
             "gpt4o": {
-                "text": f"(mock) GPT-4o の回答: {user_text}",
-                "status": "ok",
-                "usage": None,
-                "meta": {},
+                "text": "...",
+                "usage": {...},
+                "meta": {...},
+                "status": "ok"
             },
+            "hermes": {...},
+            "gpt51": {...}
         }
+        """
+
+        results: Dict[str, Any] = {}
+
+        # GPT-4o
+        try:
+            txt, usage, meta = self.router.call_gpt4o(user_text)
+            results["gpt4o"] = {
+                "text": txt,
+                "usage": usage,
+                "meta": meta,
+                "status": "ok",
+            }
+        except Exception as e:
+            results["gpt4o"] = {
+                "status": "error",
+                "error": str(e),
+            }
+
+        # Hermes
+        try:
+            txt, usage, meta = self.router.call_hermes(user_text)
+            results["hermes"] = {
+                "text": txt,
+                "usage": usage,
+                "meta": meta,
+                "status": "ok",
+            }
+        except Exception as e:
+            results["hermes"] = {
+                "status": "error",
+                "error": str(e),
+            }
+
+        # GPT-5.1 (仮)
+        try:
+            txt, usage, meta = self.router.call_gpt51(user_text)
+            results["gpt51"] = {
+                "text": txt,
+                "usage": usage,
+                "meta": meta,
+                "status": "ok",
+            }
+        except Exception as e:
+            results["gpt51"] = {
+                "status": "error",
+                "error": str(e),
+            }
+
+        return results
