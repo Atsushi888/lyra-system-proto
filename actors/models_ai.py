@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 from typing import Dict, Any
+from llm.llm_router import LLMRouter
 
 
 class ModelsAI:
     """
     各AI(GPT-4o / Hermes / その他モデル)から回答を収集し、
     llm_meta["models"] に格納する責務を持つクラス。
-
-    現段階では Router を呼ばず、
-    モックで「形だけ」を作る。
     """
 
     def __init__(self) -> None:
-        pass
+        # Routerインスタンスを持つ（今後はここが全モデル呼び出しの中枢）
+        self.router = LLMRouter()
 
     def collect(self, user_text: str) -> Dict[str, Any]:
         """
