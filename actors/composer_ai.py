@@ -18,5 +18,5 @@ class ComposerAI:
         # Composer 固有のパラメータがあればここへ
 
     # いずれ:
-    # def compose(self, judge_result: Dict[str, Any]) -> str:
+    def compose(self, judge_result: Dict[str, Any]) -> str:
     #     ...
