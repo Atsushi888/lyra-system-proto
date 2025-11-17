@@ -1,20 +1,25 @@
-# actors/Judge_ai2.py
+# actors/judge_ai2.py
 
-class JudgeAI2:
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from actors.answer_talker import AnswerTalker
+
+
+class JudgeAI2(AnswerTalker):
     """
-    Lyra System の新しい裁定レイヤー。
-    いまは何もせず結果をそのまま返すだけの stub。
-    
-    将来的には：
-      - 複数AIの回答候補を受け取り
-      - JudgeAI2 内で審議
-      - 最適な 1つを返す
-    という本格ロジックに進化させる。
+    AnswerTalker を継承した裁定モジュール。
+
+    将来的な責務:
+      - llm_meta["models"] を参照し、
+        採用すべき候補やスコアを llm_meta["judge"] に書き込む。
     """
 
-    def __init__(self):
-        pass
+    def __init__(self) -> None:
+        super().__init__()
+        # 将来、JudgeAI2 固有の設定があればここに載せる
 
-    def process_single_result(self, result: dict) -> dict:
-        """現段階の Actor 用：単一の result をそのまま返すだけ。"""
-        return result
+    # いずれ:
+    # def run_judge(self, models: Dict[str, Any]) -> Dict[str, Any]:
+    #     ...
