@@ -7,8 +7,6 @@ from typing import Any, Dict
 
 class JudgeAI2:
     """
-    AnswerTalker を継承した裁定モジュール。
-
     将来的な責務:
       - llm_meta["models"] を参照し、
         採用すべき候補やスコアを llm_meta["judge"] に書き込む。
