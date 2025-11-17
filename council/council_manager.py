@@ -8,7 +8,7 @@ import streamlit as st
 from actors.actor import Actor
 from personas.persona_floria_ja import Persona
 from llm.llm_router import LLMRouter
-from views.answertalker_view import AnswerTalkerView
+# from views.answertalker_view import AnswerTalkerView
 
 
 def get_or_create_council_actor() -> Actor:
@@ -38,7 +38,8 @@ def create_answertalker_view() -> AnswerTalkerView:
     - AnswerTalkerView(actor) を生成して返す
     """
     actor = get_or_create_council_actor()
-    return AnswerTalkerView(actor)
+    # return AnswerTalkerView(actor)
+    return actor
 
 
 class CouncilManager:
