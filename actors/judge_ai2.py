@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from actors.answer_talker import AnswerTalker
-
 
 class JudgeAI2(AnswerTalker):
     """
