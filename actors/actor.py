@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from actors.judge_ai2 import JudgeAI2
 from typing import List, Dict, Any
 
 from personas.persona_floria_ja import Persona
 from llm.llm_router import LLMRouter
+from actors.answer_talker import AnswerTalker
 
 
 class Actor:
@@ -25,11 +25,13 @@ class Actor:
         persona: Persona,
         router: LLMRouter | None = None,
     ) -> None:
-        self.judge2 = JudgeAI2()
         self.name = name
         self.persona = persona
         # router 引数が省略された場合は、自前でインスタンスを作る
         self.router = router or LLMRouter()
+
+        # ★ AnswerTalker を保持（将来ここから Judge / Composer を駆動）
+        self.answer_talker = AnswerTalker()
 
     def speak(self, conversation_log: List[Dict[str, str]]) -> str:
         """
@@ -38,8 +40,6 @@ class Actor:
         conversation_log:
             [{"role": "player" / "floria" / "system", "content": "..."}, ...]
         """
-        # 必要に応じて、ここで conversation_log を
-        # OpenAI 用 messages に変換して router に渡す。
         # ひとまず、プレイヤーの最後の発言だけを見る簡易版で OK。
         user_text = ""
         for entry in reversed(conversation_log):
@@ -47,15 +47,17 @@ class Actor:
                 user_text = entry.get("content", "")
                 break
 
+        # Persona から messages を組み立て
         messages = self.persona.build_messages(user_text)
-        
+
+        # LLMRouter 経由で GPT-4o を呼ぶ（現状のメイン処理）
         result = self.router.call_gpt4o(messages)
-        
+
         # 戻り値の形に応じて柔軟に受け取る
         reply_text = None
         _usage = None
         _meta = {}
-        
+
         if isinstance(result, tuple):
             if len(result) == 3:
                 reply_text, _usage, _meta = result
@@ -70,6 +72,9 @@ class Actor:
         else:
             # ただの文字列やオブジェクトが返ってきた場合
             reply_text = result
-        
-        judged = self.judge2.process_single_result(result)
-        return reply_text
+
+        # ★ ここから先は AnswerTalker に委譲
+        #   いまは AnswerTalker.speak() は「何もしないで reply_text を返す」だけ。
+        final_text = self.answer_talker.speak(reply_text=reply_text, raw_result=result)
+
+        return final_text
