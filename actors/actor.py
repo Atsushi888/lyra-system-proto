@@ -75,6 +75,7 @@ class Actor:
 
         # ★ ここから先は AnswerTalker に委譲
         #   いまは AnswerTalker.speak() は「何もしないで reply_text を返す」だけ。
-        final_text = self.answer_talker.speak(reply_text=reply_text, raw_result=result)
 
+        models_results = self.answer_talker.models_ai.collect(user_text)
+        self.answer_talker.llm_meta["models"] = models_results
         return final_text
