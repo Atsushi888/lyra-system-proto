@@ -61,7 +61,7 @@ class AnswerTalker:
         self.llm_meta["judge"] = judge_result
 
         # ③ Composer
-        composed = self.composer_ai.process(self.llm_meta)
+        composed = self.composer_ai.compose(self.llm_meta)
         self.llm_meta["composer"] = composed
 
         st.session_state["llm_meta"] = self.llm_meta
