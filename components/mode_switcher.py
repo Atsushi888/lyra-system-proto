@@ -8,7 +8,7 @@ from views.user_view import UserView
 from views.backstage_view import BackstageView
 from views.private_view import PrivateView
 from views.council_view import CouncilView
-from council_ai import create_answertalker_view   # ★ 追加
+from council_manager import create_answertalker_view   # ★ 追加
 
 
 class View(Protocol):
