@@ -7,7 +7,8 @@ from views.game_view import GameView
 from views.user_view import UserView
 from views.backstage_view import BackstageView
 from views.private_view import PrivateView
-from views.council_view import CouncilView   # ← 追加
+from views.council_view import CouncilView
+from views.answertalker_view import AnswerTalkerView   # ★ 追加
 
 
 class View(Protocol):
@@ -19,12 +20,14 @@ class ModeSwitcher:
     表示切替のみ担当（認証ロジックは持たない）。
     routes は __init__ 内で内蔵生成。
     """
+
     LABELS: Dict[str, str] = {
-        "PLAY":      "🎮 ゲームモード",
-        "USER":      "🎛️ ユーザー設定",
-        "BACKSTAGE": "🧠 AIリプライシステム",
-        "PRIVATE":   "⚙️ （※非公開※）",
-        "COUNCIL":   "🗣 会談システム（β）",   # ← 追加
+        "PLAY":          "🎮 ゲームモード",
+        "USER":          "🎛️ ユーザー設定",
+        "BACKSTAGE":     "🧠 AIリプライシステム",
+        "PRIVATE":       "⚙️ （※非公開※）",
+        "COUNCIL":       "🗣 会談システム（β）",
+        "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",   # ★ 追加
     }
 
     def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
@@ -33,13 +36,40 @@ class ModeSwitcher:
 
         # 内蔵ルーティング
         self.routes: Dict[str, Dict] = {
-            "PLAY":      {"label": self.LABELS["PLAY"],      "view": GameView(),      "min_role": Role.USER},
-            "USER":      {"label": self.LABELS["USER"],      "view": UserView(),      "min_role": Role.USER},
-            "BACKSTAGE": {"label": self.LABELS["BACKSTAGE"], "view": BackstageView(), "min_role": Role.ADMIN},
-            "PRIVATE":   {"label": self.LABELS["PRIVATE"],   "view": PrivateView(),   "min_role": Role.ADMIN},
-            "COUNCIL":   {"label": self.LABELS["COUNCIL"],   "view": CouncilView(),   "min_role": Role.ADMIN},  # ← 追加
+            "PLAY": {
+                "label": self.LABELS["PLAY"],
+                "view": GameView(),
+                "min_role": Role.USER
+            },
+            "USER": {
+                "label": self.LABELS["USER"],
+                "view": UserView(),
+                "min_role": Role.USER
+            },
+            "BACKSTAGE": {
+                "label": self.LABELS["BACKSTAGE"],
+                "view": BackstageView(),
+                "min_role": Role.ADMIN
+            },
+            "PRIVATE": {
+                "label": self.LABELS["PRIVATE"],
+                "view": PrivateView(),
+                "min_role": Role.ADMIN
+            },
+            "COUNCIL": {
+                "label": self.LABELS["COUNCIL"],
+                "view": CouncilView(),
+                "min_role": Role.ADMIN
+            },
+            # ★ AnswerTalkerページ追加
+            "ANSWERTALKER": {
+                "label": self.LABELS["ANSWERTALKER"],
+                "view": AnswerTalkerView(),
+                "min_role": Role.ADMIN
+            },
         }
 
+        # 初期モード設定
         if self.session_key not in st.session_state:
             st.session_state[self.session_key] = self.default_key
 
@@ -54,16 +84,19 @@ class ModeSwitcher:
     def render(self, user_role: Role) -> None:
         st.sidebar.markdown("## 画面切替")
 
+        # 権限により表示可能なキーを決定
         visible_keys = [
             k for k, cfg in self.routes.items()
             if user_role >= cfg.get("min_role", Role.USER)
         ]
 
+        # 現在のキーが表示可能かチェック
         cur = self.current
         if cur not in visible_keys and visible_keys:
             cur = visible_keys[0]
             st.session_state[self.session_key] = cur
 
+        # ボタン列の描画
         for key in visible_keys:
             label = self.routes[key]["label"]
             disabled = (key == cur)
@@ -71,11 +104,13 @@ class ModeSwitcher:
                 st.session_state[self.session_key] = key
                 st.rerun()
 
+        # 現在表示中
         if visible_keys:
             st.sidebar.caption(f"現在: {self.routes[cur]['label']}")
         else:
             st.sidebar.warning("アクセス可能な画面がありません。")
 
+        # 選択された画面の描画
         if visible_keys:
             st.subheader(self.routes[cur]["label"])
             view = self.routes[cur]["view"]
