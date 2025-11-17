@@ -29,9 +29,6 @@ def get_or_create_council_actor() -> Actor:
 
     return st.session_state[actor_key]
 
-def aaa ()
-    return 10
-
 def create_answertalker_view() -> AnswerTalkerView:
     """
     ModeSwitcher から呼ばれる AnswerTalkerView の“工場”。
