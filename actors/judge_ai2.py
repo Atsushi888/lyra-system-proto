@@ -24,7 +24,7 @@ class JudgeAI2:
         self.model_props = model_props or {}
 
     # ---------------------------------
-    # 内部: 候補モデルの一覧を構築
+    # 内部: 候補モデル一覧を構築
     # ---------------------------------
     def _build_candidates(
         self,
@@ -32,11 +32,11 @@ class JudgeAI2:
     ) -> List[Dict[str, Any]]:
         candidates: List[Dict[str, Any]] = []
 
-        # model_props に定義されているモデルをベースに評価する
+        # model_props に定義されているモデルをベースに評価
         for name, props in self.model_props.items():
             info = models.get(name)
 
-            # props は dict のはずだが、安全のためチェック
+            # priority は float に正規化
             if isinstance(props, dict):
                 priority_val = props.get("priority", 1.0)
                 try:
@@ -65,7 +65,7 @@ class JudgeAI2:
             length = len(text)
 
             if status == "ok" and text:
-                # シンプルなスコア: 文字数に応じたボーナス + priority ボーナス
+                # シンプルなスコア: 文字数ボーナス + priority ボーナス
                 length_bonus = min(length / 100.0, 10.0)
                 priority_bonus = priority * 2.0
                 score = length_bonus + priority_bonus
@@ -132,7 +132,7 @@ class JudgeAI2:
         chosen_name = best["name"]
         chosen_text = best.get("text", "")
 
-        # priority を再取得（理由テキストのため）
+        # priority を再取得（理由テキスト用）
         props = self.model_props.get(chosen_name, {})
         if isinstance(props, dict):
             p_raw = props.get("priority", 1.0)
@@ -147,13 +147,13 @@ class JudgeAI2:
         length_bonus = min(length / 100.0, 10.0)
         priority_bonus = priority * 2.0
 
-        # reason（数値要約）
+        # 数値サマリ
         reason = (
             f"status_ok / length_bonus_{length_bonus:.1f} / "
             f"priority_bonus_{priority_bonus:.1f}"
         )
 
-        # reason_text（文章コメント）
+        # 文章コメント
         reason_text = (
             f"{chosen_name} の出力が他候補と比べて総合スコアが最も高かったため、"
             f"このラウンドでは {chosen_name} を採用しました。"
