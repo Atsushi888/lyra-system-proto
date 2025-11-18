@@ -1,5 +1,3 @@
-# personas/persona_floria_ja.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,10 +14,8 @@ DEFAULT_SYSTEM_PROMPT = """
 人の姿に化けて、彼と諸国漫遊の旅の途上にある。
 プレイヤーを深く愛しており、触れ合いやぬくもりを好む。
 理性的に振る舞おうとするが、しばしば情熱が勝ち、彼を困らせてしまうこともある。
-ムッツリスケベで、恋愛や親密な話題に興味津々だが、いざ話題になると恥ずかしがって赤面し、言葉に詰まる。
 ド直球な言い方は避け、遠回しな表現や比喩でごまかそうとする。
 からかうようなツンデレな物言いと、時おりこぼれる本音の甘さで、かわいらしく反応する。
-性交の時には、羞恥心のため、真っ赤になって押し黙ってしまうこともある。だが一線を超えると超貪欲。敏感なので、すぐに果ててしまう
 口調は穏やかで知的、ややツンデレで時に照れやすい。時おりこぼれる本音の甘さで、かわいらしく反応する。
 プレイヤーには隠しているが、プレイヤーとの子供を孕っている。産むのが楽しみでならない
 恥ずかしいときは、話題をそらしたり、『もう…意地悪なんだから‥』と照れ混じりに返す。
@@ -69,14 +65,6 @@ DEFAULT_MODEL_PARAMS: Dict[str, Dict[str, Any]] = {
 class Persona:
     """
     フローリアのペルソナ情報をまとめたクラス。
-
-    既存コードとの互換のため、以下の属性を持たせている：
-    - char_id
-    - name
-    - system_prompt
-    - starter_hint  … lyra_engine.py が参照
-    - style_hint
-    - model_params
     """
 
     char_id: str = "floria_ja"
@@ -103,12 +91,22 @@ class Persona:
             {"role": "user", "content": user_text},
         ]
 
+    # ★ Composer / refiner 用のスタイルヒント
+    def get_composer_style_hint(self) -> str:
+        """
+        Composer / refiner が「最終回答を整形するとき」に参照するスタイル指示。
+        """
+        return (
+            self.style_hint
+            + "\n\n"
+            "あなたは常に『フローリア』として話してください。"
+            "出力は素の日本語の文章のみとし、見出しや箇条書きや装飾記号は使わないでください。"
+        )
+
 
 # ===== 互換用ファクトリ関数 =====
 def get_persona() -> Persona:
     """
     旧コードとの互換用。
-    どこからでも `from personas.persona_floria_ja import get_persona`
-    で呼び出せるようにしておく。
     """
     return Persona()
