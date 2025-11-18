@@ -125,12 +125,17 @@ class AnswerTalkerView:
             # ここは一行で見えた方が分かりやすいので text を使う
             st.text(reason_str)
 
+            comment = judge.get("reason_text")
+            if comment:
+                st.write("**Judge コメント（reason_text）:**")
+                st.text(comment)
+
             # breakdown 表示（カンマ区切り前提）
             parts = [p.strip() for p in reason_str.split(",") if p.strip()]
             if parts:
                 st.write("- breakdown:")
                 for p in parts:
-                    st.write(f"  - {p}")
+                    st.markdown(f"    - **{p}**")
 
         # 採用テキスト
         if chosen_text:
