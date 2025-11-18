@@ -10,11 +10,29 @@ from actors.composer_ai import ComposerAI
 
 
 class AnswerTalker:
-    """
-    AI回答パイプラインの司令塔。
-    """
-
     def __init__(self) -> None:
+        # ここを「モデル定義の唯一のソース」にする
+        self.model_props: Dict[str, Dict[str, Any]] = {
+            "gpt4o": {
+                "enabled": True,
+                "priority": 3,             # Judge用
+                "router_fn": "call_gpt4o", # ModelsAI用
+                "label": "GPT-4o",
+            },
+            "gpt51": {
+                "enabled": True,
+                "priority": 2,
+                "router_fn": "call_gpt51",
+                "label": "GPT-5.1",
+            },
+            "hermes": {
+                "enabled": True,
+                "priority": 1,
+                "router_fn": "call_hermes",
+                "label": "Hermes 4",
+            },
+        }
+
         llm_meta = st.session_state.get("llm_meta")
         if not isinstance(llm_meta, dict):
             llm_meta = {
@@ -26,11 +44,11 @@ class AnswerTalker:
         self.llm_meta: Dict[str, Any] = llm_meta
         st.session_state["llm_meta"] = self.llm_meta
 
-        self.models_ai = ModelsAI()
-        self.judge_ai = JudgeAI2()
+        # ★ model_props を子クラスに渡す
+        self.models_ai = ModelsAI(self.model_props)
+        self.judge_ai = JudgeAI2(self.model_props)
         self.composer_ai = ComposerAI()
 
-    # ★ ここは messages を受け取る
     def run_models(self, messages: List[Dict[str, str]]) -> None:
         if not messages:
             return
@@ -46,24 +64,20 @@ class AnswerTalker:
         user_text: str = "",
         messages: List[Dict[str, str]] | None = None,
     ) -> str:
-        """
-        Actor から一次結果 reply_text と user_text/messages を受け取り、
-        Models → Judge → Composer を順に実行。
-        """
         if messages is None:
             messages = []
 
-        # ① Models
+        # Models
         self.run_models(messages)
 
-        # ② Judge
+        # Judge
         try:
             judge_result = self.judge_ai.process(self.llm_meta)
         except Exception as e:
             judge_result = {"status": "error", "error": str(e)}
         self.llm_meta["judge"] = judge_result
 
-        # ③ Composer
+        # Composer
         try:
             composed = self.composer_ai.compose(self.llm_meta)
         except Exception as e:
@@ -72,5 +86,5 @@ class AnswerTalker:
 
         st.session_state["llm_meta"] = self.llm_meta
 
-        # 今は暫定で元の reply を返す
+        # TODO: 後で composed["text"] に切り替える
         return reply_text
