@@ -70,21 +70,21 @@ class AnswerTalker:
         # Models
         self.run_models(messages)
 
-        # Judge
-        try:
-            judge_result = self.judge_ai.process(self.llm_meta)
-        except Exception as e:
-            judge_result = {"status": "error", "error": str(e)}
-        self.llm_meta["judge"] = judge_result
+        # # Judge
+        # try:
+        #     judge_result = self.judge_ai.process(self.llm_meta)
+        # except Exception as e:
+        #     judge_result = {"status": "error", "error": str(e)}
+        # self.llm_meta["judge"] = judge_result
 
-        # Composer
-        try:
-            composed = self.composer_ai.compose(self.llm_meta)
-        except Exception as e:
-            composed = {"status": "error", "error": str(e), "text": reply_text}
-        self.llm_meta["composer"] = composed
+        # # Composer
+        # try:
+        #     composed = self.composer_ai.compose(self.llm_meta)
+        # except Exception as e:
+        #     composed = {"status": "error", "error": str(e), "text": reply_text}
+        # self.llm_meta["composer"] = composed
 
-        st.session_state["llm_meta"] = self.llm_meta
+        # st.session_state["llm_meta"] = self.llm_meta
 
-        # TODO: 後で composed["text"] に切り替える
+        # # TODO: 後で composed["text"] に切り替える
         return reply_text
