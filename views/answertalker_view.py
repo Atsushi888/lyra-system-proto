@@ -9,6 +9,22 @@ import streamlit as st
 from actors.actor import Actor
 
 
+def _auto_height(text: str, base: int = 120, per_line: int = 22, max_h: int = 420) -> int:
+    """
+    テキスト量に応じて text_area の高さを自動調整するための簡易関数。
+
+    - ざっくり 40 文字 ≒ 1 行 とみなして行数を見積もる
+    - base 以上、max_h 以下の範囲で高さを返す
+    """
+    if not text:
+        return base
+    approx_lines = max(1, len(text) // 40 + 1)
+    h = approx_lines * per_line
+    h = max(base, h)
+    h = min(max_h, h)
+    return h
+
+
 class AnswerTalkerView:
     """
     AnswerTalker の動作確認用ビュー（閲覧専用）。
@@ -23,6 +39,9 @@ class AnswerTalkerView:
         # Actor 名や Persona 情報などを表示したくなったときのために保持しておく
         self.actor = actor
 
+    # ============================
+    # models 表示
+    # ============================
     def _render_models(self, llm_meta: Dict[str, Any]) -> None:
         st.markdown("### llm_meta に登録された AI 回答一覧（models）")
 
@@ -49,20 +68,13 @@ class AnswerTalkerView:
 
                 if text:
                     st.write("**回答テキスト:**")
-                    if len(text) > 400:
-                        st.text_area(
-                            "text（先頭400文字）",
-                            value=text[:400] + " ...",
-                            height=120,
-                            key=f"models_text_{model_name}",
-                        )
-                    else:
-                        st.text_area(
-                            "text",
-                            value=text,
-                            height=120,
-                            key=f"models_text_{model_name}",
-                        )
+                    height = _auto_height(text)
+                    st.text_area(
+                        "text",
+                        value=text,
+                        height=height,
+                        key=f"models_text_{model_name}",
+                    )
                 else:
                     st.write("（text フィールドがありません）")
             else:
@@ -70,6 +82,9 @@ class AnswerTalkerView:
 
             st.markdown("---")
 
+    # ============================
+    # judge 表示
+    # ============================
     def _render_judge(self, llm_meta: Dict[str, Any]) -> None:
         st.markdown("### JudgeAI2 の判定結果（llm_meta['judge']）")
 
@@ -91,28 +106,40 @@ class AnswerTalkerView:
         st.write(f"- status: `{status}`")
         if chosen_model:
             st.write(f"- chosen_model: `{chosen_model}`")
-        if reason:
-            st.write(f"- reason: {reason}")
         if error:
             st.write(f"- error: `{error}`")
 
+        # ★ 選択理由を詳細に表示
+        if reason:
+            st.write("**選択理由（reason）:**")
+            st.write(reason)
+            # カンマ区切りであれば人間向けに分解表示もしておく
+            parts = [p.strip() for p in str(reason).split(",") if p.strip()]
+            if parts:
+                st.write("- breakdown:")
+                for p in parts:
+                    st.write(f"  - {p}")
+
+        # 採用テキスト
         if chosen_text:
             st.write("**採用テキスト（chosen_text）:**")
+            h = _auto_height(chosen_text)
             st.text_area(
                 "chosen_text",
                 value=chosen_text,
-                height=160,
+                height=h,
                 key="judge_chosen_text",
             )
 
         # 候補一覧（スコアなど）
         candidates: Any = judge.get("candidates")
+        st.markdown("#### 候補モデル一覧（candidates）")
         if isinstance(candidates, list) and candidates:
-            st.markdown("#### 候補モデル一覧（candidates）")
             for i, c in enumerate(candidates):
                 if not isinstance(c, dict):
                     continue
-                st.markdown(f"- 候補 {i+1}: `{c.get('model', '')}`")
+                model = c.get("model", "")
+                st.markdown(f"- 候補 {i+1}: `{model}`")
                 st.write(
                     f"  - status: `{c.get('status', 'unknown')}`  "
                     f"/ score: `{c.get('score', '')}`  "
@@ -121,10 +148,21 @@ class AnswerTalkerView:
                 if c.get("error"):
                     st.write(f"  - error: `{c.get('error')}`")
                 details = c.get("details")
-                if isinstance(details, list) and details:
-                    st.write("  - details:", ", ".join(str(d) for d in details))
+                if isinstance(details, List):
+                    if details:
+                        st.write("  - details:")
+                        for d in details:
+                            st.write(f"    - {d}")
+                st.write("")
+
+        else:
+            st.write("（candidates がありません）")
+
         st.markdown("---")
 
+    # ============================
+    # composer 表示
+    # ============================
     def _render_composer(self, llm_meta: Dict[str, Any]) -> None:
         st.markdown("### ComposerAI の最終結果（llm_meta['composer']）")
 
@@ -147,15 +185,19 @@ class AnswerTalkerView:
 
         if text:
             st.write("**最終返答テキスト（composer.text）:**")
+            h = _auto_height(text)
             st.text_area(
                 "composer_text",
                 value=text,
-                height=180,
+                height=h,
                 key="composer_text_area",
             )
 
         st.markdown("---")
 
+    # ============================
+    # メイン render
+    # ============================
     def render(self) -> None:
         st.title("AnswerTalker / ModelsAI・JudgeAI2・Composer デバッグビュー（閲覧専用）")
 
