@@ -110,7 +110,9 @@ class AnswerTalker:
 
         # ② JudgeAI2 による採択
         try:
-            judge_result = self.judge_ai.process(self.llm_meta)
+            # ★ ここがポイント：llm_meta 全体ではなく models 部分だけを渡す
+            models = self.llm_meta.get("models") or {}
+            judge_result = self.judge_ai.process(models)
         except Exception as e:
             judge_result = {
                 "status": "error",
