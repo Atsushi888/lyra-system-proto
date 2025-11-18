@@ -35,9 +35,7 @@ class AnswerTalkerView:
     """
 
     def __init__(self, actor: Actor) -> None:
-        # いまは直接使っていないが、将来的に
-        # Actor 名や Persona 情報などを表示したくなったときのために保持しておく
-        self.actor = actor
+        self.actor = actor  # 今は未使用だが将来の拡張用に保持
 
     # ============================
     # models 表示
@@ -99,9 +97,21 @@ class AnswerTalkerView:
 
         status = judge.get("status", "unknown")
         chosen_model = judge.get("chosen_model", "")
-        reason = judge.get("reason", "")
-        chosen_text = judge.get("chosen_text", "")
+        raw_reason = (
+            judge.get("reason")
+            or judge.get("reason_text")
+            or judge.get("reason_detail")
+        )
         error = judge.get("error")
+
+        # reason を必ず文字列にしておく
+        reason_str = ""
+        if isinstance(raw_reason, (list, tuple)):
+            reason_str = ", ".join(str(x) for x in raw_reason)
+        elif raw_reason is not None:
+            reason_str = str(raw_reason)
+
+        chosen_text = judge.get("chosen_text", "")
 
         st.write(f"- status: `{status}`")
         if chosen_model:
@@ -109,12 +119,14 @@ class AnswerTalkerView:
         if error:
             st.write(f"- error: `{error}`")
 
-        # ★ 選択理由を詳細に表示
-        if reason:
+        # ★ 選択理由（必ず 1 行テキストとして表示）
+        if reason_str.strip():
             st.write("**選択理由（reason）:**")
-            st.write(reason)
-            # カンマ区切りであれば人間向けに分解表示もしておく
-            parts = [p.strip() for p in str(reason).split(",") if p.strip()]
+            # ここは一行で見えた方が分かりやすいので text を使う
+            st.text(reason_str)
+
+            # breakdown 表示（カンマ区切り前提）
+            parts = [p.strip() for p in reason_str.split(",") if p.strip()]
             if parts:
                 st.write("- breakdown:")
                 for p in parts:
@@ -148,13 +160,11 @@ class AnswerTalkerView:
                 if c.get("error"):
                     st.write(f"  - error: `{c.get('error')}`")
                 details = c.get("details")
-                if isinstance(details, List):
-                    if details:
-                        st.write("  - details:")
-                        for d in details:
-                            st.write(f"    - {d}")
+                if isinstance(details, List) and details:
+                    st.write("  - details:")
+                    for d in details:
+                        st.write(f"    - {d}")
                 st.write("")
-
         else:
             st.write("（candidates がありません）")
 
@@ -221,7 +231,6 @@ class AnswerTalkerView:
             )
             return
 
-        # Models / Judge / Composer の順に表示
         self._render_models(llm_meta)
         self._render_judge(llm_meta)
         self._render_composer(llm_meta)
