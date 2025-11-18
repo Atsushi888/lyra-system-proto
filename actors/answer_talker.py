@@ -110,8 +110,8 @@ class AnswerTalker:
 
         # ② JudgeAI2 による採択
         try:
-            # ★ ここがポイント：llm_meta 全体ではなく models 部分だけを渡す
-            models = self.llm_meta.get("models") or {}
+            # ★ llm_meta 全体ではなく、models 部分だけを渡す
+            models = self.llm_meta.get("models", {})
             judge_result = self.judge_ai.process(models)
         except Exception as e:
             judge_result = {
@@ -120,6 +120,7 @@ class AnswerTalker:
                 "chosen_model": "",
                 "chosen_text": "",
             }
+
         self.llm_meta["judge"] = judge_result
 
         # ③ ComposerAI による仕上げ
