@@ -1,5 +1,3 @@
-# views/answertalker_view.py
-
 from __future__ import annotations
 
 from typing import Optional, Dict, Any, List
@@ -12,9 +10,6 @@ from actors.actor import Actor
 def _auto_height(text: str, base: int = 120, per_line: int = 22, max_h: int = 420) -> int:
     """
     テキスト量に応じて text_area の高さを自動調整するための簡易関数。
-
-    - ざっくり 40 文字 ≒ 1 行 とみなして行数を見積もる
-    - base 以上、max_h 以下の範囲で高さを返す
     """
     if not text:
         return base
@@ -28,10 +23,6 @@ def _auto_height(text: str, base: int = 120, per_line: int = 22, max_h: int = 42
 class AnswerTalkerView:
     """
     AnswerTalker の動作確認用ビュー（閲覧専用）。
-
-    - Actor インスタンスを受け取り、その中の AnswerTalker に紐づく llm_meta を“見るだけ”
-    - 自分から AnswerTalker.run_models() を呼んだりはしない
-    - llm_meta["models"] / ["judge"] / ["composer"] を一覧表示する
     """
 
     def __init__(self, actor: Actor) -> None:
@@ -104,7 +95,6 @@ class AnswerTalkerView:
         )
         error = judge.get("error")
 
-        # reason を必ず文字列にしておく
         reason_str = ""
         if isinstance(raw_reason, (list, tuple)):
             reason_str = ", ".join(str(x) for x in raw_reason)
@@ -119,10 +109,8 @@ class AnswerTalkerView:
         if error:
             st.write(f"- error: `{error}`")
 
-        # ★ 選択理由（必ず 1 行テキストとして表示）
         if reason_str.strip():
             st.write("**選択理由（reason）:**")
-            # ここは一行で見えた方が分かりやすいので text を使う
             st.text(reason_str)
 
             comment = judge.get("reason_text")
@@ -130,14 +118,12 @@ class AnswerTalkerView:
                 st.write("**Judge コメント（reason_text）:**")
                 st.text(comment)
 
-            # breakdown 表示（カンマ区切り前提）
             parts = [p.strip() for p in reason_str.split(",") if p.strip()]
             if parts:
                 st.write("- breakdown:")
                 for p in parts:
                     st.markdown(f"    - **{p}**")
 
-        # 採用テキスト
         if chosen_text:
             st.write("**採用テキスト（chosen_text）:**")
             h = _auto_height(chosen_text)
@@ -148,27 +134,41 @@ class AnswerTalkerView:
                 key="judge_chosen_text",
             )
 
-        # 候補一覧（スコアなど）
         candidates: Any = judge.get("candidates")
         st.markdown("#### 候補モデル一覧（candidates）")
         if isinstance(candidates, list) and candidates:
             for i, c in enumerate(candidates):
                 if not isinstance(c, dict):
                     continue
-                model = c.get("model", "")
-                st.markdown(f"- 候補 {i+1}: `{model}`")
+
+                model_name = c.get("name") or c.get("model") or ""
+                st.markdown(f"- 候補 {i+1}: `{model_name}`")
+
                 st.write(
                     f"  - status: `{c.get('status', 'unknown')}`  "
                     f"/ score: `{c.get('score', '')}`  "
                     f"/ length: `{c.get('length', '')}`"
                 )
+
                 if c.get("error"):
                     st.write(f"  - error: `{c.get('error')}`")
+
                 details = c.get("details")
-                if isinstance(details, List) and details:
+                if isinstance(details, list):
                     st.write("  - details:")
                     for d in details:
                         st.write(f"    - {d}")
+                elif isinstance(details, str) and details.strip():
+                    parts = [p.strip() for p in details.split(",") if p.strip()]
+                    if parts:
+                        st.write("  - details:")
+                        for p in parts:
+                            st.write(f"    - {p}")
+                    else:
+                        st.write(f"  - details: {details}")
+                elif details is not None:
+                    st.write(f"  - details: {details}")
+
                 st.write("")
         else:
             st.write("（candidates がありません）")
@@ -193,10 +193,42 @@ class AnswerTalkerView:
         status = comp.get("status", "unknown")
         text = comp.get("text", "")
         error = comp.get("error")
+        source_model = comp.get("source_model", "")
+        mode = comp.get("mode", "")
+        summary = comp.get("summary", "")
+        composer_info = comp.get("composer")
+        refiner_info = comp.get("refiner")
 
         st.write(f"- status: `{status}`")
+        if source_model:
+            st.write(f"- source_model: `{source_model}`")
+        if mode:
+            st.write(f"- mode: `{mode}`")
+        if composer_info and isinstance(composer_info, dict):
+            name = composer_info.get("name")
+            ver = composer_info.get("version")
+            if name or ver:
+                st.write(f"- composer: `{name or ''}` (version {ver or '-'})")
+        if refiner_info and isinstance(refiner_info, dict):
+            r_model = refiner_info.get("model") or "N/A"
+            r_used = refiner_info.get("used")
+            r_status = refiner_info.get("status")
+            r_err = refiner_info.get("error")
+            st.write(
+                f"- refiner: model=`{r_model}`, used=`{r_used}`, status=`{r_status}`, error=`{r_err or ''}`"
+            )
         if error:
             st.write(f"- error: `{error}`")
+
+        if summary:
+            st.write("**サマリ（summary）:**")
+            h = _auto_height(summary, base=80)
+            st.text_area(
+                "composer_summary",
+                value=summary,
+                height=h,
+                key="composer_summary_area",
+            )
 
         if text:
             st.write("**最終返答テキスト（composer.text）:**")
@@ -214,7 +246,7 @@ class AnswerTalkerView:
     # メイン render
     # ============================
     def render(self) -> None:
-        st.title("AnswerTalker / ModelsAI・JudgeAI2・Composer デバッグビュー（閲覧専用）")
+        st.title("AnswerTalker / ModelsAI・JudgeAI2・ComposerAI デバッグビュー（閲覧専用）")
 
         st.markdown(
             "この画面では、Actor に紐づく AnswerTalker が保持している "
