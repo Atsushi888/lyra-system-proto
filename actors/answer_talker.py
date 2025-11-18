@@ -1,5 +1,3 @@
-# actors/answer_talker.py
-
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -9,6 +7,7 @@ import streamlit as st
 from actors.models_ai import ModelsAI
 from actors.judge_ai2 import JudgeAI2
 from actors.composer_ai import ComposerAI
+from actors.composer_refiner import make_default_refiner
 
 
 class AnswerTalker:
@@ -66,7 +65,20 @@ class AnswerTalker:
         # サブモジュールに model_props を渡す
         self.models_ai = ModelsAI(self.model_props)
         self.judge_ai = JudgeAI2(self.model_props)
-        self.composer_ai = ComposerAI()
+
+        # refiner を注入した ComposerAI を構築
+        router_for_refine = self.models_ai.router
+        refiner = make_default_refiner(
+            router=router_for_refine,
+            model_props=self.model_props,
+            temperature=0.9,
+            max_tokens=900,
+        )
+        self.composer_ai = ComposerAI(
+            refiner=refiner,
+            refiner_model="gpt51",  # デフォルトの仕上げモデル
+            enable_refine=True,
+        )
 
     # ============================
     # ModelsAI 呼び出し
@@ -105,12 +117,14 @@ class AnswerTalker:
             # messages が空なら何もできないので空文字を返す
             return ""
 
+        # Composer / refiner 用に messages を共有
+        self.llm_meta["messages"] = messages
+
         # ① 複数モデルの回答収集
         self.run_models(messages)
 
         # ② JudgeAI2 による採択
         try:
-            # ★ llm_meta 全体ではなく、models 部分だけを渡す
             models = self.llm_meta.get("models", {})
             judge_result = self.judge_ai.process(models)
         except Exception as e:
@@ -125,8 +139,6 @@ class AnswerTalker:
 
         # ③ ComposerAI による仕上げ
         try:
-            # ComposerAI の実装次第で user_text / messages を渡したくなったら
-            # シグネチャを拡張する想定（現状は llm_meta のみ）
             composed = self.composer_ai.compose(self.llm_meta)
         except Exception as e:
             # 失敗時は Judge の chosen_text をフォールバックとして使う
