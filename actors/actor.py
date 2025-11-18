@@ -35,12 +35,7 @@ class Actor:
         else:
             reply_text = result
 
-        # ★ AnswerTalker に user_text と messages を渡す
-        final_text = self.answer_talker.speak(
-            reply_text=reply_text,
-            raw_result=result,
-            user_text=user_text,
-            messages=messages,
-        )
-
-        return final_text
+        messages = self.persona.build_messages(user_text)
+        final_reply = self.answer_talker.speak(messages, user_text=user_text)
+        # return final_reply
+        return reply_text
