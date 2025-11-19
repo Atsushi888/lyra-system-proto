@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, List, Iterable, Optional
 import os
 
+from llm.llm_router import LLMRouter
+
 
 @dataclass
 class LLMModelConfig:
@@ -43,14 +45,19 @@ class LLMManager:
     """
     利用可能な LLM の一覧・増減・状態を管理するクラス。
 
-    - register_model / unregister_model
-    - enable / disable
-    - list_models / get_model_props
-    - 必要な環境変数が足りないモデルは available=False として扱う
+    役割:
+    - モデル定義のレジストリ
+    - 有効/無効管理
+    - APIキーの有無チェック
+    - model_props の生成（既存コード互換）
+    - 名前指定で LLM を呼び出す窓口（call_model）
+
+    実際の HTTP 呼び出しなどは内部の LLMRouter に委譲する。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, router: LLMRouter | None = None) -> None:
         self._models: Dict[str, LLMModelConfig] = {}
+        self.router: LLMRouter = router or LLMRouter()
 
     # -----------------------------
     # 基本: 汎用登録・削除
@@ -69,10 +76,6 @@ class LLMManager:
         priority: float = 3.0,
         enabled: bool = True,
     ) -> None:
-        """
-        GPT-4o を既定設定で登録するヘルパー。
-        priority / enabled は呼び出し側で上書き可能。
-        """
         cfg = LLMModelConfig(
             name="gpt4o",
             router_fn="call_gpt4o",
@@ -89,9 +92,6 @@ class LLMManager:
         priority: float = 2.0,
         enabled: bool = True,
     ) -> None:
-        """
-        GPT-5.1 を既定設定で登録するヘルパー。
-        """
         cfg = LLMModelConfig(
             name="gpt51",
             router_fn="call_gpt51",
@@ -108,9 +108,6 @@ class LLMManager:
         priority: float = 1.0,
         enabled: bool = True,
     ) -> None:
-        """
-        Hermes 4（OpenRouter 経由）を既定設定で登録するヘルパー。
-        """
         cfg = LLMModelConfig(
             name="hermes",
             router_fn="call_hermes",
@@ -127,10 +124,6 @@ class LLMManager:
         priority: float = 2.0,
         enabled: bool = True,
     ) -> None:
-        """
-        Grok 4.1 用（xAI）。
-        XAI_API_KEY など、必要な環境変数名はここで一元管理。
-        """
         cfg = LLMModelConfig(
             name="grok41",
             router_fn="call_grok41",
@@ -167,21 +160,6 @@ class LLMManager:
     def list_models(self) -> List[Dict[str, Any]]:
         """
         UI 用。現在登録されている LLM 一覧と状態を返す。
-
-        戻り値例:
-            [
-              {
-                "name": "gpt4o",
-                "label": "GPT-4o",
-                "enabled": True,
-                "priority": 3.0,
-                "vendor": "openai",
-                "router_fn": "call_gpt4o",
-                "available": True,
-                "missing_env": [],
-              },
-              ...
-            ]
         """
         items: List[Dict[str, Any]] = []
         for cfg in self._models.values():
@@ -203,23 +181,12 @@ class LLMManager:
         return items
 
     # -----------------------------
-    # 既存コードとの互換用: model_props 生成
+    # model_props 生成（既存コード互換）
     # -----------------------------
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
         """
         AnswerTalker / ModelsAI / JudgeAI2 が期待している
         model_props 形式に変換して返す。
-
-        {
-          "gpt4o": {
-            "enabled": True,
-            "priority": 3.0,
-            "router_fn": "call_gpt4o",
-            "label": "GPT-4o",
-            "vendor": "openai",
-          },
-          ...
-        }
         """
         props: Dict[str, Dict[str, Any]] = {}
         for cfg in self._models.values():
@@ -233,12 +200,44 @@ class LLMManager:
         return props
 
     def get_enabled_model_props(self) -> Dict[str, Dict[str, Any]]:
-        """
-        enabled かつ available なモデルのみを返す。
-        """
         base = self.get_model_props()
         return {
             name: p
             for name, p in base.items()
             if p.get("enabled")
         }
+
+    # -----------------------------
+    # モデル呼び出し窓口
+    # -----------------------------
+    def call_model(
+        self,
+        name: str,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 800,
+    ) -> Any:
+        """
+        name で指定されたモデルを呼び出す統一インターフェース。
+
+        - LLMModelConfig.router_fn を参照して LLMRouter 上のメソッドを解決
+        - 見つからない / 無効 / 環境変数不足の場合は RuntimeError を投げる
+        """
+        cfg = self._models.get(name)
+        if cfg is None:
+            raise RuntimeError(f"unknown model: {name}")
+
+        if not cfg.enabled or not cfg.is_available():
+            raise RuntimeError(f"model '{name}' is disabled or unavailable")
+
+        fn_name = cfg.router_fn
+        fn = getattr(self.router, fn_name, None)
+        if fn is None:
+            raise RuntimeError(f"router has no method '{fn_name}'")
+
+        # LLMRouter 側のインターフェースに合わせて呼び出す
+        return fn(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
