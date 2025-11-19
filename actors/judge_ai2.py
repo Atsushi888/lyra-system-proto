@@ -19,22 +19,17 @@ class JudgeAI2:
     def __init__(self, llm_manager: LLMManager) -> None:
         self.llm_manager = llm_manager
 
-    # ---------------------------------
-    # 内部: 候補モデル一覧を構築
-    # ---------------------------------
     def _build_candidates(
         self,
         models: Dict[str, Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         candidates: List[Dict[str, Any]] = []
 
-        # LLMManager に定義されているモデルをベースに評価
         model_props = self.llm_manager.get_model_props()
 
         for name, props in model_props.items():
             info = models.get(name)
 
-            # priority は float に正規化
             if isinstance(props, dict):
                 priority_val = props.get("priority", 1.0)
                 try:
@@ -45,7 +40,6 @@ class JudgeAI2:
                 priority = 1.0
 
             if not isinstance(info, dict):
-                # モデル結果が無い場合
                 candidates.append(
                     {
                         "name": name,
@@ -63,7 +57,6 @@ class JudgeAI2:
             length = len(text)
 
             if status == "ok" and text:
-                # シンプルなスコア: 文字数ボーナス + priority ボーナス
                 length_bonus = min(length / 100.0, 10.0)
                 priority_bonus = priority * 2.0
                 score = length_bonus + priority_bonus
@@ -89,18 +82,7 @@ class JudgeAI2:
 
         return candidates
 
-    # ---------------------------------
-    # 公開: 判定本体
-    # ---------------------------------
     def process(self, models: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        models:
-            {
-              "gpt4o": {"status": "ok", "text": "...", ...},
-              "gpt51": {...},
-              "hermes": {...},
-            }
-        """
         if not isinstance(models, dict):
             return {
                 "status": "error",
@@ -117,7 +99,6 @@ class JudgeAI2:
                 "candidates": [],
             }
 
-        # スコア最大の候補を選ぶ（全員 0.0 の場合は error 扱い）
         best = max(candidates, key=lambda c: c.get("score", 0.0))
 
         if not best or best.get("score", 0.0) <= 0.0:
@@ -130,7 +111,6 @@ class JudgeAI2:
         chosen_name = best["name"]
         chosen_text = best.get("text", "")
 
-        # priority を再取得（理由テキスト用）
         props_all = self.llm_manager.get_model_props()
         props = props_all.get(chosen_name, {})
         if isinstance(props, dict):
@@ -146,19 +126,16 @@ class JudgeAI2:
         length_bonus = min(length / 100.0, 10.0)
         priority_bonus = priority * 2.0
 
-        # 数値サマリ
         reason = (
             f"status_ok / length_bonus_{length_bonus:.1f} / "
             f"priority_bonus_{priority_bonus:.1f}"
         )
 
-        # 文章コメント
         reason_text = (
             f"{chosen_name} の出力が他候補と比べて総合スコアが最も高かったため、"
             f"このラウンドでは {chosen_name} を採用しました。"
         )
 
-        # 既存ビュー互換のため、candidates 側に "model" キーも付けておく
         for c in candidates:
             if "model" not in c:
                 c["model"] = c.get("name", "")
