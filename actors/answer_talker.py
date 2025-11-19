@@ -57,13 +57,13 @@ class AnswerTalker:
         self.judge_ai = JudgeAI2(self.llm_manager)
         self.composer_ai = ComposerAI()
 
-        # MemoryAI には LLMManager 内部の router を渡す
+        # MemoryAI には LLMManagerを渡す
         self.memory_ai = MemoryAI(
-            router=self.llm_manager.router,
+            llm_manager=self.llm_manager,
             persona_id=persona_id,
             model_name=memory_model,
         )
-
+    
     def _build_default_llm_manager(self, persona_id: str | None = None) -> LLMManager:
         mgr = LLMManager()
 
