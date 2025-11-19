@@ -1,3 +1,5 @@
+# views/answertalker_view.py
+
 from __future__ import annotations
 
 from typing import Optional, Dict, Any, List
@@ -28,40 +30,12 @@ class AnswerTalkerView:
     AnswerTalker の動作確認用ビュー（閲覧専用）。
 
     - Actor インスタンスを受け取り、その中の AnswerTalker に紐づく llm_meta を“見るだけ”
-    - 自分から AnswerTalker.run_models() を呼んだりはしない
+    - 自分から AnswerTalker.run_models() や MemoryAI.update_from_turn() などは実行しない
     - llm_meta["models"] / ["judge"] / ["composer"] / ["memory_*"] を一覧表示する
-    - さらに、可能であれば AnswerTalker.memory_ai.memories の中身も一覧表示する
     """
 
     def __init__(self, actor: Actor) -> None:
-        self.actor = actor  # AnswerTalker / MemoryAI への入口として保持
-
-    # ============================
-    # 内部: MemoryAI 取得ヘルパ
-    # ============================
-    def _get_memory_ai(self) -> Any:
-        """
-        Actor -> AnswerTalker -> MemoryAI を辿って memory_ai を取得する。
-
-        - actor.answer_talker.memory_ai
-        - または actor.talker.memory_ai
-        のような構造を想定しつつ、防御的にたどる。
-        見つからなければ None を返す。
-        """
-        actor = self.actor
-        if actor is None:
-            return None
-
-        # よくありそうな名前を順に試す
-        talker = getattr(actor, "answer_talker", None)
-        if talker is None:
-            talker = getattr(actor, "talker", None)
-
-        if talker is None:
-            return None
-
-        mem_ai = getattr(talker, "memory_ai", None)
-        return mem_ai
+        self.actor = actor  # 今は未使用だが将来の拡張用に保持
 
     # ============================
     # models 表示
@@ -148,7 +122,6 @@ class AnswerTalkerView:
         # ★ 選択理由（必ず 1 行テキストとして表示）
         if reason_str.strip():
             st.write("**選択理由（reason）:**")
-            # ここは一行で見えた方が分かりやすいので text を使う
             st.text(reason_str)
 
             comment = judge.get("reason_text")
@@ -181,8 +154,9 @@ class AnswerTalkerView:
             for i, c in enumerate(candidates):
                 if not isinstance(c, dict):
                     continue
-                model_name = c.get("name") or c.get("model") or ""
-                st.markdown(f"- 候補 {i+1}: `{model_name}`")
+                # JudgeAI2 側のキーは name
+                model = c.get("name", "")
+                st.markdown(f"- 候補 {i+1}: `{model}`")
                 st.write(
                     f"  - status: `{c.get('status', 'unknown')}`  "
                     f"/ score: `{c.get('score', '')}`  "
@@ -191,21 +165,10 @@ class AnswerTalkerView:
                 if c.get("error"):
                     st.write(f"  - error: `{c.get('error')}`")
                 details = c.get("details")
-                if isinstance(details, List) and details:
+                if isinstance(details, list) and details:
                     st.write("  - details:")
                     for d in details:
                         st.write(f"    - {d}")
-                elif isinstance(details, str) and details.strip():
-                    # カンマ区切りなら行分割
-                    parts = [p.strip() for p in details.split(",") if p.strip()]
-                    if parts:
-                        st.write("  - details:")
-                        for p in parts:
-                            st.write(f"    - {p}")
-                    else:
-                        st.write(f"  - details: {details}")
-                elif details is not None:
-                    st.write(f"  - details: {details}")
                 st.write("")
         else:
             st.write("（candidates がありません）")
@@ -230,35 +193,32 @@ class AnswerTalkerView:
         status = comp.get("status", "unknown")
         text = comp.get("text", "")
         error = comp.get("error")
-        source_model = comp.get("source_model", "")
-        mode = comp.get("mode", "")
-        summary = comp.get("summary", "")
-        composer_info = comp.get("composer")
-        refiner_info = comp.get("refiner")
+        source_model = comp.get("source_model")
+        mode = comp.get("mode")
+        refiner_meta = comp.get("refiner") or {}
 
         st.write(f"- status: `{status}`")
         if source_model:
             st.write(f"- source_model: `{source_model}`")
         if mode:
             st.write(f"- mode: `{mode}`")
-        if composer_info and isinstance(composer_info, dict):
-            name = composer_info.get("name")
-            ver = composer_info.get("version")
-            if name or ver:
-                st.write(f"- composer: `{name or ''}` (version {ver or '-'})")
-        if refiner_info and isinstance(refiner_info, dict):
-            r_model = refiner_info.get("model") or "N/A"
-            r_used = refiner_info.get("used")
-            r_status = refiner_info.get("status")
-            r_err = refiner_info.get("error")
-            st.write(
-                f"- refiner: model=`{r_model}`, used=`{r_used}`, status=`{r_status}`, error=`{r_err or ''}`"
-            )
         if error:
             st.write(f"- error: `{error}`")
 
+        # refiner 情報
+        if isinstance(refiner_meta, dict) and refiner_meta:
+            st.write(
+                "- refiner: "
+                f"model=`{refiner_meta.get('model', 'N/A')}`, "
+                f"used=`{refiner_meta.get('used', False)}`, "
+                f"status=`{refiner_meta.get('status', '')}`, "
+                f"error=`{refiner_meta.get('error', '')}`"
+            )
+
+        # サマリ
+        summary = comp.get("summary")
         if summary:
-            st.write("**サマリ（summary）:**")
+            st.markdown("**サマリ（summary）:**")
             h = _auto_height(summary, base=80)
             st.text_area(
                 "composer_summary",
@@ -280,150 +240,81 @@ class AnswerTalkerView:
         st.markdown("---")
 
     # ============================
-    # memory 表示（MemoryRecord ビュー）
+    # memory 表示（MemoryAI v2 対応）
     # ============================
     def _render_memory(self, llm_meta: Dict[str, Any]) -> None:
         st.markdown("### MemoryAI の状態（長期記憶）")
 
-        mem_ai = self._get_memory_ai()
-        if mem_ai is None:
+        # Actor → AnswerTalker → MemoryAI をたどる
+        answer_talker = getattr(self.actor, "answer_talker", None)
+        memory_ai = getattr(answer_talker, "memory_ai", None) if answer_talker else None
+
+        if memory_ai is None:
             st.info(
                 "MemoryAI インスタンスが取得できませんでした。\n\n"
                 "- Actor 内に answer_talker.memory_ai が存在しないか、\n"
                 "- まだ MemoryAI を組み込んでいない可能性があります。"
             )
         else:
-            # persona_id / file_path などあれば軽く表示
-            persona_id = getattr(mem_ai, "persona_id", "unknown")
-            file_path = getattr(mem_ai, "file_path", "(unknown)")
-            max_items = getattr(mem_ai, "max_store_items", None)
+            persona_id = getattr(memory_ai, "persona_id", "(unknown)")
+            max_records = getattr(memory_ai, "max_records", None)
 
             st.write(f"- persona_id: `{persona_id}`")
-            st.write(f"- storage_file: `{file_path}`")
-            if max_items is not None:
-                st.write(f"- max_store_items: `{max_items}`")
+            if max_records is not None:
+                st.write(f"- max_records: `{max_records}`")
+            st.write("- storage: session_state（インメモリ）")
 
-            memories = getattr(mem_ai, "memories", [])
-            if isinstance(memories, list) and memories:
-                st.markdown(f"#### 保存済み MemoryRecord 一覧（{len(memories)} 件）")
+            # 記憶一覧の取得（MemoryAI v2: get_all_records）
+            try:
+                records = memory_ai.get_all_records()
+            except Exception as e:
+                records = []
+                st.warning(f"MemoryRecord の取得に失敗しました: {e}")
 
-                # importance / created_at でソート（MemoryAI.build_memory_context と揃える）
-                try:
-                    sorted_mems = sorted(
-                        memories,
-                        key=lambda m: (getattr(m, "importance", 1), getattr(m, "created_at", "")),
-                        reverse=True,
-                    )
-                except Exception:
-                    sorted_mems = memories
-
-                for idx, mem in enumerate(sorted_mems):
-                    try:
-                        mid = getattr(mem, "id", "")
-                        importance = getattr(mem, "importance", 1)
-                        created_at = getattr(mem, "created_at", "")
-                        summary = getattr(mem, "summary", "")
-                        tags = getattr(mem, "tags", [])
-                        round_id = getattr(mem, "round_id", None)
-                        src_user = getattr(mem, "source_user", "")
-                        src_assistant = getattr(mem, "source_assistant", "")
-                    except Exception:
-                        st.write(f"- 記憶 {idx+1}: 取得中にエラーが発生しました。")
-                        continue
-
-                    with st.expander(f"記憶 {idx+1}: [imp={importance}] {summary[:40]}"):
-                        st.write(f"- id: `{mid}`")
-                        if round_id is not None:
-                            st.write(f"- round_id: `{round_id}`")
-                        st.write(f"- importance: `{importance}`")
-                        st.write(f"- created_at: `{created_at}`")
-                        if tags:
-                            st.write(f"- tags: `{', '.join(tags)}`")
-
-                        if summary:
-                            st.write("**summary:**")
-                            h = _auto_height(summary, base=60)
-                            st.text_area(
-                                f"mem_summary_{idx}",
-                                value=summary,
-                                height=h,
-                            )
-
-                        if src_user:
-                            st.write("**source_user:**")
-                            h = _auto_height(src_user, base=60)
-                            st.text_area(
-                                f"mem_src_user_{idx}",
-                                value=src_user,
-                                height=h,
-                            )
-
-                        if src_assistant:
-                            st.write("**source_assistant:**")
-                            h = _auto_height(src_assistant, base=60)
-                            st.text_area(
-                                f"mem_src_assistant_{idx}",
-                                value=src_assistant,
-                                height=h,
-                            )
-            else:
+            if not records:
                 st.info("現在、保存済みの MemoryRecord はありません。")
+            else:
+                st.markdown("#### 保存済み MemoryRecord 一覧")
+                for rec in records:
+                    label = f"記憶: [id={rec.id}, round={rec.round_id}]"
+                    st.text_input(
+                        label,
+                        value=rec.summary,
+                        key=f"memory_rec_{rec.id}",
+                    )
 
         st.markdown("---")
+        st.markdown("### llm_meta 内のメモリ関連メタ情報")
 
-        # llm_meta に積んでいるメモリ関連の情報も表示
-        st.markdown("#### llm_meta 内のメモリ関連メタ情報")
-
+        # memory_context
         mem_ctx = llm_meta.get("memory_context")
-        mem_update = llm_meta.get("memory_update")
-        mem_error = llm_meta.get("memory_update_error")
-
         if mem_ctx:
-            st.write("**memory_context（次ターン用に挿入されたテキスト）:**")
-            h = _auto_height(mem_ctx, base=80)
+            h = _auto_height(str(mem_ctx))
             st.text_area(
                 "memory_context",
-                value=mem_ctx,
+                value=str(mem_ctx),
                 height=h,
                 key="memory_context_area",
             )
         else:
             st.write("- memory_context: （未設定）")
 
+        # memory_update: {status, added, total, error}
+        mem_update = llm_meta.get("memory_update")
         if isinstance(mem_update, dict) and mem_update:
-            st.write("**memory_update（直近ターンの記憶更新結果）:**")
-            added = mem_update.get("added")
-            reason = mem_update.get("reason")
-            raw_reply = mem_update.get("raw_reply")
-
-            if reason:
-                st.write(f"- reason: `{reason}`")
-
-            if isinstance(added, list) and added:
-                st.write(f"- added: {len(added)} 件")
-                for i, rec in enumerate(added):
-                    if not isinstance(rec, dict):
-                        continue
-                    st.write(f"  - added[{i}]:")
-                    for k, v in rec.items():
-                        st.write(f"    - {k}: {v}")
-            else:
-                st.write("- added: []")
-
-            if raw_reply:
-                st.write("**raw_reply（MemoryAI 抽出用 LLM の生テキスト）:**")
-                h = _auto_height(raw_reply, base=80)
-                st.text_area(
-                    "memory_raw_reply",
-                    value=raw_reply,
-                    height=h,
-                    key="memory_raw_reply_area",
-                )
+            st.write("- memory_update:")
+            st.write(f"  - status: `{mem_update.get('status', '')}`")
+            st.write(f"  - added: `{mem_update.get('added', '')}`")
+            st.write(f"  - total: `{mem_update.get('total', '')}`")
+            err = mem_update.get("error")
+            if err:
+                st.write(f"  - error: `{err}`")
         else:
             st.write("- memory_update: （未設定）")
 
-        if mem_error:
-            st.write(f"- memory_update_error: `{mem_error}`")
+        extra_err = llm_meta.get("memory_update_error")
+        if extra_err:
+            st.write(f"- memory_update_error: `{extra_err}`")
 
         st.markdown("---")
 
@@ -438,7 +329,8 @@ class AnswerTalkerView:
             "`llm_meta` の内容（models / judge / composer / memory）を参照できます。"
         )
         st.markdown(
-            "> ※ この画面からは AnswerTalker.run_models() や MemoryAI.update_from_turn() などは実行しません。"
+            "> ※ この画面からは AnswerTalker.run_models() や "
+            "MemoryAI.update_from_turn() などは実行しません。"
             " 会談システムや別の処理でパイプラインを走らせたあとに開いてください。"
         )
 
