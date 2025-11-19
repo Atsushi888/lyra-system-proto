@@ -34,11 +34,13 @@ class AnswerTalker:
         llm_manager: LLMManager | None = None,
         memory_model: str = "gpt51",
     ) -> None:
+        self.persona_id = persona_id
+
         # -----------------------------
         # LLMManager の初期化
         # -----------------------------
         if llm_manager is None:
-            llm_manager = self._build_default_llm_manager()
+            llm_manager = self._build_default_llm_manager(persona_id)
         self.llm_manager: LLMManager = llm_manager
 
         # 互換用: model_props スナップショット
@@ -78,56 +80,40 @@ class AnswerTalker:
     # ============================
     # LLMManager デフォルト定義
     # ============================
-    def _build_default_llm_manager(self) -> LLMManager:
+    def _build_default_llm_manager(self, persona_id: str | None = None) -> LLMManager:
         """
         既定の LLM セットを登録した LLMManager を生成する。
         必要な環境変数が足りないモデルは available=False となり、自動で無効扱いになる。
+        persona_id ごとに priority や構成を変えることもできる。
         """
         mgr = LLMManager()
 
-        mgr.register_model(
-            LLMModelConfig(
-                name="gpt4o",
-                router_fn="call_gpt4o",
-                label="GPT-4o",
-                priority=3.0,
-                vendor="openai",
-                required_env=["OPENAI_API_KEY"],
-            )
-        )
-        mgr.register_model(
-            LLMModelConfig(
-                name="gpt51",
-                router_fn="call_gpt51",
-                label="GPT-5.1",
-                priority=2.0,
-                vendor="openai",
-                required_env=["OPENAI_API_KEY"],
-            )
-        )
-        mgr.register_model(
-            LLMModelConfig(
-                name="hermes",
-                router_fn="call_hermes",
-                label="Hermes 4",
-                priority=1.0,
-                vendor="openrouter",
-                required_env=["OPENROUTER_API_KEY"],
-            )
-        )
+        # 基本セット
+        mgr.register_model_gpt4o(priority=3.0)
+        mgr.register_model_gpt51(priority=2.0)
+        mgr.register_model_hermes4(priority=1.0)
 
-        # 将来 Grok 4.1 を追加する場合はここで:
-        # mgr.register_model(
-        #     LLMModelConfig(
-        #         name="grok41",
-        #         router_fn="call_grok41",
-        #         label="Grok 4.1",
-        #         priority=2.0,
-        #         vendor="xai",
-        #         required_env=["XAI_API_KEY"],
-        #     )
-        # )
+        pid = (persona_id or "").lower()
 
+        # ここから persona 別の調整を入れていける
+        if pid == "floria_ja":
+            # フローリア：情緒重視 → GPT-5.1 を少し厚めに
+            cfg_51 = mgr.get("gpt51")
+            if cfg_51:
+                cfg_51.priority = 4.0
+
+        elif pid == "succubus_senpai":
+            # サキュバス先輩：攻め＆ユーモア強め → Grok + Hermes を厚くする例
+            mgr.register_model_grok41(priority=3.5)
+            cfg_hermes = mgr.get("hermes")
+            if cfg_hermes:
+                cfg_hermes.priority = 3.0
+
+        elif pid == "elf_childhood_friend":
+            # 幼馴染エルフ：安定重視 → Hermes を切って 4o/5.1 に寄せる例
+            mgr.disable("hermes")
+
+        # その他の persona はデフォルトのまま
         return mgr
 
     # ============================
