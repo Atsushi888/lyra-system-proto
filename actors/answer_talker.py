@@ -1,3 +1,5 @@
+# actors/answer_talker.py
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -8,53 +10,43 @@ from actors.models_ai import ModelsAI
 from actors.judge_ai2 import JudgeAI2
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
+from llm.llm_manager import LLMManager, LLMModelConfig
 
 
 class AnswerTalker:
     """
     AI回答パイプラインの司令塔クラス。
 
-    - ModelsAI:   複数モデルから回答収集（gpt4o / gpt51 / hermes など）
-    - JudgeAI2:   どのモデルの回答を採用するかを決定
-    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
-    - MemoryAI:   会話ターンから長期記憶を抽出・保存し、次ターンに文脈を付与
+    - LLMManager : 利用可能な LLM の一覧・状態管理
+    - ModelsAI   : 複数モデルから回答収集（gpt4o / gpt51 / hermes など）
+    - JudgeAI2   : どのモデルの回答を採用するかを決定
+    - ComposerAI : 採用候補をもとに最終的な返答テキストを生成
+    - MemoryAI   : 会話ターンから長期記憶を抽出・保存し、次ターンに文脈を付与
 
-    ※ Persona と conversation_log から組み立てた messages を入力として、
-       自前で Models → Judge → Composer → Memory を回し、最終返答テキストを返す。
+    Persona と conversation_log から組み立てた messages を入力として、
+    自前で Memory → Models → Judge → Composer → MemoryUpdate を回し、
+    最終返答テキストを返す。
     """
 
     def __init__(
         self,
         persona_id: str = "default",
+        llm_manager: LLMManager | None = None,
         memory_model: str = "gpt51",
     ) -> None:
-        # ここを「モデル定義の唯一のソース」にする
-        # enabled        : このモデルを使うかどうか
-        # priority       : JudgeAI2 での優先度（大きいほど優先）
-        # router_fn      : LLMRouter 上のメソッド名
-        # label          : 表示用ラベル（デバッグ用）
-        self.model_props: Dict[str, Dict[str, Any]] = {
-            "gpt4o": {
-                "enabled": True,
-                "priority": 3,
-                "router_fn": "call_gpt4o",
-                "label": "GPT-4o",
-            },
-            "gpt51": {
-                "enabled": True,
-                "priority": 2,
-                "router_fn": "call_gpt51",
-                "label": "GPT-5.1",
-            },
-            "hermes": {
-                "enabled": True,
-                "priority": 1,
-                "router_fn": "call_hermes",
-                "label": "Hermes 4",
-            },
-        }
+        # -----------------------------
+        # LLMManager の初期化
+        # -----------------------------
+        if llm_manager is None:
+            llm_manager = self._build_default_llm_manager()
+        self.llm_manager: LLMManager = llm_manager
 
+        # 互換用: model_props スナップショット
+        self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
+
+        # -----------------------------
         # llm_meta の初期化（session_state 経由で共有）
+        # -----------------------------
         llm_meta = st.session_state.get("llm_meta")
         if not isinstance(llm_meta, dict):
             llm_meta = {}
@@ -69,17 +61,74 @@ class AnswerTalker:
         self.llm_meta: Dict[str, Any] = llm_meta
         st.session_state["llm_meta"] = self.llm_meta
 
-        # サブモジュールに model_props を渡す
-        self.models_ai = ModelsAI(self.model_props)
-        self.judge_ai = JudgeAI2(self.model_props)
+        # -----------------------------
+        # サブモジュール構築
+        # -----------------------------
+        self.models_ai = ModelsAI(self.llm_manager)
+        self.judge_ai = JudgeAI2(self.llm_manager)
         self.composer_ai = ComposerAI()
 
-        # MemoryAI 初期化（models_ai.router を共有）
+        # MemoryAI 初期化（ModelsAI と同じ LLMRouter を共有）
         self.memory_ai = MemoryAI(
             router=self.models_ai.router,
             persona_id=persona_id,
             model_name=memory_model,
         )
+
+    # ============================
+    # LLMManager デフォルト定義
+    # ============================
+    def _build_default_llm_manager(self) -> LLMManager:
+        """
+        既定の LLM セットを登録した LLMManager を生成する。
+        必要な環境変数が足りないモデルは available=False となり、自動で無効扱いになる。
+        """
+        mgr = LLMManager()
+
+        mgr.register_model(
+            LLMModelConfig(
+                name="gpt4o",
+                router_fn="call_gpt4o",
+                label="GPT-4o",
+                priority=3.0,
+                vendor="openai",
+                required_env=["OPENAI_API_KEY"],
+            )
+        )
+        mgr.register_model(
+            LLMModelConfig(
+                name="gpt51",
+                router_fn="call_gpt51",
+                label="GPT-5.1",
+                priority=2.0,
+                vendor="openai",
+                required_env=["OPENAI_API_KEY"],
+            )
+        )
+        mgr.register_model(
+            LLMModelConfig(
+                name="hermes",
+                router_fn="call_hermes",
+                label="Hermes 4",
+                priority=1.0,
+                vendor="openrouter",
+                required_env=["OPENROUTER_API_KEY"],
+            )
+        )
+
+        # 将来 Grok 4.1 を追加する場合はここで:
+        # mgr.register_model(
+        #     LLMModelConfig(
+        #         name="grok41",
+        #         router_fn="call_grok41",
+        #         label="Grok 4.1",
+        #         priority=2.0,
+        #         vendor="xai",
+        #         required_env=["XAI_API_KEY"],
+        #     )
+        # )
+
+        return mgr
 
     # ============================
     # 内部ヘルパ
