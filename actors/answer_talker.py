@@ -7,7 +7,7 @@ import streamlit as st
 from actors.models_ai import ModelsAI
 from actors.judge_ai2 import JudgeAI2
 from actors.composer_ai import ComposerAI
-from actors.composer_refiner import make_default_refiner
+from actors.memory_ai import MemoryAI
 
 
 class AnswerTalker:
@@ -17,13 +17,17 @@ class AnswerTalker:
     - ModelsAI:   複数モデルから回答収集（gpt4o / gpt51 / hermes など）
     - JudgeAI2:   どのモデルの回答を採用するかを決定
     - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
+    - MemoryAI:   会話ターンから長期記憶を抽出・保存し、次ターンに文脈を付与
 
-    ※ このクラスは「一次返答（reply_text）」を受け取らない。
-       Persona と conversation_log から組み立てた messages を入力として、
-       自前で Models → Judge → Composer を回し、最終的な返答テキストを返す。
+    ※ Persona と conversation_log から組み立てた messages を入力として、
+       自前で Models → Judge → Composer → Memory を回し、最終返答テキストを返す。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        persona_id: str = "default",
+        memory_model: str = "gpt51",
+    ) -> None:
         # ここを「モデル定義の唯一のソース」にする
         # enabled        : このモデルを使うかどうか
         # priority       : JudgeAI2 での優先度（大きいほど優先）
@@ -53,11 +57,14 @@ class AnswerTalker:
         # llm_meta の初期化（session_state 経由で共有）
         llm_meta = st.session_state.get("llm_meta")
         if not isinstance(llm_meta, dict):
-            llm_meta = {
-                "models": {},    # ModelsAI.collect の結果
-                "judge": {},     # JudgeAI2.process の結果
-                "composer": {},  # ComposerAI.compose の結果
-            }
+            llm_meta = {}
+
+        llm_meta.setdefault("models", {})
+        llm_meta.setdefault("judge", {})
+        llm_meta.setdefault("composer", {})
+        llm_meta.setdefault("memory_context", "")
+        llm_meta.setdefault("memory_update", {})
+        llm_meta.setdefault("memory_update_error", "")
 
         self.llm_meta: Dict[str, Any] = llm_meta
         st.session_state["llm_meta"] = self.llm_meta
@@ -65,20 +72,90 @@ class AnswerTalker:
         # サブモジュールに model_props を渡す
         self.models_ai = ModelsAI(self.model_props)
         self.judge_ai = JudgeAI2(self.model_props)
+        self.composer_ai = ComposerAI()
 
-        # refiner を注入した ComposerAI を構築
-        router_for_refine = self.models_ai.router
-        refiner = make_default_refiner(
-            router=router_for_refine,
-            model_props=self.model_props,
-            temperature=0.9,
-            max_tokens=900,
+        # MemoryAI 初期化（models_ai.router を共有）
+        self.memory_ai = MemoryAI(
+            router=self.models_ai.router,
+            persona_id=persona_id,
+            model_name=memory_model,
         )
-        self.composer_ai = ComposerAI(
-            refiner=refiner,
-            refiner_model="gpt51",  # デフォルトの仕上げモデル
-            enable_refine=True,
-        )
+
+    # ============================
+    # 内部ヘルパ
+    # ============================
+    @staticmethod
+    def _extract_last_user_content(messages: List[Dict[str, Any]]) -> str:
+        if not isinstance(messages, list):
+            return ""
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                return str(msg.get("content", ""))
+        return ""
+
+    # ============================
+    # MemoryAI: コンテキスト付与
+    # ============================
+    def attach_memory(
+        self,
+        messages: List[Dict[str, str]],
+        user_text: str = "",
+    ) -> List[Dict[str, str]]:
+        """
+        MemoryAI から「このターンで使うべき記憶コンテキスト」を取得し、
+        system メッセージとして差し込んだ新しい messages を返す。
+
+        - llm_meta["memory_context"] を更新
+        """
+        if not self.memory_ai:
+            self.llm_meta["memory_context"] = ""
+            st.session_state["llm_meta"] = self.llm_meta
+            return messages
+
+        query = user_text or self._extract_last_user_content(messages)
+
+        try:
+            mem_context = self.memory_ai.build_memory_context(
+                user_query=query,
+                max_items=5,
+            )
+            self.llm_meta["memory_context"] = mem_context
+            self.llm_meta["memory_update_error"] = ""
+        except Exception as e:
+            mem_context = ""
+            self.llm_meta["memory_context"] = ""
+            self.llm_meta["memory_update_error"] = f"build_memory_context error: {e}"
+
+        st.session_state["llm_meta"] = self.llm_meta
+
+        if not mem_context.strip():
+            return messages
+
+        # 既存の system の直後に差し込む
+        new_messages: List[Dict[str, str]] = []
+        inserted = False
+        for msg in messages:
+            new_messages.append(msg)
+            if not inserted and msg.get("role") == "system":
+                new_messages.append(
+                    {
+                        "role": "system",
+                        "content": mem_context,
+                    }
+                )
+                inserted = True
+
+        if not inserted:
+            # system がなければ先頭に挿入
+            new_messages.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": mem_context,
+                },
+            )
+
+        return new_messages
 
     # ============================
     # ModelsAI 呼び出し
@@ -102,28 +179,30 @@ class AnswerTalker:
         self,
         messages: List[Dict[str, str]],
         user_text: str = "",
+        round_id: int = 0,
     ) -> str:
         """
         Actor から messages（および任意で user_text）を受け取り、
+        - MemoryAI.build_memory_context（→ messages へ差し込み）
         - ModelsAI.collect
         - JudgeAI2.process
         - ComposerAI.compose
+        - MemoryAI.update_from_turn
         を順に実行して「最終返答テキスト」を返す。
 
         戻り値:
             final_text: str
         """
         if not messages:
-            # messages が空なら何もできないので空文字を返す
             return ""
 
-        # Composer / refiner 用に messages を共有
-        self.llm_meta["messages"] = messages
+        # 0. 記憶コンテキストを差し込む
+        messages_with_mem = self.attach_memory(messages, user_text=user_text)
 
-        # ① 複数モデルの回答収集
-        self.run_models(messages)
+        # 1. 複数モデルの回答収集
+        self.run_models(messages_with_mem)
 
-        # ② JudgeAI2 による採択
+        # 2. JudgeAI2 による採択
         try:
             models = self.llm_meta.get("models", {})
             judge_result = self.judge_ai.process(models)
@@ -137,11 +216,10 @@ class AnswerTalker:
 
         self.llm_meta["judge"] = judge_result
 
-        # ③ ComposerAI による仕上げ
+        # 3. ComposerAI による仕上げ
         try:
             composed = self.composer_ai.compose(self.llm_meta)
         except Exception as e:
-            # 失敗時は Judge の chosen_text をフォールバックとして使う
             fallback = ""
             if isinstance(judge_result, dict):
                 fallback = judge_result.get("chosen_text") or ""
@@ -152,13 +230,27 @@ class AnswerTalker:
             }
 
         self.llm_meta["composer"] = composed
-        st.session_state["llm_meta"] = self.llm_meta
 
-        # ④ 最終返答テキストの決定
+        # 4. 最終返答テキスト
         final_text = ""
         if isinstance(composed, dict):
             final_text = composed.get("text") or ""
         if not final_text and isinstance(judge_result, dict):
             final_text = judge_result.get("chosen_text") or ""
+
+        # 5. MemoryAI による記憶更新
+        if self.memory_ai:
+            try:
+                mem_update = self.memory_ai.update_from_turn(
+                    messages=messages_with_mem,
+                    final_reply=final_text,
+                    round_id=round_id,
+                )
+                self.llm_meta["memory_update"] = mem_update
+                self.llm_meta["memory_update_error"] = ""
+            except Exception as e:
+                self.llm_meta["memory_update_error"] = f"update_from_turn error: {e}"
+
+        st.session_state["llm_meta"] = self.llm_meta
 
         return final_text
