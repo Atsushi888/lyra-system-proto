@@ -53,13 +53,94 @@ class LLMManager:
         self._models: Dict[str, LLMModelConfig] = {}
 
     # -----------------------------
-    # 登録・削除
+    # 基本: 汎用登録・削除
     # -----------------------------
     def register_model(self, cfg: LLMModelConfig) -> None:
         self._models[cfg.name] = cfg
 
     def unregister_model(self, name: str) -> None:
         self._models.pop(name, None)
+
+    # -----------------------------
+    # 便利メソッド: 代表的な LLM を登録
+    # -----------------------------
+    def register_model_gpt4o(
+        self,
+        priority: float = 3.0,
+        enabled: bool = True,
+    ) -> None:
+        """
+        GPT-4o を既定設定で登録するヘルパー。
+        priority / enabled は呼び出し側で上書き可能。
+        """
+        cfg = LLMModelConfig(
+            name="gpt4o",
+            router_fn="call_gpt4o",
+            label="GPT-4o",
+            priority=priority,
+            enabled=enabled,
+            vendor="openai",
+            required_env=["OPENAI_API_KEY"],
+        )
+        self.register_model(cfg)
+
+    def register_model_gpt51(
+        self,
+        priority: float = 2.0,
+        enabled: bool = True,
+    ) -> None:
+        """
+        GPT-5.1 を既定設定で登録するヘルパー。
+        """
+        cfg = LLMModelConfig(
+            name="gpt51",
+            router_fn="call_gpt51",
+            label="GPT-5.1",
+            priority=priority,
+            enabled=enabled,
+            vendor="openai",
+            required_env=["OPENAI_API_KEY"],
+        )
+        self.register_model(cfg)
+
+    def register_model_hermes4(
+        self,
+        priority: float = 1.0,
+        enabled: bool = True,
+    ) -> None:
+        """
+        Hermes 4（OpenRouter 経由）を既定設定で登録するヘルパー。
+        """
+        cfg = LLMModelConfig(
+            name="hermes",
+            router_fn="call_hermes",
+            label="Hermes 4",
+            priority=priority,
+            enabled=enabled,
+            vendor="openrouter",
+            required_env=["OPENROUTER_API_KEY"],
+        )
+        self.register_model(cfg)
+
+    def register_model_grok41(
+        self,
+        priority: float = 2.0,
+        enabled: bool = True,
+    ) -> None:
+        """
+        Grok 4.1 用（xAI）。
+        XAI_API_KEY など、必要な環境変数名はここで一元管理。
+        """
+        cfg = LLMModelConfig(
+            name="grok41",
+            router_fn="call_grok41",
+            label="Grok 4.1",
+            priority=priority,
+            enabled=enabled,
+            vendor="xai",
+            required_env=["XAI_API_KEY"],
+        )
+        self.register_model(cfg)
 
     # -----------------------------
     # 有効・無効切り替え
