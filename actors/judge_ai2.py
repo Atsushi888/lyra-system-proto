@@ -4,24 +4,20 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from llm.llm_manager import LLMManager
+
 
 class JudgeAI2:
     """
     ModelsAI が集めた各モデルの回答を評価して、
     「どのモデルのテキストを採用するか」を決めるクラス。
 
-    - __init__ で AnswerTalker から model_props を受け取る
+    - __init__ で LLMManager を受け取り、model_props 相当を参照する
     - process(models) で candidates を作り、ベストを一つ選ぶ
     """
 
-    def __init__(self, model_props: Dict[str, Dict[str, Any]]) -> None:
-        # 例:
-        # {
-        #   "gpt4o": {"enabled": True, "priority": 3, ...},
-        #   "gpt51": {"enabled": True, "priority": 2, ...},
-        #   "hermes": {"enabled": True, "priority": 1, ...},
-        # }
-        self.model_props = model_props or {}
+    def __init__(self, llm_manager: LLMManager) -> None:
+        self.llm_manager = llm_manager
 
     # ---------------------------------
     # 内部: 候補モデル一覧を構築
@@ -32,8 +28,10 @@ class JudgeAI2:
     ) -> List[Dict[str, Any]]:
         candidates: List[Dict[str, Any]] = []
 
-        # model_props に定義されているモデルをベースに評価
-        for name, props in self.model_props.items():
+        # LLMManager に定義されているモデルをベースに評価
+        model_props = self.llm_manager.get_model_props()
+
+        for name, props in model_props.items():
             info = models.get(name)
 
             # priority は float に正規化
@@ -133,7 +131,8 @@ class JudgeAI2:
         chosen_text = best.get("text", "")
 
         # priority を再取得（理由テキスト用）
-        props = self.model_props.get(chosen_name, {})
+        props_all = self.llm_manager.get_model_props()
+        props = props_all.get(chosen_name, {})
         if isinstance(props, dict):
             p_raw = props.get("priority", 1.0)
             try:
@@ -158,6 +157,11 @@ class JudgeAI2:
             f"{chosen_name} の出力が他候補と比べて総合スコアが最も高かったため、"
             f"このラウンドでは {chosen_name} を採用しました。"
         )
+
+        # 既存ビュー互換のため、candidates 側に "model" キーも付けておく
+        for c in candidates:
+            if "model" not in c:
+                c["model"] = c.get("name", "")
 
         return {
             "status": "ok",
