@@ -131,7 +131,16 @@ class LLMRouter:
             max_completion_tokens=int(max_tokens),
         )
 
-        reply_text = resp.choices[0].message.content or ""
+        # ★ ここを少しだけ強化する
+        raw_content = resp.choices[0].message.content
+
+        if not raw_content:
+            # 中身が空なら「成功」とはみなさずエラーにしてしまう
+            # → ModelsAI 側で status:error になり、llm_meta['models']['gpt51']['error']
+            #    に resp 全体の情報が入るので原因を確認しやすくなる
+            raise RuntimeError(f"gpt51 returned empty content: {resp}")
+
+        reply_text = raw_content
         usage: Dict[str, Any] = {}
         if getattr(resp, "usage", None) is not None:
             usage = {
