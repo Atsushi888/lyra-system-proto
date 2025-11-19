@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
-from llm.llm_manager import LLMManager  # ★ LLMRouter ではなく LLMManager を依存先にする
+from llm.llm_manager import LLMManager  # ★ 依存先は LLMManager
 
 
 @dataclass
@@ -126,7 +126,6 @@ class MemoryAI:
         ]
 
         try:
-            # ★ LLMManager に「モデル名で投げる」
             raw = self.llm_manager.call_model(
                 name=self.model_name,
                 messages=messages,
@@ -136,7 +135,7 @@ class MemoryAI:
         except Exception:
             return None
 
-        # call_model は LLMRouter 経由で (reply_text, usage) を返す設計
+        # call_model は (reply_text, usage) を返す想定
         if isinstance(raw, tuple) and raw:
             reply_text = raw[0]
         else:
@@ -150,6 +149,13 @@ class MemoryAI:
             return None
 
         return text
+
+    # ============================
+    # 公開: 全 MemoryRecord を取得
+    # ============================
+    def get_all_records(self) -> List[MemoryRecord]:
+        store = self._get_store()
+        return [MemoryRecord(**r) for r in store]
 
     # ============================
     # 公開: コンテキスト生成
@@ -172,6 +178,7 @@ class MemoryAI:
 
         records: List[MemoryRecord] = [MemoryRecord(**r) for r in store]
 
+        # id の新しい順に並べてから、古い→新しい順に戻す
         records_sorted = sorted(records, key=lambda r: r.id, reverse=True)
         picked = records_sorted[:max_items]
         picked = list(reversed(picked))
@@ -200,8 +207,17 @@ class MemoryAI:
         1ラウンド分の会話終了後に呼ばれ、
         「このラウンドから何か覚えるべきことがあるか」を判定し、
         あればメモリストアに追加する。
+
+        戻り値:
+            {
+              "status": "ok" | "skip" | "error",
+              "added": int,          # 追加されたメモ数
+              "total": int,          # 総メモ数
+              "error": Optional[str]
+            }
         """
         try:
+            # 会話ログを簡易テキストにまとめる
             chunks: List[str] = []
             for m in messages:
                 role = m.get("role")
@@ -213,6 +229,7 @@ class MemoryAI:
                 elif role == "assistant":
                     chunks.append(f"[ASSISTANT] {content}")
                 elif role == "system":
+                    # system は長くなるので今はスキップ
                     continue
 
             if final_reply:
@@ -240,6 +257,7 @@ class MemoryAI:
             )
             store.append(asdict(rec))
 
+            # 上限を超えたら古いものから削除
             if len(store) > self.max_records:
                 overflow = len(store) - self.max_records
                 store = store[overflow:]
