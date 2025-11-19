@@ -30,7 +30,7 @@ class LyraSystem:
 
         # 画面切り替えコントローラ
         self.switcher = ModeSwitcher(
-            default_key="PLAY",
+            default_key="COUNCIL",
             session_key="view_mode",
         )
 
