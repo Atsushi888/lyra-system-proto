@@ -36,31 +36,29 @@ class AnswerTalker:
     ) -> None:
         self.persona = persona
 
-        # Persona に char_id があればそれを使う（例: "floria_ja"）
         persona_id = getattr(self.persona, "char_id", "default")
 
-        # LLMManager は factory から取得（アプリ全体で 1 個を共有）
-        # ※ persona_id 引数は後方互換のために残しているが、実装上は無視される
-        self.llm_manager: LLMManager = llm_manager or get_llm_manager()
+        # ★ ここで get_llm_manager() を呼ぶ。
+        #    LLMManager.get_or_create() につながるので、
+        #    UserView / AnswerTalker / Council など全部が同じインスタンスを共有する。
+        self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
 
-        # 下流クラスに渡す model_props（enabled / priority などを含む）
+        # ↓ 以下はこれまで通り
         self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
 
-        # llm_meta の初期化（session_state 経由で共有）
         llm_meta = st.session_state.get("llm_meta")
         if not isinstance(llm_meta, dict):
             llm_meta = {
-                "models": {},          # ModelsAI.collect の結果
-                "judge": {},           # JudgeAI2.process の結果
-                "composer": {},        # ComposerAI.compose の結果
-                "memory_context": "",  # MemoryAI.build_memory_context の結果
-                "memory_update": {},   # MemoryAI.update_from_turn の結果
+                "models": {},
+                "judge": {},
+                "composer": {},
+                "memory_context": "",
+                "memory_update": {},
             }
 
         self.llm_meta: Dict[str, Any] = llm_meta
         st.session_state["llm_meta"] = self.llm_meta
 
-        # サブモジュール初期化
         self.models_ai = ModelsAI(self.llm_manager)
         self.judge_ai = JudgeAI2(self.model_props)
         self.composer_ai = ComposerAI()
