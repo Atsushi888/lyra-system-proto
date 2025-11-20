@@ -2,140 +2,91 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
-import os
 
-# YAML は optional 扱い（無ければ RuntimeError を投げてフォールバック）
-try:
-    import yaml  # type: ignore[import]
-except Exception:  # pragma: no cover - optional dependency
-    yaml = None  # type: ignore[assignment]
+import streamlit as st
 
 
 @dataclass
 class LLMModelConfig:
-    """
-    1 モデル分の定義情報。
-    """
-
-    name: str
-    router_fn: str
-    label: str
-    priority: float = 1.0
-    vendor: str = "unknown"
-    roles: List[str] = field(default_factory=lambda: ["main"])
-    required_env: List[str] = field(default_factory=list)
+    name: str                 # 内部キー（"gpt4o" など）
+    router_fn: str            # LLMRouter 上のメソッド名
+    label: str                # UI 用表示名
+    priority: float = 1.0     # JudgeAI2 用の重み
+    vendor: str = "custom"    # "openai" / "groq" / ...
     enabled: bool = True
-    default_params: Dict[str, Any] = field(default_factory=dict)
+    required_env: Optional[List[str]] = None
 
-    def is_available(self) -> bool:
-        """
-        enabled かつ required_env が全部そろっているなら True。
-        """
-        if not self.enabled:
-            return False
-        for key in self.required_env:
-            if not os.getenv(key):
-                return False
-        return True
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        # None を消しておくと扱いやすい
+        if d.get("required_env") is None:
+            d["required_env"] = []
+        return d
 
 
 class LLMManager:
     """
-    LLM 設定のハブ。
+    persona_id ごとに LLM の設定を管理するクラス。
 
-    - モデル定義（優先度 / vendor / 必要な env など）を一元管理
-    - AnswerTalker / ModelsAI / JudgeAI2 はここから model_props をもらう
-    - 設定元は:
-        - YAML (config/llm_default.yaml)
-        - もしくはコード内の register_xxx() でハードコード
+    - get_model_props(): 画面描画や JudgeAI2 に渡す設定を返す
+    - register_gpt4o / gpt51 / hermes(): よく使うモデルの登録ヘルパ
+    - get(persona_id): persona ごとのシングルトンを返すクラスメソッド
     """
 
-    def __init__(
-        self,
-        persona_id: str = "default",
-        models: Optional[Dict[str, LLMModelConfig]] = None,
-    ) -> None:
-        self.persona_id = persona_id
-        self.models: Dict[str, LLMModelConfig] = models or {}
+    # ★ レジストリを session_state に置くためのキー
+    _SESSION_REG_KEY = "llm_manager_registry_v2"
 
-    # ============================
-    # YAML からロード
-    # ============================
+    # -------- クラスメソッド: レジストリ管理 --------
+
     @classmethod
-    def from_yaml(cls, path: str, persona_id: str = "default") -> "LLMManager":
+    def _get_registry(cls) -> Dict[str, "LLMManager"]:
+        reg = st.session_state.get(cls._SESSION_REG_KEY)
+        if not isinstance(reg, dict):
+            reg = {}
+            st.session_state[cls._SESSION_REG_KEY] = reg
+        return reg
+
+    @classmethod
+    def get(cls, persona_id: str = "default") -> "LLMManager":
         """
-        config/llm_default.yaml などからモデル一覧をロードする。
+        persona_id ごとに 1 個だけ LLMManager インスタンスを返す。
 
-        YAML 形式:
-            models:
-              gpt4o:
-                label: "GPT-4o"
-                router_fn: "call_gpt4o"
-                priority: 3.0
-                vendor: "openai"
-                roles: ["main", "refiner"]
-                required_env: ["OPENAI_API_KEY"]
-                enabled: true
-                default_params:
-                  temperature: 0.9
-                  max_tokens: 900
+        まだ無ければ新規作成し、デフォルトモデルを登録する。
         """
-        if yaml is None:
-            raise RuntimeError(
-                "PyYAML がインストールされていないため、YAML からのロードができません。"
-                " `pip install pyyaml` を実行してください。"
-            )
+        reg = cls._get_registry()
+        mgr = reg.get(persona_id)
 
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"LLM 設定ファイルが見つかりません: {path}")
+        if mgr is None:
+            mgr = cls(persona_id=persona_id)
 
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            # ここで「初期状態ならデフォルトモデルを登録」
+            if not mgr.get_model_props():
+                mgr.register_gpt4o(priority=3.0, enabled=True)
+                mgr.register_gpt51(priority=2.0, enabled=True)
+                mgr.register_hermes(priority=1.0, enabled=True)
 
-        raw_models = data.get("models") or {}
-        if not isinstance(raw_models, dict):
-            raise RuntimeError("YAML のフォーマットが不正です（models が dict ではありません）。")
+            reg[persona_id] = mgr
+            st.session_state[cls._SESSION_REG_KEY] = reg
 
-        models: Dict[str, LLMModelConfig] = {}
-        for name, raw in raw_models.items():
-            if not isinstance(raw, dict):
-                continue
-            router_fn = raw.get("router_fn")
-            if not router_fn:
-                # router_fn が無いモデルはスキップ
-                continue
+        return mgr
 
-            cfg = LLMModelConfig(
-                name=name,
-                router_fn=str(router_fn),
-                label=str(raw.get("label", name)),
-                priority=float(raw.get("priority", 1.0)),
-                vendor=str(raw.get("vendor", "unknown")),
-                roles=list(raw.get("roles", ["main"])),
-                required_env=list(raw.get("required_env", [])),
-                enabled=bool(raw.get("enabled", True)),
-                default_params=raw.get("default_params") or {},
-            )
-            models[name] = cfg
+    # -------- インスタンス部分 --------
 
-        return cls(persona_id=persona_id, models=models)
+    def __init__(self, persona_id: str = "default") -> None:
+        self.persona_id = persona_id
+        # name -> props dict
+        self._models: Dict[str, Dict[str, Any]] = {}
 
-    # ============================
-    # 手動登録 API
-    # ============================
-    def register_model(
-        self,
-        config: LLMModelConfig,
-        enabled: Optional[bool] = None,
-    ) -> None:
-        """
-        1 モデルを登録する共通ユーティリティ。
-        """
-        if enabled is not None:
-            config.enabled = enabled
-        self.models[config.name] = config
+    # モデル登録系 -----------------------
+
+    def register_model(self, cfg: LLMModelConfig) -> None:
+        d = cfg.to_dict()
+        name = d["name"]
+        self._models[name] = d
+
+    # ショートカット: gpt4o / gpt51 / hermes
 
     def register_gpt4o(self, priority: float = 3.0, enabled: bool = True) -> None:
         self.register_model(
@@ -145,13 +96,12 @@ class LLMManager:
                 label="GPT-4o",
                 priority=priority,
                 vendor="openai",
-                roles=["main", "refiner"],
-                required_env=["OPENAI_API_KEY"],
                 enabled=enabled,
+                required_env=["OPENAI_API_KEY"],
             )
         )
 
-    def register_gpt51(self, priority: float = 4.0, enabled: bool = True) -> None:
+    def register_gpt51(self, priority: float = 2.0, enabled: bool = True) -> None:
         self.register_model(
             LLMModelConfig(
                 name="gpt51",
@@ -159,95 +109,33 @@ class LLMManager:
                 label="GPT-5.1",
                 priority=priority,
                 vendor="openai",
-                roles=["main", "memory"],
-                required_env=["OPENAI_API_KEY", "GPT51_MODEL"],
                 enabled=enabled,
+                required_env=["OPENAI_API_KEY"],
             )
         )
 
-    def register_hermes(self, priority: float = 2.0, enabled: bool = True) -> None:
+    def register_hermes(self, priority: float = 1.0, enabled: bool = True) -> None:
         self.register_model(
             LLMModelConfig(
                 name="hermes",
                 router_fn="call_hermes",
-                label="Hermes 4",
+                label="Hermes",
                 priority=priority,
-                vendor="openrouter",
-                roles=["main"],
-                required_env=["OPENROUTER_API_KEY"],
+                vendor="groq",
                 enabled=enabled,
+                required_env=["GROQ_API_KEY"],
             )
         )
 
-    # ============================
-    # 下流（ModelsAI / JudgeAI2）向け props 生成
-    # ============================
-    def get_model_props(
-        self,
-        role: Optional[str] = None,
-    ) -> Dict[str, Dict[str, Any]]:
+    # 参照系 ---------------------------
+
+    def get_model_props(self) -> Dict[str, Dict[str, Any]]:
         """
-        下流でそのまま使える dict を返す。
-
-        戻り値のイメージ:
-            {
-              "gpt4o": {
-                "router_fn": "call_gpt4o",
-                "label": "GPT-4o",
-                "priority": 3.0,
-                "vendor": "openai",
-                "enabled": True,
-                "required_env": [...],
-                "default_params": {...},
-              },
-              ...
-            }
+        name -> props の dict を返す。
+        AnswerTalker / ModelsAI / LLMManagerView から参照される。
         """
-        result: Dict[str, Dict[str, Any]] = {}
+        return dict(self._models)
 
-        for name, cfg in self.models.items():
-            if role and role not in cfg.roles:
-                continue
-
-            result[name] = {
-                "router_fn": cfg.router_fn,
-                "label": cfg.label,
-                "priority": cfg.priority,
-                "vendor": cfg.vendor,
-                # env が足りているかどうかを反映した enabled
-                "enabled": cfg.is_available(),
-                "required_env": list(cfg.required_env),
-                "default_params": dict(cfg.default_params),
-                "roles": list(cfg.roles),
-            }
-
-        return result
-
-    # ============================
-    # UI 用ステータスサマリ
-    # ============================
-    def get_status_summary(self) -> Dict[str, Any]:
-        """
-        「どのモデルが使えるか」を UI に表示するためのメタ情報。
-        """
-        items: List[Dict[str, Any]] = []
-
-        for name, cfg in self.models.items():
-            missing = [k for k in cfg.required_env if not os.getenv(k)]
-            items.append(
-                {
-                    "name": name,
-                    "label": cfg.label,
-                    "vendor": cfg.vendor,
-                    "roles": list(cfg.roles),
-                    "enabled": cfg.enabled,
-                    "available": cfg.enabled and not missing,
-                    "missing_env": missing,
-                    "priority": cfg.priority,
-                }
-            )
-
-        return {
-            "persona_id": self.persona_id,
-            "models": items,
-        }
+    def as_list(self) -> List[Dict[str, Any]]:
+        """UI 用に list でも欲しくなった時用のヘルパ。"""
+        return list(self._models.values())
