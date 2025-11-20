@@ -13,7 +13,7 @@ class Actor:
         self.name = name
         self.persona = persona
         self.router = router or LLMRouter()
-        self.answer_talker = AnswerTalker(persona=self.persona
+        self.answer_talker = AnswerTalker(persona=self.persona)
 
     def speak(self, conversation_log: List[Dict[str, str]]) -> str:
         # 最新のプレイヤー発言を拾う
