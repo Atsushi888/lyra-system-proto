@@ -1,141 +1,166 @@
 # llm/llm_manager.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional
-
-import streamlit as st
+from typing import Any, Dict, Optional
 
 
 @dataclass
 class LLMModelConfig:
-    name: str                 # 内部キー（"gpt4o" など）
-    router_fn: str            # LLMRouter 上のメソッド名
-    label: str                # UI 用表示名
-    priority: float = 1.0     # JudgeAI2 用の重み
-    vendor: str = "custom"    # "openai" / "groq" / ...
+    """
+    1 モデル分の設定情報。
+
+    name:
+        モデル識別名（"gpt4o", "gpt51", "hermes" など）
+
+    vendor:
+        ベンダー識別用の文字列（"openai", "openrouter" など）
+
+    router_fn:
+        LLMRouter 上の呼び出し関数名（"call_gpt4o" など）
+
+    priority:
+        モデルの優先度。JudgeAI2 等での重みづけに使う想定。
+
+    enabled:
+        利用するかどうかのフラグ。
+
+    extra:
+        env_key など、拡張用の任意のメタ情報。
+    """
+
+    name: str
+    vendor: str
+    router_fn: str
+    priority: float = 1.0
     enabled: bool = True
-    required_env: Optional[List[str]] = None
+    extra: Dict[str, Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        d = asdict(self)
-        # None を消しておくと扱いやすい
-        if d.get("required_env") is None:
-            d["required_env"] = []
-        return d
+        data = asdict(self)
+        # extra が None のときは空 dict にしておく
+        if data.get("extra") is None:
+            data["extra"] = {}
+        return data
 
 
 class LLMManager:
     """
-    persona_id ごとに LLM の設定を管理するクラス。
+    LLM モデル群の設定・管理クラス。
 
-    - get_model_props(): 画面描画や JudgeAI2 に渡す設定を返す
-    - register_gpt4o / gpt51 / hermes(): よく使うモデルの登録ヘルパ
-    - get(persona_id): persona ごとのシングルトンを返すクラスメソッド
+    役割:
+      - 利用可能な LLM モデルのメタ情報を一元管理する
+      - アプリ全体で共有されることを前提（factory 経由で取得）
+
+    想定される利用箇所:
+      - AnswerTalker / ModelsAI / JudgeAI2 などのバックエンド
+      - LLM 設定ビュー（ユーザー設定画面）
     """
 
-    # ★ レジストリを session_state に置くためのキー
-    _SESSION_REG_KEY = "llm_manager_registry_v2"
-
-    # -------- クラスメソッド: レジストリ管理 --------
-
-    @classmethod
-    def _get_registry(cls) -> Dict[str, "LLMManager"]:
-        reg = st.session_state.get(cls._SESSION_REG_KEY)
-        if not isinstance(reg, dict):
-            reg = {}
-            st.session_state[cls._SESSION_REG_KEY] = reg
-        return reg
-
-    @classmethod
-    def get(cls, persona_id: str = "default") -> "LLMManager":
-        """
-        persona_id ごとに 1 個だけ LLMManager インスタンスを返す。
-
-        まだ無ければ新規作成し、デフォルトモデルを登録する。
-        """
-        reg = cls._get_registry()
-        mgr = reg.get(persona_id)
-
-        if mgr is None:
-            mgr = cls(persona_id=persona_id)
-
-            # ここで「初期状態ならデフォルトモデルを登録」
-            if not mgr.get_model_props():
-                mgr.register_gpt4o(priority=3.0, enabled=True)
-                mgr.register_gpt51(priority=2.0, enabled=True)
-                mgr.register_hermes(priority=1.0, enabled=True)
-
-            reg[persona_id] = mgr
-            st.session_state[cls._SESSION_REG_KEY] = reg
-
-        return mgr
-
-    # -------- インスタンス部分 --------
-
-    def __init__(self, persona_id: str = "default") -> None:
-        self.persona_id = persona_id
-        # name -> props dict
+    def __init__(self) -> None:
+        # name -> config_dict
         self._models: Dict[str, Dict[str, Any]] = {}
 
-    # モデル登録系 -----------------------
-
-    def register_model(self, cfg: LLMModelConfig) -> None:
-        d = cfg.to_dict()
-        name = d["name"]
-        self._models[name] = d
-
-    # ショートカット: gpt4o / gpt51 / hermes
-
-    def register_gpt4o(self, priority: float = 3.0, enabled: bool = True) -> None:
-        self.register_model(
-            LLMModelConfig(
-                name="gpt4o",
-                router_fn="call_gpt4o",
-                label="GPT-4o",
-                priority=priority,
-                vendor="openai",
-                enabled=enabled,
-                required_env=["OPENAI_API_KEY"],
-            )
+    # ------------------------------------------------------------------
+    # 共通インターフェース
+    # ------------------------------------------------------------------
+    def register_model(
+        self,
+        name: str,
+        *,
+        vendor: str,
+        router_fn: str,
+        priority: float = 1.0,
+        enabled: bool = True,
+        **extra: Any,
+    ) -> None:
+        """
+        任意の LLM モデルを登録するための汎用メソッド。
+        """
+        cfg = LLMModelConfig(
+            name=name,
+            vendor=vendor,
+            router_fn=router_fn,
+            priority=priority,
+            enabled=enabled,
+            extra=extra or {},
         )
+        self._models[name] = cfg.to_dict()
 
-    def register_gpt51(self, priority: float = 2.0, enabled: bool = True) -> None:
-        self.register_model(
-            LLMModelConfig(
-                name="gpt51",
-                router_fn="call_gpt51",
-                label="GPT-5.1",
-                priority=priority,
-                vendor="openai",
-                enabled=enabled,
-                required_env=["OPENAI_API_KEY"],
-            )
-        )
-
-    def register_hermes(self, priority: float = 1.0, enabled: bool = True) -> None:
-        self.register_model(
-            LLMModelConfig(
-                name="hermes",
-                router_fn="call_hermes",
-                label="Hermes",
-                priority=priority,
-                vendor="groq",
-                enabled=enabled,
-                required_env=["GROQ_API_KEY"],
-            )
-        )
-
-    # 参照系 ---------------------------
+    def unregister_model(self, name: str) -> None:
+        """
+        モデル設定を削除する（存在しなければ黙って無視）。
+        """
+        self._models.pop(name, None)
 
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
         """
-        name -> props の dict を返す。
-        AnswerTalker / ModelsAI / LLMManagerView から参照される。
+        現在登録されている全モデル設定を返す。
+
+        戻り値は shallow copy にしておくことで、
+        呼び出し側から直接内部 dict をいじれないようにしている。
         """
         return dict(self._models)
 
-    def as_list(self) -> List[Dict[str, Any]]:
-        """UI 用に list でも欲しくなった時用のヘルパ。"""
-        return list(self._models.values())
+    def get_model(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        単一モデルの設定を取得。無ければ None。
+        """
+        return self._models.get(name)
+
+    # ------------------------------------------------------------------
+    # プリセットモデル登録
+    # ------------------------------------------------------------------
+    def register_gpt4o(self, *, priority: float = 3.0, enabled: bool = True) -> None:
+        """
+        OpenAI GPT-4o 用のプリセット。
+        """
+        self.register_model(
+            "gpt4o",
+            vendor="openai",
+            router_fn="call_gpt4o",
+            priority=priority,
+            enabled=enabled,
+            env_key="OPENAI_API_KEY",
+            model_family="gpt-4o",
+        )
+
+    def register_gpt51(self, *, priority: float = 2.0, enabled: bool = True) -> None:
+        """
+        GPT-5.1 (仮) 用プリセット。
+        """
+        self.register_model(
+            "gpt51",
+            vendor="openai",
+            router_fn="call_gpt51",
+            priority=priority,
+            enabled=enabled,
+            env_key="OPENAI_API_KEY",
+            model_family="gpt-5.1",
+        )
+
+    def register_hermes(self, *, priority: float = 1.0, enabled: bool = True) -> None:
+        """
+        Hermes (OpenRouter 経由など) 用プリセット。
+        """
+        self.register_model(
+            "hermes",
+            vendor="openrouter",
+            router_fn="call_hermes",
+            priority=priority,
+            enabled=enabled,
+            env_key="OPENROUTER_API_KEY",
+            model_family="hermes",
+        )
+
+    def register_default_models(self) -> None:
+        """
+        デフォルトの 3 モデルを登録するユーティリティ。
+
+        - gpt4o
+        - gpt51
+        - hermes
+        """
+        self.register_gpt4o(priority=3.0, enabled=True)
+        self.register_gpt51(priority=2.0, enabled=True)
+        self.register_hermes(priority=1.0, enabled=True)
