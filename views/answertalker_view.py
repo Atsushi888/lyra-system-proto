@@ -204,13 +204,7 @@ def create_answertalker_view() -> "AnswerTalkerView":
 
 def create_answertalker_view() -> "AnswerTalkerView":
     """
-    ModeSwitcher から呼ばれるファクトリ関数。
-
-    遅延 import にすることで、他ビューや Council 周りとの
-    循環 import の影響を最小化する。
+    ModeSwitcher から呼ぶための小さなファクトリ。
+    必要ならここで LLMManager 共有などの調整をする。
     """
-    # ここでローカル import しておけば、循環参照が起きても
-    # 実際に呼ぶタイミングで最新の定義を拾える
-    from views.answertalker_view import AnswerTalkerView as _AnswerTalkerView
-
-    return _AnswerTalkerView()
+    return AnswerTalkerView()
