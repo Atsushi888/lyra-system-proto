@@ -1,143 +1,248 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Callable, List
-import os
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
-from llm.router_openai import call_gpt4o, call_gpt51
-from llm.router_openrouter import call_hermes
+
+@dataclass
+class LLMModelConfig:
+    """
+    1つの LLM モデルに関する設定情報。
+
+    - name:       論理名（"gpt4o", "gpt51", "hermes" など）
+    - vendor:     ベンダー種別（"openai", "openrouter" など）
+    - router_fn:  LLMRouter 内で呼び出すメソッド名（文字列）
+    - priority:   優先度（大きいほど優先）
+    - enabled:    有効フラグ
+    - extra:      APIキー名や model_family などの追加情報
+    """
+    name: str
+    vendor: str
+    router_fn: str
+    priority: float = 1.0
+    enabled: bool = True
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 class LLMManager:
     """
-    - LLM モデル管理クラス
-    - register_xxx() / get_model_props() を提供
-    - call_model() を全モデル共通の呼び出しインターフェースとして提供
+    LLM モデル群のメタ情報を管理するクラス。
+
+    役割はあくまで「設定のレジストリ」であって、
+    ここから直接 API 呼び出しは行わない。
+
+    実際の呼び出しは ModelsAI 内の LLMRouter が、
+    `router_fn` で指定されたメソッド名を使って行う想定。
     """
 
-    def __init__(self, persona_id: str = "default") -> None:
-        self.persona_id = persona_id
+    def __init__(self, key: str = "default") -> None:
+        # persona ごとなどに分けたい時用の識別子
+        self.key = key
+        # name -> LLMModelConfig
+        self._models: Dict[str, LLMModelConfig] = {}
 
-        # モデル定義の辞書
-        #   models = {
-        #       "gpt4o": {
-        #           "vendor": "openai",
-        #           "router_fn": call_gpt4o,
-        #           "priority": 3.0,
-        #           "enabled": True,
-        #           "extra": {
-        #               "env_key": "OPENAI_API_KEY",
-        #               "model_family": "gpt4o",
-        #           }
-        #       },
-        #       ...
-        #   }
-        self.models: Dict[str, Dict[str, Any]] = {}
+    # ==============================
+    # モデル登録系
+    # ==============================
+    def register_model(
+        self,
+        name: str,
+        *,
+        vendor: str,
+        router_fn: str,
+        priority: float = 1.0,
+        enabled: bool = True,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        汎用のモデル登録メソッド。
+        """
+        cfg = LLMModelConfig(
+            name=name,
+            vendor=vendor,
+            router_fn=router_fn,
+            priority=priority,
+            enabled=enabled,
+            extra=extra or {},
+        )
+        self._models[name] = cfg
 
-    # -------------------------------------------------------
-    # ■ モデル登録メソッド
-    # -------------------------------------------------------
+    # --- 便利メソッド（標準3モデル） --------------------
 
-    def register_gpt4o(self, priority: float = 3.0, enabled: bool = True) -> None:
-        self.models["gpt4o"] = {
-            "vendor": "openai",
-            "router_fn": call_gpt4o,
-            "priority": priority,
-            "enabled": enabled,
-            "extra": {
+    def register_gpt4o(self, *, priority: float = 3.0, enabled: bool = True) -> None:
+        """
+        gpt-4o 系のモデルを登録するためのヘルパ。
+        実際の呼び出しは LLMRouter.call_gpt4o() を使う前提。
+        """
+        self.register_model(
+            "gpt4o",
+            vendor="openai",
+            router_fn="call_gpt4o",
+            priority=priority,
+            enabled=enabled,
+            extra={
                 "env_key": "OPENAI_API_KEY",
-                "model_family": "gpt4o",
+                "model_family": "gpt-4o",
             },
-        }
+        )
 
-    def register_gpt51(self, priority: float = 2.0, enabled: bool = True) -> None:
-        self.models["gpt51"] = {
-            "vendor": "openai",
-            "router_fn": call_gpt51,
-            "priority": priority,
-            "enabled": enabled,
-            "extra": {
+    def register_gpt51(self, *, priority: float = 2.0, enabled: bool = True) -> None:
+        """
+        gpt-5.1 系のモデルを登録するためのヘルパ。
+        実際の呼び出しは LLMRouter.call_gpt51() を使う前提。
+        """
+        self.register_model(
+            "gpt51",
+            vendor="openai",
+            router_fn="call_gpt51",
+            priority=priority,
+            enabled=enabled,
+            extra={
                 "env_key": "OPENAI_API_KEY",
                 "model_family": "gpt-5.1",
             },
-        }
+        )
 
-    def register_hermes(self, priority: float = 1.0, enabled: bool = True) -> None:
-        self.models["hermes"] = {
-            "vendor": "openrouter",
-            "router_fn": call_hermes,
-            "priority": priority,
-            "enabled": enabled,
-            "extra": {
+    def register_hermes(self, *, priority: float = 1.0, enabled: bool = True) -> None:
+        """
+        Hermes 系（OpenRouter）のモデルを登録するためのヘルパ。
+        実際の呼び出しは LLMRouter.call_hermes() を使う前提。
+        """
+        self.register_model(
+            "hermes",
+            vendor="openrouter",
+            router_fn="call_hermes",
+            priority=priority,
+            enabled=enabled,
+            extra={
                 "env_key": "OPENROUTER_API_KEY",
                 "model_family": "hermes",
             },
-        }
+        )
 
-    # -------------------------------------------------------
-    # ■ モデル構成まとめ取得（AnswerTalker → JudgeAI が使用）
-    # -------------------------------------------------------
-
+    # ==============================
+    # 取得系
+    # ==============================
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
         """
-        AnswerTalker → JudgeAI2 などが参照するメタ情報を返す。
-        """
-        return self.models
+        ModelsAI / View で使いやすいように dict 化した形で返す。
 
-    # -------------------------------------------------------
-    # ■ モデル呼び出し（ModelsAI から使用される）
-    # -------------------------------------------------------
-
-    def call_model(
-        self,
-        model_name: str,
-        messages: List[Dict[str, str]],
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """
-        各モデルに共通の呼び出し口。
-
-        ModelsAI.collect() から呼ばれる。
-        """
-        if model_name not in self.models:
-            return {
-                "status": "error",
-                "error": f"model '{model_name}' not registered",
-                "text": "",
-            }
-
-        cfg = self.models[model_name]
-
-        # disabled はスキップ
-        if not cfg.get("enabled", False):
-            return {
-                "status": "disabled",
-                "text": "",
-            }
-
-        router_fn: Callable = cfg["router_fn"]
-
-        # API キー確認（vendorごとに）
-        env_key = cfg["extra"].get("env_key")
-        api_key = os.environ.get(env_key) if env_key else None
-
-        if env_key and not api_key:
-            return {
-                "status": "error",
-                "error": f"missing API key: {env_key}",
-                "text": "",
-            }
-
-        # 実際の LLM 呼び出し
-        try:
-            text = router_fn(messages=messages, api_key=api_key)
-        except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "text": "",
-            }
-
-        return {
-            "status": "ok",
-            "text": text or "",
+        戻り値の例:
+        {
+          "gpt4o": {
+            "vendor": "openai",
+            "router_fn": "call_gpt4o",
+            "priority": 3.0,
+            "enabled": True,
+            "extra": {...},
+          },
+          ...
         }
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        for name, cfg in self._models.items():
+            result[name] = {
+                "vendor": cfg.vendor,
+                "router_fn": cfg.router_fn,
+                "priority": cfg.priority,
+                "enabled": cfg.enabled,
+                "extra": dict(cfg.extra),
+            }
+        return result
+
+    def get_models_sorted(self) -> Dict[str, Dict[str, Any]]:
+        """
+        priority の高い順にソート済みの dict を返すヘルパ。
+        JudgeAI 側で優先度順に眺めたい時などに使える。
+        """
+        items = sorted(
+            self._models.items(),
+            key=lambda kv: kv[1].priority,
+            reverse=True,
+        )
+        result: Dict[str, Dict[str, Any]] = {}
+        for name, cfg in items:
+            result[name] = {
+                "vendor": cfg.vendor,
+                "router_fn": cfg.router_fn,
+                "priority": cfg.priority,
+                "enabled": cfg.enabled,
+                "extra": dict(cfg.extra),
+            }
+        return result
+
+    # ==============================
+    # YAML ロード（将来拡張用のダミー実装）
+    # ==============================
+    def load_default_config(self, path: Optional[str] = None) -> bool:
+        """
+        llm_default.yaml から設定を読み込むためのメソッド。
+
+        いまは「ファイルがあれば読む / 無ければ False を返す」程度の実装にしておき、
+        無くても動くようにしてある。
+
+        YAML 形式の想定:
+        models:
+          gpt4o:
+            vendor: openai
+            router_fn: call_gpt4o
+            priority: 3.0
+            enabled: true
+            extra:
+              env_key: OPENAI_API_KEY
+              model_family: gpt-4o
+          ...
+        """
+        import os
+
+        if path is None:
+            path = "llm_default.yaml"
+
+        if not os.path.exists(path):
+            return False
+
+        try:
+            import yaml  # type: ignore[import]
+        except Exception:
+            # PyYAML が入っていなければ読み込みはスキップ
+            return False
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            return False
+
+        models = data.get("models")
+        if not isinstance(models, dict):
+            return False
+
+        for name, cfg in models.items():
+            if not isinstance(cfg, dict):
+                continue
+            vendor = str(cfg.get("vendor", ""))
+            router_fn = str(cfg.get("router_fn", ""))
+            if not vendor or not router_fn:
+                continue
+
+            priority_raw = cfg.get("priority", 1.0)
+            try:
+                priority = float(priority_raw)
+            except Exception:
+                priority = 1.0
+
+            enabled = bool(cfg.get("enabled", True))
+            extra = cfg.get("extra") or {}
+            if not isinstance(extra, dict):
+                extra = {}
+
+            self.register_model(
+                name,
+                vendor=vendor,
+                router_fn=router_fn,
+                priority=priority,
+                enabled=enabled,
+                extra=extra,
+            )
+
+        return True
