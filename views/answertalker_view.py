@@ -46,18 +46,33 @@ class AnswerTalkerView:
         # ---- models ----
         st.subheader("llm_meta に登録された AI 回答一覧（models）")
         models = llm_meta.get("models", {})
+        
+        st.subheader("llm_meta に登録された AI 回答一覧（models）")
+        
         if not models:
             st.info("models 情報はまだありません。")
         else:
             for name, info in models.items():
-                st.markdown(f"### モデル: `{name}`")
-                status = info.get("status", "unknown")
-                st.write(f"- status: `{status}`")
-                text = (info.get("text") or "").strip()
-                if text:
-                    with st.expander("回答テキスト", expanded=False):
-                        st.text_area("text", value=text, height=220, label_visibility="collapsed")
-
+                with st.expander(f"モデル: {name}", expanded=True):
+                    status = info.get("status", "unknown")
+                    text = info.get("text", "") or ""
+                    usage = info.get("usage")
+                    error = info.get("error")
+        
+                    st.write("- status:", status)
+                    st.write("- len(text):", len(text))
+        
+                    if usage is not None:
+                        st.write("- usage:", usage)
+        
+                    if error:
+                        st.error(f"error: {error}")
+        
+                    # 必要なら実際のテキストも確認できるように
+                    if text:
+                        st.markdown("**preview:**")
+                        st.code(text[:1000])  # 長すぎると困るので頭だけ
+                
         # ---- judge ----
         st.subheader("JudgeAI2 の判定結果（llm_meta['judge']）")
         judge = llm_meta.get("judge", {})
