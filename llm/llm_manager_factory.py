@@ -2,76 +2,85 @@
 
 from __future__ import annotations
 
+from typing import Dict, Any
 import os
-from typing import Dict
 
-import streamlit as st
+import yaml  # pyyaml
+from .llm_manager import LLMManager, LLMModelConfig
 
-from llm.llm_manager import LLMManager
+# persona_id ごとに 1 個だけ LLMManager を共有
+_MANAGER_CACHE: Dict[str, LLMManager] = {}
 
-# persona_id ごとに LLMManager を保持する session_state のキー
-SESSION_KEY = "LLM_MANAGER_BY_PERSONA"
-
-# デフォルト設定ファイル（必要に応じてパスは調整）
-DEFAULT_CONFIG_PATH = "config/llm_default.yaml"
+# プロジェクト直下 or src 直下などに置く想定
+DEFAULT_CONFIG_PATH = "llm_default.yaml"
 
 
-def _load_default_models(manager: LLMManager) -> None:
+def _load_from_yaml_if_exists(manager: LLMManager, path: str) -> bool:
     """
-    初期化直後の LLMManager に対して、llm_default.yaml などから
-    モデル定義を読み込むヘルパ。
-
-    - すでに models が入っていれば何もしない
-    - LLMManager 側に用意されているメソッド名の違いを吸収する
+    llm_default.yaml があれば読み込んで manager に model を登録する。
+    まともに読み込めたら True、なにかあってスキップしたら False。
     """
-    # すでに何か登録されていれば二重ロードはしない
-    if getattr(manager, "models", None):
-        return
+    if not os.path.exists(path):
+        return False
 
-    # 1) 専用メソッドがあればそれを優先
-    if hasattr(manager, "load_default_models"):
-        manager.load_default_models()
-        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        # 壊れててもアプリごと死なないように False で返す
+        return False
 
-    if hasattr(manager, "load_from_defaults"):
-        manager.load_from_defaults()
-        return
+    models = data.get("models")
+    if not isinstance(models, list):
+        return False
 
-    # 2) フォールバック: YAML から直接ロード
-    if hasattr(manager, "load_from_yaml"):
-        path = DEFAULT_CONFIG_PATH
-        if os.path.exists(path):
-            manager.load_from_yaml(path)
-        else:
-            # ファイルが無いときは静かにスキップ（必要なら warning）
-            st.warning(f"llm_default.yaml が見つかりませんでした: {path}")
-        return
+    for item in models:
+        if not isinstance(item, dict):
+            continue
 
-    # 3) どのメソッドも無ければ何もしない（将来の互換性のため）
-    return
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+
+        cfg = LLMModelConfig(
+            name=name,
+            router_fn=str(item.get("router_fn", "") or ""),
+            label=str(item.get("label", "") or name),
+            priority=float(item.get("priority", 1.0)),
+            vendor=str(item.get("vendor", "") or ""),
+            required_env=list(item.get("required_env") or []),
+            enabled=bool(item.get("enabled", True)),
+        )
+        manager.register_model(cfg)
+
+    return True
 
 
 def get_llm_manager(persona_id: str = "default") -> LLMManager:
     """
-    persona_id ごとに 1 つの LLMManager インスタンスを返すファクトリ。
+    persona_id ごとに 1 個だけ LLMManager を生成してキャッシュする。
 
-    - 初回生成時に _load_default_models() を呼び出し、
-      llm_default.yaml などからモデル定義を読み込む。
-    - 以降は session_state から同じインスタンスを再利用する。
+    優先順位:
+      1) llm_default.yaml があればそれを読み込む
+      2) 無ければ、コード内のデフォルト（gpt4o / gpt51 / hermes）を登録
     """
-    store: Dict[str, LLMManager] | None = st.session_state.get(SESSION_KEY)  # type: ignore[assignment]
-    if not isinstance(store, dict):
-        store = {}
+    key = persona_id or "default"
 
-    manager = store.get(persona_id)
-    if manager is None:
-        # 初回生成
-        manager = LLMManager(persona_id=persona_id)
+    # すでに作ってあればそれを返す
+    if key in _MANAGER_CACHE:
+        return _MANAGER_CACHE[key]
 
-        # ★ ここでデフォルトモデルをロード（A案）
-        _load_default_models(manager)
+    manager = LLMManager(persona_id=key)
 
-        store[persona_id] = manager
-        st.session_state[SESSION_KEY] = store
+    # 1) YAML から読み込みを試みる
+    loaded = _load_from_yaml_if_exists(manager, DEFAULT_CONFIG_PATH)
 
+    # 2) 読み込めなかった場合は昔ながらのデフォルトを登録
+    if not loaded:
+        # ここは前に _build_default_llm_manager でやっていた内容をそのまま移植
+        manager.register_gpt4o(priority=3.0, enabled=True)
+        manager.register_gpt51(priority=2.0, enabled=True)
+        manager.register_hermes(priority=1.0, enabled=True)
+
+    _MANAGER_CACHE[key] = manager
     return manager
