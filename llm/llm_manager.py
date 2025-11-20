@@ -2,199 +2,252 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, field
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+import os
 
-from llm.llm_router import LLMRouter
+# YAML は optional 扱い（無ければ RuntimeError を投げてフォールバック）
+try:
+    import yaml  # type: ignore[import]
+except Exception:  # pragma: no cover - optional dependency
+    yaml = None  # type: ignore[assignment]
 
 
 @dataclass
 class LLMModelConfig:
     """
-    単一 LLM の設定情報。
-
-    - name        : 内部名（"gpt4o" など）  ※一意キー
-    - router_fn   : LLMRouter 上のメソッド名（"call_gpt4o" など）
-    - label       : UI 表示用ラベル
-    - priority    : JudgeAI2 などで使う優先度（大きいほど優先）
-    - enabled     : 利用するかどうか
-    - vendor      : ベンダ名（"openai" / "openrouter" など任意）
-    - required_env: 要求される環境変数名リスト（表示用）
+    1 モデル分の定義情報。
     """
 
     name: str
     router_fn: str
     label: str
-
     priority: float = 1.0
-    enabled: bool = True
-    vendor: str = ""
+    vendor: str = "unknown"
+    roles: List[str] = field(default_factory=lambda: ["main"])
     required_env: List[str] = field(default_factory=list)
+    enabled: bool = True
+    default_params: Dict[str, Any] = field(default_factory=dict)
+
+    def is_available(self) -> bool:
+        """
+        enabled かつ required_env が全部そろっているなら True。
+        """
+        if not self.enabled:
+            return False
+        for key in self.required_env:
+            if not os.getenv(key):
+                return False
+        return True
 
 
 class LLMManager:
     """
-    利用可能な LLM 一覧と、その呼び出しロジックを一元管理するクラス。
+    LLM 設定のハブ。
 
-    - モデル定義の登録（register_* 系）
-    - 利用可能なモデル一覧の取得
-    - 実際の LLM 呼び出し（call_model）
+    - モデル定義（優先度 / vendor / 必要な env など）を一元管理
+    - AnswerTalker / ModelsAI / JudgeAI2 はここから model_props をもらう
+    - 設定元は:
+        - YAML (config/llm_default.yaml)
+        - もしくはコード内の register_xxx() でハードコード
     """
 
-    def __init__(self, router: Optional[LLMRouter] = None) -> None:
-        self.router: LLMRouter = router or LLMRouter()
-        self._models: Dict[str, LLMModelConfig] = {}
-
-    # ============================
-    # モデル登録まわり
-    # ============================
-    def register_model(self, config: LLMModelConfig) -> None:
-        """
-        任意のモデル定義を登録する汎用メソッド。
-        """
-        self._models[config.name] = config
-
-    # --- 便利ヘルパ（gpt4o / gpt51 / hermes） ---
-
-    def register_gpt4o(
+    def __init__(
         self,
-        priority: float = 3.0,
-        enabled: bool = True,
+        persona_id: str = "default",
+        models: Optional[Dict[str, LLMModelConfig]] = None,
+    ) -> None:
+        self.persona_id = persona_id
+        self.models: Dict[str, LLMModelConfig] = models or {}
+
+    # ============================
+    # YAML からロード
+    # ============================
+    @classmethod
+    def from_yaml(cls, path: str, persona_id: str = "default") -> "LLMManager":
+        """
+        config/llm_default.yaml などからモデル一覧をロードする。
+
+        YAML 形式:
+            models:
+              gpt4o:
+                label: "GPT-4o"
+                router_fn: "call_gpt4o"
+                priority: 3.0
+                vendor: "openai"
+                roles: ["main", "refiner"]
+                required_env: ["OPENAI_API_KEY"]
+                enabled: true
+                default_params:
+                  temperature: 0.9
+                  max_tokens: 900
+        """
+        if yaml is None:
+            raise RuntimeError(
+                "PyYAML がインストールされていないため、YAML からのロードができません。"
+                " `pip install pyyaml` を実行してください。"
+            )
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"LLM 設定ファイルが見つかりません: {path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
+        raw_models = data.get("models") or {}
+        if not isinstance(raw_models, dict):
+            raise RuntimeError("YAML のフォーマットが不正です（models が dict ではありません）。")
+
+        models: Dict[str, LLMModelConfig] = {}
+        for name, raw in raw_models.items():
+            if not isinstance(raw, dict):
+                continue
+            router_fn = raw.get("router_fn")
+            if not router_fn:
+                # router_fn が無いモデルはスキップ
+                continue
+
+            cfg = LLMModelConfig(
+                name=name,
+                router_fn=str(router_fn),
+                label=str(raw.get("label", name)),
+                priority=float(raw.get("priority", 1.0)),
+                vendor=str(raw.get("vendor", "unknown")),
+                roles=list(raw.get("roles", ["main"])),
+                required_env=list(raw.get("required_env", [])),
+                enabled=bool(raw.get("enabled", True)),
+                default_params=raw.get("default_params") or {},
+            )
+            models[name] = cfg
+
+        return cls(persona_id=persona_id, models=models)
+
+    # ============================
+    # 手動登録 API
+    # ============================
+    def register_model(
+        self,
+        config: LLMModelConfig,
+        enabled: Optional[bool] = None,
     ) -> None:
         """
-        OpenAI GPT-4o を標準設定で登録するヘルパ。
+        1 モデルを登録する共通ユーティリティ。
         """
-        cfg = LLMModelConfig(
-            name="gpt4o",
-            router_fn="call_gpt4o",
-            label="GPT-4o",
-            priority=float(priority),
-            enabled=enabled,
-            vendor="openai",
-            required_env=["OPENAI_API_KEY"],
-        )
-        self.register_model(cfg)
+        if enabled is not None:
+            config.enabled = enabled
+        self.models[config.name] = config
 
-    def register_gpt51(
-        self,
-        priority: float = 2.0,
-        enabled: bool = True,
-    ) -> None:
-        """
-        OpenAI GPT-5.1 を標準設定で登録するヘルパ。
-        """
-        cfg = LLMModelConfig(
-            name="gpt51",
-            router_fn="call_gpt51",
-            label="GPT-5.1",
-            priority=float(priority),
-            enabled=enabled,
-            vendor="openai",
-            required_env=["OPENAI_API_KEY"],
+    def register_gpt4o(self, priority: float = 3.0, enabled: bool = True) -> None:
+        self.register_model(
+            LLMModelConfig(
+                name="gpt4o",
+                router_fn="call_gpt4o",
+                label="GPT-4o",
+                priority=priority,
+                vendor="openai",
+                roles=["main", "refiner"],
+                required_env=["OPENAI_API_KEY"],
+                enabled=enabled,
+            )
         )
-        self.register_model(cfg)
 
-    def register_hermes(
-        self,
-        priority: float = 1.0,
-        enabled: bool = True,
-    ) -> None:
-        """
-        OpenRouter Hermes 4 を標準設定で登録するヘルパ。
-        """
-        cfg = LLMModelConfig(
-            name="hermes",
-            router_fn="call_hermes",
-            label="Hermes 4",
-            priority=float(priority),
-            enabled=enabled,
-            vendor="openrouter",
-            required_env=["OPENROUTER_API_KEY"],
+    def register_gpt51(self, priority: float = 4.0, enabled: bool = True) -> None:
+        self.register_model(
+            LLMModelConfig(
+                name="gpt51",
+                router_fn="call_gpt51",
+                label="GPT-5.1",
+                priority=priority,
+                vendor="openai",
+                roles=["main", "memory"],
+                required_env=["OPENAI_API_KEY", "GPT51_MODEL"],
+                enabled=enabled,
+            )
         )
-        self.register_model(cfg)
+
+    def register_hermes(self, priority: float = 2.0, enabled: bool = True) -> None:
+        self.register_model(
+            LLMModelConfig(
+                name="hermes",
+                router_fn="call_hermes",
+                label="Hermes 4",
+                priority=priority,
+                vendor="openrouter",
+                roles=["main"],
+                required_env=["OPENROUTER_API_KEY"],
+                enabled=enabled,
+            )
+        )
 
     # ============================
-    # 参照系
+    # 下流（ModelsAI / JudgeAI2）向け props 生成
     # ============================
-    def get_model_config(self, name: str) -> Optional[LLMModelConfig]:
-        return self._models.get(name)
-
-    def list_model_configs(self) -> List[LLMModelConfig]:
-        return list(self._models.values())
-
-    def get_model_props(self) -> Dict[str, Dict[str, Any]]:
+    def get_model_props(
+        self,
+        role: Optional[str] = None,
+    ) -> Dict[str, Dict[str, Any]]:
         """
-        AnswerTalker → ModelsAI / JudgeAI2 へ渡すための、
-        シンプルな dict 形式のプロパティ一覧を返す。
+        下流でそのまま使える dict を返す。
 
-        戻り値例:
-        {
-          "gpt4o": {
-            "enabled": True,
-            "priority": 3.0,
-            "router_fn": "call_gpt4o",
-            "label": "GPT-4o",
-            ...
-          },
-          ...
-        }
+        戻り値のイメージ:
+            {
+              "gpt4o": {
+                "router_fn": "call_gpt4o",
+                "label": "GPT-4o",
+                "priority": 3.0,
+                "vendor": "openai",
+                "enabled": True,
+                "required_env": [...],
+                "default_params": {...},
+              },
+              ...
+            }
         """
-        props: Dict[str, Dict[str, Any]] = {}
-        for name, cfg in self._models.items():
-            props[name] = {
-                "enabled": cfg.enabled,
-                "priority": cfg.priority,
+        result: Dict[str, Dict[str, Any]] = {}
+
+        for name, cfg in self.models.items():
+            if role and role not in cfg.roles:
+                continue
+
+            result[name] = {
                 "router_fn": cfg.router_fn,
                 "label": cfg.label,
+                "priority": cfg.priority,
                 "vendor": cfg.vendor,
+                # env が足りているかどうかを反映した enabled
+                "enabled": cfg.is_available(),
                 "required_env": list(cfg.required_env),
+                "default_params": dict(cfg.default_params),
+                "roles": list(cfg.roles),
             }
-        return props
+
+        return result
 
     # ============================
-    # 実際の LLM 呼び出し
+    # UI 用ステータスサマリ
     # ============================
-    def call_model(
-        self,
-        name: str,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: int = 800,
-    ) -> Tuple[str, Dict[str, Any]]:
+    def get_status_summary(self) -> Dict[str, Any]:
         """
-        指定されたモデル名に対応する LLM を呼び出し、
-        (reply_text, usage) を返す。
-
-        - LLMRouter 上の router_fn を叩く
-        - LLMRouter 側のシグネチャに処理を委譲する
+        「どのモデルが使えるか」を UI に表示するためのメタ情報。
         """
-        cfg = self.get_model_config(name)
-        if cfg is None:
-            raise ValueError(f"unknown model: {name}")
+        items: List[Dict[str, Any]] = []
 
-        if not cfg.enabled:
-            raise RuntimeError(f"model '{name}' is disabled")
+        for name, cfg in self.models.items():
+            missing = [k for k in cfg.required_env if not os.getenv(k)]
+            items.append(
+                {
+                    "name": name,
+                    "label": cfg.label,
+                    "vendor": cfg.vendor,
+                    "roles": list(cfg.roles),
+                    "enabled": cfg.enabled,
+                    "available": cfg.enabled and not missing,
+                    "missing_env": missing,
+                    "priority": cfg.priority,
+                }
+            )
 
-        fn = getattr(self.router, cfg.router_fn, None)
-        if fn is None:
-            raise RuntimeError(f"router has no method '{cfg.router_fn}'")
-
-        # LLMRouter 側で max_tokens / max_completion_tokens の差異を吸収している想定
-        raw = fn(  # type: ignore[misc]
-            messages=messages,
-            temperature=float(temperature),
-            max_tokens=int(max_tokens),
-        )
-
-        # 返り値は LLMRouter の仕様に合わせて normalize しない
-        # （呼び出し側が (text, usage) を想定して処理する）
-        return raw
-
-    # ============================
-    # デバッグ用メタ情報
-    # ============================
-    def to_dict(self) -> Dict[str, Any]:
-        """
-        UI 表示などで使うための、単純な dict 化。
-        """
-        return {name: asdict(cfg) for name, cfg in self._models.items()}
+        return {
+            "persona_id": self.persona_id,
+            "models": items,
+        }
