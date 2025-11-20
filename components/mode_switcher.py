@@ -11,7 +11,7 @@ from views.game_view import GameView
 from views.backstage_view import BackstageView
 from views.private_view import PrivateView
 from views.council_view import CouncilView
-from council.council_manager import create_answertalker_view   # 既存
+from views.answertalker_view import create_answertalker_view   # ★ 正しい場所
 from views.llm_manager_view import create_llm_manager_view     # ★ 追加：LLM 用ファクトリ
 
 
