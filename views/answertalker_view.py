@@ -202,9 +202,3 @@ def create_answertalker_view() -> "AnswerTalkerView":
     """
     return AnswerTalkerView()
 
-def create_answertalker_view() -> "AnswerTalkerView":
-    """
-    ModeSwitcher から呼ぶための小さなファクトリ。
-    必要ならここで LLMManager 共有などの調整をする。
-    """
-    return AnswerTalkerView()
