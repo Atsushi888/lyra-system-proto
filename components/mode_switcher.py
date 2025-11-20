@@ -1,18 +1,19 @@
-# mode_switcher.py
-
+# components/mode_switcher.py
 from __future__ import annotations
-from typing import Dict, Protocol, Any
+
+from typing import Dict, Protocol, Any, Callable
 
 import streamlit as st
 
 from auth.roles import Role
 
 from views.game_view import GameView
+from views.user_view import UserView
 from views.backstage_view import BackstageView
 from views.private_view import PrivateView
 from views.council_view import CouncilView
-from views.answertalker_view import create_answertalker_view   # ★ 正しい場所
-from views.llm_manager_view import create_llm_manager_view     # ★ 追加：LLM 用ファクトリ
+from views.llm_manager_view import create_llm_manager_view
+from views.answertalker_view import create_answertalker_view
 
 
 class View(Protocol):
@@ -48,8 +49,7 @@ class ModeSwitcher:
             },
             "USER": {
                 "label": self.LABELS["USER"],
-                # ★ UserView は廃止し、LLMManager 用ファクトリに差し替え
-                "view": create_llm_manager_view,
+                "view": create_llm_manager_view,  # ★ LLM 設定ビュー（ファクトリ）
                 "min_role": Role.USER,
             },
             "BACKSTAGE": {
@@ -69,7 +69,7 @@ class ModeSwitcher:
             },
             "ANSWERTALKER": {
                 "label": self.LABELS["ANSWERTALKER"],
-                "view": create_answertalker_view,   # ファクトリ関数
+                "view": create_answertalker_view,   # AnswerTalker 用ファクトリ
                 "min_role": Role.ADMIN,
             },
         }
@@ -77,6 +77,7 @@ class ModeSwitcher:
         if self.session_key not in st.session_state:
             st.session_state[self.session_key] = self.default_key
 
+    # ------------------------------------------------------------------
     @property
     def current(self) -> str:
         cur = st.session_state.get(self.session_key, self.default_key)
@@ -85,6 +86,7 @@ class ModeSwitcher:
             st.session_state[self.session_key] = cur
         return cur
 
+    # ------------------------------------------------------------------
     def render(self, user_role: Role) -> None:
         st.sidebar.markdown("## 画面切替")
 
@@ -101,12 +103,7 @@ class ModeSwitcher:
         for key in visible_keys:
             label = self.routes[key]["label"]
             disabled = (key == cur)
-            if st.sidebar.button(
-                label,
-                use_container_width=True,
-                disabled=disabled,
-                key=f"mode_{key}",
-            ):
+            if st.sidebar.button(label, use_container_width=True, disabled=disabled, key=f"mode_{key}"):
                 st.session_state[self.session_key] = key
                 st.rerun()
 
@@ -120,12 +117,12 @@ class ModeSwitcher:
 
         st.subheader(self.routes[cur]["label"])
 
-        view_or_factory = self.routes[cur]["view"]
+        view_or_factory: Any = self.routes[cur]["view"]
 
         # インスタンス or ファクトリ関数の両対応
         if callable(view_or_factory):
             view: View = view_or_factory()
         else:
-            view: View = view_or_factory
+            view = view_or_factory  # type: ignore[assignment]
 
         view.render()
