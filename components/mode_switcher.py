@@ -1,14 +1,18 @@
+# mode_switcher.py
+
 from __future__ import annotations
-from typing import Dict, Protocol, Any, Callable
+from typing import Dict, Protocol, Any
+
 import streamlit as st
+
 from auth.roles import Role
 
 from views.game_view import GameView
-from views.user_view import UserView
 from views.backstage_view import BackstageView
 from views.private_view import PrivateView
 from views.council_view import CouncilView
-from council.council_manager import create_answertalker_view   # ★ 追加
+from council.council_manager import create_answertalker_view   # 既存
+from views.llm_manager_view import create_llm_manager_view     # ★ 追加：LLM 用ファクトリ
 
 
 class View(Protocol):
@@ -23,7 +27,7 @@ class ModeSwitcher:
 
     LABELS: Dict[str, str] = {
         "PLAY":          "🎮 ゲームモード",
-        "USER":          "🎛️ ユーザー設定",
+        "USER":          "🎛️ ユーザー設定（LLM）",
         "BACKSTAGE":     "🧠 AIリプライシステム",
         "PRIVATE":       "⚙️ （※非公開※）",
         "COUNCIL":       "🗣 会談システム（β）",
@@ -44,7 +48,8 @@ class ModeSwitcher:
             },
             "USER": {
                 "label": self.LABELS["USER"],
-                "view": UserView(),
+                # ★ UserView は廃止し、LLMManager 用ファクトリに差し替え
+                "view": create_llm_manager_view,
                 "min_role": Role.USER,
             },
             "BACKSTAGE": {
@@ -64,7 +69,7 @@ class ModeSwitcher:
             },
             "ANSWERTALKER": {
                 "label": self.LABELS["ANSWERTALKER"],
-                "view": create_answertalker_view,   # ★ ファクトリ関数
+                "view": create_answertalker_view,   # ファクトリ関数
                 "min_role": Role.ADMIN,
             },
         }
@@ -96,7 +101,12 @@ class ModeSwitcher:
         for key in visible_keys:
             label = self.routes[key]["label"]
             disabled = (key == cur)
-            if st.sidebar.button(label, use_container_width=True, disabled=disabled, key=f"mode_{key}"):
+            if st.sidebar.button(
+                label,
+                use_container_width=True,
+                disabled=disabled,
+                key=f"mode_{key}",
+            ):
                 st.session_state[self.session_key] = key
                 st.rerun()
 
@@ -112,7 +122,7 @@ class ModeSwitcher:
 
         view_or_factory = self.routes[cur]["view"]
 
-        # ★ インスタンス or ファクトリ関数の両対応
+        # インスタンス or ファクトリ関数の両対応
         if callable(view_or_factory):
             view: View = view_or_factory()
         else:
