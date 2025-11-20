@@ -1,5 +1,4 @@
 # actors/answer_talker.py
-
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -22,6 +21,11 @@ class AnswerTalker:
     - JudgeAI2:   どのモデルの回答を採用するかを決定
     - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
+
+    仕様:
+      - Persona と conversation_log から組み立てた messages を入力として、
+        自前で Models → Judge → Composer → Memory を回し、
+        最終的な返答テキストを返す。
     """
 
     def __init__(
@@ -35,8 +39,9 @@ class AnswerTalker:
         # Persona に char_id があればそれを使う（例: "floria_ja"）
         persona_id = getattr(self.persona, "char_id", "default")
 
-        # LLMManager は factory から取得（他ビューと共有可能）
-        self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
+        # LLMManager は factory から取得（アプリ全体で 1 個を共有）
+        # ※ persona_id 引数は後方互換のために残しているが、実装上は無視される
+        self.llm_manager: LLMManager = llm_manager or get_llm_manager()
 
         # 下流クラスに渡す model_props（enabled / priority などを含む）
         self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
@@ -96,15 +101,20 @@ class AnswerTalker:
         - ComposerAI.compose
         - MemoryAI.update_from_turn
         を順に実行して「最終返答テキスト」を返す。
+
+        戻り値:
+            final_text: str
         """
         if not messages:
+            # messages が空なら何もできないので空文字を返す
             return ""
 
-        # 0) 次ターン用の memory_context
+        # 0) 次ターン用の memory_context を構築（このターンの system に差し込む運用などを想定）
         try:
             mem_ctx = self.memory_ai.build_memory_context(user_query=user_text or "")
         except Exception as e:
             mem_ctx = ""
+            # デバッグ用に llm_meta にも残しておく
             self.llm_meta["memory_context_error"] = str(e)
         self.llm_meta["memory_context"] = mem_ctx
 
@@ -130,6 +140,7 @@ class AnswerTalker:
         try:
             composed = self.composer_ai.compose(self.llm_meta)
         except Exception as e:
+            # 失敗時は Judge の chosen_text をフォールバックとして使う
             fallback = ""
             if isinstance(judge_result, dict):
                 fallback = judge_result.get("chosen_text") or ""
@@ -143,14 +154,14 @@ class AnswerTalker:
 
         self.llm_meta["composer"] = composed
 
-        # ④ 最終返答テキスト
+        # ④ 最終返答テキストの決定
         final_text = ""
         if isinstance(composed, dict):
             final_text = composed.get("text") or ""
         if not final_text and isinstance(judge_result, dict):
             final_text = judge_result.get("chosen_text") or ""
 
-        # ⑤ MemoryAI による記憶更新
+        # ⑤ MemoryAI に、このターンの会話を渡して長期記憶を更新
         try:
             round_val_raw = st.session_state.get("round_number", 0)
             try:
@@ -176,7 +187,7 @@ class AnswerTalker:
 
         self.llm_meta["memory_update"] = mem_update
 
-        # ⑥ session_state に反映
+        # ⑥ 最終状態を session_state に反映
         st.session_state["llm_meta"] = self.llm_meta
 
         return final_text
