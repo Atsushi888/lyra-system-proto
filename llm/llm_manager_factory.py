@@ -56,31 +56,25 @@ def _load_from_yaml_if_exists(manager: LLMManager, path: str) -> bool:
     return True
 
 
-def get_llm_manager(persona_id: str = "default") -> LLMManager:
-    """
-    persona_id ごとに 1 個だけ LLMManager を生成してキャッシュする。
+def get_llm_manager(persona_id: str) -> LLMManager:
+    key = f"llm_manager_{persona_id}"
 
-    優先順位:
-      1) llm_default.yaml があればそれを読み込む
-      2) 無ければ、コード内のデフォルト（gpt4o / gpt51 / hermes）を登録
-    """
-    key = persona_id or "default"
+    # 既に作ってあれば、それを返す
+    if key in st.session_state:
+        return st.session_state[key]
 
-    # すでに作ってあればそれを返す
-    if key in _MANAGER_CACHE:
-        return _MANAGER_CACHE[key]
+    # 新規作成
+    manager = LLMManager(persona_id=persona_id)
 
-    manager = LLMManager(persona_id=key)
+    # LLM デフォルト設定ロード
+    loaded = manager.load_default_config()
 
-    # 1) YAML から読み込みを試みる
-    loaded = _load_from_yaml_if_exists(manager, DEFAULT_CONFIG_PATH)
-
-    # 2) 読み込めなかった場合は昔ながらのデフォルトを登録
+    # 読み込みに失敗した場合は、自動でデフォルト登録
     if not loaded:
-        # ここは前に _build_default_llm_manager でやっていた内容をそのまま移植
         manager.register_gpt4o(priority=3.0, enabled=True)
         manager.register_gpt51(priority=2.0, enabled=True)
         manager.register_hermes(priority=1.0, enabled=True)
 
-    _MANAGER_CACHE[key] = manager
+    # セッションに保存
+    st.session_state[key] = manager
     return manager
