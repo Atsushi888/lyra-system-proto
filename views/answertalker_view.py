@@ -191,3 +191,14 @@ class AnswerTalker:
         st.session_state["llm_meta"] = self.llm_meta
 
         return final_text
+
+
+def create_answertalker_view() -> "AnswerTalkerView":
+    """
+    ModeSwitcher から呼ぶためのシンプルなファクトリ関数。
+
+    - インスタンス生成の責務はこの関数に集約しておく。
+    - AnswerTalkerView.__init__ に引数があっても、ここで調整すればよい。
+    """
+    return AnswerTalkerView()
+
