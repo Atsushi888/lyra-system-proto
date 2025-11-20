@@ -1,84 +1,44 @@
-
 # llm/llm_manager_factory.py
+
 from __future__ import annotations
 
-from typing import Dict, Any
-import os
-
-import yaml  # pyyaml
+from typing import Dict
 import streamlit as st
-from llm.llm_manager import LLMManager
-# from llm.llm_manager import LLMModelConfig
 
-# persona_id ごとに 1 個だけ LLMManager を共有
-_MANAGER_CACHE: Dict[str, LLMManager] = {}
+from .llm_manager import LLMManager
 
-# プロジェクト直下 or src 直下などに置く想定
-DEFAULT_CONFIG_PATH = "llm_default.yaml"
+# persona_id → LLMManager を突っ込んでおくストア
+_SESSION_KEY = "llm_managers"
 
 
-# def _load_from_yaml_if_exists(manager: LLMManager, path: str) -> bool:
-#     """
-#     llm_default.yaml があれば読み込んで manager に model を登録する。
-#     まともに読み込めたら True、なにかあってスキップしたら False。
-#     """
-#     if not os.path.exists(path):
-#         return False
-
-#     try:
-#         with open(path, "r", encoding="utf-8") as f:
-#             data = yaml.safe_load(f) or {}
-#     except Exception:
-#         # 壊れててもアプリごと死なないように False で返す
-#         return False
-
-#     models = data.get("models")
-#     if not isinstance(models, list):
-#         return False
-
-#     for item in models:
-#         if not isinstance(item, dict):
-#             continue
-
-#         name = str(item.get("name", "")).strip()
-#         if not name:
-#             continue
-
-#         cfg = LLMModelConfig(
-#             name=name,
-#             router_fn=str(item.get("router_fn", "") or ""),
-#             label=str(item.get("label", "") or name),
-#             priority=float(item.get("priority", 1.0)),
-#             vendor=str(item.get("vendor", "") or ""),
-#             required_env=list(item.get("required_env") or []),
-#             enabled=bool(item.get("enabled", True)),
-#         )
-#         manager.register_model(cfg)
-
-#     return True
+def _get_store() -> Dict[str, LLMManager]:
+    store = st.session_state.get(_SESSION_KEY)
+    if not isinstance(store, dict):
+        store = {}
+        st.session_state[_SESSION_KEY] = store
+    return store
 
 
-def get_llm_manager(persona_id: str) -> LLMManager:
+def get_llm_manager(persona_id: str = "default") -> LLMManager:
     """
-    persona_id ごとに LLMManager を一つだけ生成し、
-    まだモデルが登録されていなければデフォルトモデルを追加する。
+    persona_id ごとに 1 個だけ LLMManager を作って共有するファクトリ。
+
+    - まだ Manager が無い場合は生成して、デフォルトLLMを register_* する
+    - 以降は同じインスタンスを返す
     """
+    store = _get_store()
 
-    key = f"llm_manager_{persona_id}"
+    mgr = store.get(persona_id)
+    if mgr is None:
+        mgr = LLMManager(persona_id=persona_id)
 
-    # すでに生成済みならそれを返す
-    if key in st.session_state:
-        return st.session_state[key]
+        # ここでデフォルトLLMを登録する（旧 _build_default_llm_manager の中身）
+        if not mgr.get_model_props():  # 念のため空のときだけ
+            mgr.register_gpt4o(priority=3.0, enabled=True)
+            mgr.register_gpt51(priority=2.0, enabled=True)
+            mgr.register_hermes(priority=1.0, enabled=True)
 
-    # 新規作成
-    manager = LLMManager(persona_id=persona_id)
+        store[persona_id] = mgr
+        st.session_state[_SESSION_KEY] = store
 
-    # ★ LLMManager が空なら、初期セットを登録（load_default_config は使わない）
-    if not manager.models:   # ← manager.models が空リスト / 空dict であれば登録
-        manager.register_gpt4o(priority=3.0, enabled=True)
-        manager.register_gpt51(priority=2.0, enabled=True)
-        manager.register_hermes(priority=1.0, enabled=True)
-
-    # セッションに保存
-    st.session_state[key] = manager
-    return manager
+    return mgr
