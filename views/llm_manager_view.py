@@ -1,79 +1,60 @@
 # views/llm_manager_view.py
-
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Dict, Any
 
 import streamlit as st
 
-from llm.llm_manager import LLMManager
+from llm.llm_manager_factory import get_llm_manager
 
 
 class LLMManagerView:
     """
-    LLMManager の設定・状態をざっと確認するためのビュー。
+    ユーザー設定（LLM）画面用のビュー。
 
-    - LLMManager.get_model_props() の中身を一覧表示するだけのシンプル版。
-    - ここから先、編集UIや llm_default.yaml のロード結果表示などを
-      どんどん拡張していく想定。
+    - llm_default.yaml や環境変数から読んだ結果…という構想は残しつつ、
+      まずは LLMManager に登録されているモデル一覧を確認する用途に特化。
     """
 
-    def __init__(self, manager: Optional[LLMManager] = None) -> None:
-        # とりあえずデフォルトの LLMManager を 1 個だけ作る
-        self.manager = manager or LLMManager()
+    TITLE = "LLM 設定 / 接続状況"
 
+    def __init__(self) -> None:
+        # グローバルな LLMManager を共有して利用
+        self.manager = get_llm_manager()
+
+    # ------------------------------------------------------------------
     def render(self) -> None:
-        st.markdown("## LLM 設定 / 接続状況")
-        st.caption(
-            "llm_default.yaml と環境変数から読み取った LLM モデル一覧の確認ビューです。"
-        )
+        st.header("🧊 ユーザー設定（LLM）")
+        st.subheader(self.TITLE)
+        st.caption("llm_default.yaml と環境変数から読み取った LLM モデル一覧の確認ビューです。")
 
-        model_props: Dict[str, Dict[str, Any]] = self.manager.get_model_props()
+        props: Dict[str, Dict[str, Any]] = self.manager.get_model_props()
 
-        if not model_props:
+        if not props:
             st.info("現在、登録されている LLM モデルはありません。")
             return
 
-        st.markdown("### 登録済み LLM モデル一覧")
+        for name, cfg in props.items():
+            with st.expander(f"モデル: {name}", expanded=True):
+                enabled = cfg.get("enabled", False)
+                vendor = cfg.get("vendor", "-")
+                router_fn = cfg.get("router_fn", "-")
+                priority = cfg.get("priority", 0.0)
+                extra = cfg.get("extra", {})
 
-        for name, props in model_props.items():
-            label = props.get("label", name)
-            enabled = props.get("enabled", True)
-            available = props.get("available", True)
-            vendor = props.get("vendor", "-")
-            priority = props.get("priority", 0.0)
-            required_env = props.get("required_env", [])
+                st.markdown(f"- ベンダー: `{vendor}`")
+                st.markdown(f"- router_fn: `{router_fn}`")
+                st.markdown(f"- priority: `{priority}`")
+                st.markdown(f"- enabled: `{enabled}`")
 
-            header = f"{label} ({name})"
-            if not enabled:
-                header += " — [disabled]"
-            elif not available:
-                header += " — [env NG]"
-
-            with st.expander(header, expanded=False):
-                cols = st.columns(3)
-                cols[0].metric("enabled", "✅" if enabled else "❌")
-                cols[1].metric("available", "✅" if available else "❌")
-                cols[2].metric("priority", f"{priority:.1f}")
-
-                st.write(f"**vendor:** {vendor}")
-                if required_env:
-                    st.write("**required env:** " + ", ".join(required_env))
-                else:
-                    st.write("**required env:** (なし)")
-
-                st.markdown("**raw props:**")
-                st.json(props, expanded=False)
+                if extra:
+                    st.markdown("**extra:**")
+                    for k, v in extra.items():
+                        st.markdown(f"  - `{k}`: `{v}`")
 
 
 def create_llm_manager_view() -> LLMManagerView:
     """
-    ModeSwitcher から呼ばれるファクトリ関数。
-
-    components.mode_switcher では
-        from views.llm_manager_view import create_llm_manager_view
-    と import して、routes の 'USER' などに
-        "view": create_llm_manager_view
-    の形で渡せば OK。
+    ModeSwitcher から呼び出すためのファクトリ関数。
     """
     return LLMManagerView()
