@@ -2,57 +2,76 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import os
+from typing import Dict
 
 import streamlit as st
 
 from llm.llm_manager import LLMManager
 
-# session_state に格納するキー
-_LLM_MANAGER_KEY = "llm_manager"
+# persona_id ごとに LLMManager を保持する session_state のキー
+SESSION_KEY = "LLM_MANAGER_BY_PERSONA"
+
+# デフォルト設定ファイル（必要に応じてパスは調整）
+DEFAULT_CONFIG_PATH = "config/llm_default.yaml"
+
+
+def _load_default_models(manager: LLMManager) -> None:
+    """
+    初期化直後の LLMManager に対して、llm_default.yaml などから
+    モデル定義を読み込むヘルパ。
+
+    - すでに models が入っていれば何もしない
+    - LLMManager 側に用意されているメソッド名の違いを吸収する
+    """
+    # すでに何か登録されていれば二重ロードはしない
+    if getattr(manager, "models", None):
+        return
+
+    # 1) 専用メソッドがあればそれを優先
+    if hasattr(manager, "load_default_models"):
+        manager.load_default_models()
+        return
+
+    if hasattr(manager, "load_from_defaults"):
+        manager.load_from_defaults()
+        return
+
+    # 2) フォールバック: YAML から直接ロード
+    if hasattr(manager, "load_from_yaml"):
+        path = DEFAULT_CONFIG_PATH
+        if os.path.exists(path):
+            manager.load_from_yaml(path)
+        else:
+            # ファイルが無いときは静かにスキップ（必要なら warning）
+            st.warning(f"llm_default.yaml が見つかりませんでした: {path}")
+        return
+
+    # 3) どのメソッドも無ければ何もしない（将来の互換性のため）
+    return
 
 
 def get_llm_manager(persona_id: str = "default") -> LLMManager:
     """
-    Streamlit の session_state を使って、
-    セッション内でただ 1 つの LLMManager インスタンスを返すファクトリ。
+    persona_id ごとに 1 つの LLMManager インスタンスを返すファクトリ。
 
-    - 既に作られていればそれを返す
-    - 無ければ llm_default.yaml からロードして作成し、session_state に保存
-    - YAML が無い / PyYAML 無しなどの場合は、ハードコード登録でフォールバック
+    - 初回生成時に _load_default_models() を呼び出し、
+      llm_default.yaml などからモデル定義を読み込む。
+    - 以降は session_state から同じインスタンスを再利用する。
     """
-    # すでに存在すればそれを使う
-    mgr = st.session_state.get(_LLM_MANAGER_KEY)
-    if isinstance(mgr, LLMManager):
-        # 必要ならここで後から persona_id を上書きしてもよい
-        # mgr.persona_id = persona_id
-        return mgr
+    store: Dict[str, LLMManager] | None = st.session_state.get(SESSION_KEY)  # type: ignore[assignment]
+    if not isinstance(store, dict):
+        store = {}
 
-    # まだ無い場合は新規に構築
-    try:
-        mgr = LLMManager.from_yaml(
-            path="config/llm_default.yaml",
-            persona_id=persona_id,
-        )
-        st.session_state[_LLM_MANAGER_KEY] = mgr
-        return mgr
-    except FileNotFoundError:
-        print(
-            "[LLMManagerFactory] config/llm_default.yaml が見つからないため、"
-            "ハードコードされたデフォルト設定を使用します。"
-        )
-    except RuntimeError as e:
-        # PyYAML 未導入など
-        print(
-            f"[LLMManagerFactory] YAML 読み込みエラーのため、"
-            f"ハードコードされたデフォルト設定を使用します: {e}"
-        )
+    manager = store.get(persona_id)
+    if manager is None:
+        # 初回生成
+        manager = LLMManager(persona_id=persona_id)
 
-    # フォールバック：ハードコード版
-    mgr = LLMManager(persona_id=persona_id)
-    mgr.register_gpt4o(priority=3.0, enabled=True)
-    mgr.register_gpt51(priority=4.0, enabled=True)
-    mgr.register_hermes(priority=2.0, enabled=True)
+        # ★ ここでデフォルトモデルをロード（A案）
+        _load_default_models(manager)
 
-    st.session_state[_LLM_MANAGER_KEY] = mgr
-    return mgr
+        store[persona_id] = manager
+        st.session_state[SESSION_KEY] = store
+
+    return manager
