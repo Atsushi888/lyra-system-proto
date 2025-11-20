@@ -35,9 +35,42 @@ class LLMManager:
     `router_fn` で指定されたメソッド名を使って行う想定。
     """
 
-    def __init__(self, key: str = "default") -> None:
-        # persona ごとなどに分けたい時用の識別子
-        self.key = key
+    # ★ ここを追加：persona_id ごとのシングルトン管理
+    _POOL: Dict[str, "LLMManager"] = {}
+
+    @classmethod
+    def get_or_create(cls, persona_id: str = "default") -> "LLMManager":
+        """
+        persona_id ごとに LLMManager を 1 個だけ作って共有するヘルパ。
+
+        - すでに作られていればそれを返す
+        - なければ新規作成し、デフォルトモデルを登録してから保存する
+        """
+        # 既存があればそのまま返す
+        if persona_id in cls._POOL:
+            return cls._POOL[persona_id]
+
+        # 新規作成
+        manager = cls(persona_id=persona_id)
+
+        # ★ ここは、llm_manager_factory に書いてあった初期登録ロジックをそのまま移植
+        #    （llm_default.yaml の自動読込をあとで足したければ、ここに挿し込めばOK）
+        manager.register_gpt4o(priority=3.0, enabled=True)
+        manager.register_gpt51(priority=2.0, enabled=True)
+        manager.register_hermes(priority=1.0, enabled=True)
+
+        # プールに保存して、次回以降は同じインスタンスを返す
+        cls._POOL[persona_id] = manager
+        return manager
+    
+    def __init__(self, persona_id: str = "default", key: Optional[str] = None) -> None:
+        """
+        persona_id / key のどちらから呼ばれても動く後方互換仕様。
+        旧コードで key="..." を渡している場合もここで吸収する。
+        """
+        # 旧来の key を優先しつつ、なければ persona_id を使う
+        self.persona_id = key if key is not None else persona_id
+    
         # name -> LLMModelConfig
         self._models: Dict[str, LLMModelConfig] = {}
 
