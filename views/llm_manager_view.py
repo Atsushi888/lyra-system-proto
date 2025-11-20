@@ -2,150 +2,78 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, Optional
 
 import streamlit as st
 
 from llm.llm_manager import LLMManager
 
 
-def _bool_emoji(v: bool) -> str:
-    return "✅" if v else "❌"
-
-
 class LLMManagerView:
     """
-    LLMManager に関する情報を表示する専用ビュー。
+    LLMManager の設定・状態をざっと確認するためのビュー。
 
-    主な表示内容:
-      - persona_id と紐づく LLMManager の状態サマリ
-      - 登録済みモデル一覧（enabled / available / missing env など）
-      - llm_default.yaml の編集ガイド
+    - LLMManager.get_model_props() の中身を一覧表示するだけのシンプル版。
+    - ここから先、編集UIや llm_default.yaml のロード結果表示などを
+      どんどん拡張していく想定。
     """
 
-    def __init__(self, manager: LLMManager) -> None:
-        self.manager = manager
+    def __init__(self, manager: Optional[LLMManager] = None) -> None:
+        # とりあえずデフォルトの LLMManager を 1 個だけ作る
+        self.manager = manager or LLMManager()
 
-    # -----------------------------
-    # 内部: モデル状態表示
-    # -----------------------------
-    def _render_llm_status(self) -> None:
-        st.markdown("### LLM 設定・接続状態")
+    def render(self) -> None:
+        st.markdown("## LLM 設定 / 接続状況")
+        st.caption(
+            "llm_default.yaml と環境変数から読み取った LLM モデル一覧の確認ビューです。"
+        )
 
-        summary: Dict[str, Any] = self.manager.get_status_summary()
-        persona_id = summary.get("persona_id", "(unknown)")
-        st.write(f"- persona_id: `{persona_id}`")
+        model_props: Dict[str, Dict[str, Any]] = self.manager.get_model_props()
 
-        models: List[Dict[str, Any]] = summary.get("models") or []
-        if not models:
-            st.info("現在、LLMManager に登録されているモデルがありません。")
-            st.markdown("---")
+        if not model_props:
+            st.info("現在、登録されている LLM モデルはありません。")
             return
 
-        st.markdown("#### 利用可能な LLM 一覧")
+        st.markdown("### 登録済み LLM モデル一覧")
 
-        for m in models:
-            name = m.get("name", "")
-            label = m.get("label", name)
-            vendor = m.get("vendor", "unknown")
-            enabled = bool(m.get("enabled", False))
-            available = bool(m.get("available", False))
-            roles = m.get("roles") or []
-            missing_env = m.get("missing_env") or []
-            priority = m.get("priority", None)
+        for name, props in model_props.items():
+            label = props.get("label", name)
+            enabled = props.get("enabled", True)
+            available = props.get("available", True)
+            vendor = props.get("vendor", "-")
+            priority = props.get("priority", 0.0)
+            required_env = props.get("required_env", [])
 
-            st.markdown(f"##### モデル: `{label}` (`{name}`)")
+            header = f"{label} ({name})"
+            if not enabled:
+                header += " — [disabled]"
+            elif not available:
+                header += " — [env NG]"
 
-            cols = st.columns(3)
-            with cols[0]:
-                st.write(f"- vendor: `{vendor}`")
-                if priority is not None:
-                    st.write(f"- priority: `{priority}`")
-            with cols[1]:
-                st.write(f"- enabled: {_bool_emoji(enabled)}")
-            with cols[2]:
-                st.write(f"- available (env OK): {_bool_emoji(available)}")
+            with st.expander(header, expanded=False):
+                cols = st.columns(3)
+                cols[0].metric("enabled", "✅" if enabled else "❌")
+                cols[1].metric("available", "✅" if available else "❌")
+                cols[2].metric("priority", f"{priority:.1f}")
 
-            st.write(f"- roles: `{', '.join(roles) if roles else '(none)'}`")
+                st.write(f"**vendor:** {vendor}")
+                if required_env:
+                    st.write("**required env:** " + ", ".join(required_env))
+                else:
+                    st.write("**required env:** (なし)")
 
-            if missing_env:
-                st.warning(
-                    "不足している環境変数:\n"
-                    + "\n".join(f"- `{k}`" for k in missing_env)
-                )
-            else:
-                st.caption("必要な環境変数はすべて設定済みです。")
+                st.markdown("**raw props:**")
+                st.json(props, expanded=False)
 
-            st.markdown("---")
 
-    # -----------------------------
-    # 内部: llm_default.yaml ガイド
-    # -----------------------------
-    def _render_llm_config_guide(self) -> None:
-        st.markdown("### LLM 設定ファイル（llm_default.yaml）について")
+def create_llm_manager_view() -> LLMManagerView:
+    """
+    ModeSwitcher から呼ばれるファクトリ関数。
 
-        st.markdown(
-            "Lyra-System の LLM 構成は、原則として "
-            "`config/llm_default.yaml` で定義します。\n\n"
-            "このファイルを編集することで、どの LLM を使うか、"
-            "優先度や役割（main / refiner / memory など）を簡単に切り替えられます。"
-        )
-
-        with st.expander("llm_default.yaml のサンプル（参考）"):
-            sample_yaml = """\
-models:
-  gpt4o:
-    label: "GPT-4o"
-    router_fn: "call_gpt4o"
-    priority: 3.0
-    vendor: "openai"
-    roles: ["main", "refiner"]
-    required_env: ["OPENAI_API_KEY"]
-    enabled: true
-    default_params:
-      temperature: 0.9
-      max_tokens: 900
-
-  gpt51:
-    label: "GPT-5.1"
-    router_fn: "call_gpt51"
-    priority: 4.0
-    vendor: "openai"
-    roles: ["main", "memory"]
-    required_env: ["OPENAI_API_KEY", "GPT51_MODEL"]
-    enabled: true
-    default_params:
-      temperature: 0.95
-      max_tokens: 900
-
-  hermes:
-    label: "Hermes 4"
-    router_fn: "call_hermes"
-    priority: 2.0
-    vendor: "openrouter"
-    roles: ["main"]
-    required_env: ["OPENROUTER_API_KEY"]
-    enabled: true
-    default_params:
-      temperature: 0.8
-      max_tokens: 900
-"""
-            st.code(sample_yaml, language="yaml")
-
-        st.markdown(
-            "- `router_fn`: LLMRouter 内のメソッド名（例: `call_gpt4o`）\n"
-            "- `roles`: このモデルをどの用途で使うか（main/refiner/memory など）\n"
-            "- `required_env`: 必要な環境変数。未設定だと `available=False` になります。"
-        )
-
-        st.markdown("---")
-
-    # -----------------------------
-    # 公開 render
-    # -----------------------------
-    def render(self) -> None:
-        """
-        LLMManager 関連の情報をまとめて表示する。
-        """
-        self._render_llm_status()
-        self._render_llm_config_guide()
+    components.mode_switcher では
+        from views.llm_manager_view import create_llm_manager_view
+    と import して、routes の 'USER' などに
+        "view": create_llm_manager_view
+    の形で渡せば OK。
+    """
+    return LLMManagerView()
