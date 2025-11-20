@@ -8,7 +8,6 @@ import streamlit as st
 from actors.actor import Actor
 from personas.persona_floria_ja import Persona
 from llm.llm_router import LLMRouter
-from views.answertalker_view import AnswerTalkerView
 
 
 def get_or_create_council_actor() -> Actor:
@@ -28,16 +27,6 @@ def get_or_create_council_actor() -> Actor:
         )
 
     return st.session_state[actor_key]
-
-def create_answertalker_view() -> AnswerTalkerView:
-    """
-    ModeSwitcher から呼ばれる AnswerTalkerView の“工場”。
-
-    - Actor を council_ai 側で用意し
-    - AnswerTalkerView(actor) を生成して返す
-    """
-    actor = get_or_create_council_actor()
-    return AnswerTalkerView(actor)
 
 
 class CouncilManager:
