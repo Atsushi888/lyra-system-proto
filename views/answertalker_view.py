@@ -1,204 +1,172 @@
-# actors/answer_talker.py
+# views/answertalker_view.py
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Protocol
 
 import streamlit as st
 
-from actors.models_ai import ModelsAI
-from actors.judge_ai2 import JudgeAI2
-from actors.composer_ai import ComposerAI
-from actors.memory_ai import MemoryAI
-from llm.llm_manager import LLMManager
-from llm.llm_manager_factory import get_llm_manager
+from auth.roles import Role
+from actors.actor import Actor
+from actors.answer_talker import AnswerTalker
+from personas.persona_floria_ja import Persona  # いまはフローリア固定ならそのまま
 
 
-class AnswerTalker:
+class View(Protocol):
+    def render(self) -> None:
+        ...
+
+
+class AnswerTalkerView:
     """
-    AI回答パイプラインの司令塔クラス。
-
-    - ModelsAI:   複数モデルから回答収集（gpt4o / gpt51 / hermes など）
-    - JudgeAI2:   どのモデルの回答を採用するかを決定
-    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
-    - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
-
-    仕様:
-      - Persona と conversation_log から組み立てた messages を入力として、
-        自前で Models → Judge → Composer → Memory を回し、
-        最終的な返答テキストを返す。
+    AnswerTalker / ModelsAI / JudgeAI2 / ComposerAI / MemoryAI の
+    デバッグ・閲覧用ビュー。
     """
 
-    def __init__(
-        self,
-        persona: Any,
-        llm_manager: Optional[LLMManager] = None,
-        memory_model: str = "gpt51",
-    ) -> None:
-        self.persona = persona
+    TITLE = "🧩 AnswerTalker（AI統合テスト）"
 
-        # Persona に char_id があればそれを使う（例: "floria_ja"）
-        persona_id = getattr(self.persona, "char_id", "default")
+    def __init__(self) -> None:
+        # Actor と AnswerTalker を初期化
+        # （必要なら将来ここに persona 選択 UI を付けられる）
+        persona = Persona()
+        self.actor = Actor("floria", persona)
+        self.answer_talker = AnswerTalker(persona)
 
-        # LLMManager は factory から取得（mode_switcher 等からも同じ物を参照できる）
-        self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
+    def render(self) -> None:
+        st.header(self.TITLE)
 
-        # 下流クラスに渡す model_props（enabled / priority などを含む）
-        self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
-
-        # llm_meta の初期化（session_state 経由で共有）
-        llm_meta = st.session_state.get("llm_meta")
-        if not isinstance(llm_meta, dict):
-            llm_meta = {
-                "models": {},          # ModelsAI.collect の結果
-                "judge": {},           # JudgeAI2.process の結果
-                "composer": {},        # ComposerAI.compose の結果
-                "memory_context": "",  # MemoryAI.build_memory_context の結果
-                "memory_update": {},   # MemoryAI.update_from_turn の結果
-            }
-
-        self.llm_meta: Dict[str, Any] = llm_meta
-        st.session_state["llm_meta"] = self.llm_meta
-
-        # サブモジュール初期化
-        self.models_ai = ModelsAI(self.llm_manager)
-        self.judge_ai = JudgeAI2(self.model_props)
-        self.composer_ai = ComposerAI()
-        self.memory_ai = MemoryAI(
-            llm_manager=self.llm_manager,
-            persona_id=persona_id,
-            model_name=memory_model,
+        st.info(
+            "この画面では、Actor に紐づく AnswerTalker が保持している llm_meta の内容 "
+            "（models / judge / composer / memory）を参照できます。\n\n"
+            "※ この画面からは AnswerTalker.run_models() や MemoryAI.update_from_turn() などは実行しません。"
         )
 
-    # ============================
-    # ModelsAI 呼び出し
-    # ============================
-    def run_models(self, messages: List[Dict[str, str]]) -> None:
-        """
-        Persona.build_messages() で組み立てた messages を受け取り、
-        ModelsAI.collect() を実行して llm_meta["models"] を更新する。
-        """
-        if not messages:
-            return
+        llm_meta: Dict[str, Any] = st.session_state.get("llm_meta", {}) or {}
 
-        results = self.models_ai.collect(messages)
-        self.llm_meta["models"] = results
-        st.session_state["llm_meta"] = self.llm_meta
+        # ---- models ----
+        st.subheader("llm_meta に登録された AI 回答一覧（models）")
+        models = llm_meta.get("models", {})
+        if not models:
+            st.info("models 情報はまだありません。")
+        else:
+            for name, info in models.items():
+                st.markdown(f"### モデル: `{name}`")
+                status = info.get("status", "unknown")
+                st.write(f"- status: `{status}`")
+                text = (info.get("text") or "").strip()
+                if text:
+                    with st.expander("回答テキスト", expanded=False):
+                        st.text_area("text", value=text, height=220, label_visibility="collapsed")
 
-    # ============================
-    # 公開インターフェース
-    # ============================
-    def speak(
-        self,
-        messages: List[Dict[str, str]],
-        user_text: str = "",
-    ) -> str:
-        """
-        Actor から messages（および任意で user_text）を受け取り、
-        - MemoryAI.build_memory_context
-        - ModelsAI.collect
-        - JudgeAI2.process
-        - ComposerAI.compose
-        - MemoryAI.update_from_turn
-        を順に実行して「最終返答テキスト」を返す。
+        # ---- judge ----
+        st.subheader("JudgeAI2 の判定結果（llm_meta['judge']）")
+        judge = llm_meta.get("judge", {})
+        if not judge:
+            st.info("judge 情報はまだありません。")
+        else:
+            st.write(f"- status: `{judge.get('status', 'unknown')}`")
+            st.write(f"- chosen_model: `{judge.get('chosen_model', '')}`")
 
-        戻り値:
-            final_text: str
-        """
-        if not messages:
-            # messages が空なら何もできないので空文字を返す
-            return ""
+            reason = judge.get("reason")
+            if reason:
+                with st.expander("選択理由（reason）", expanded=True):
+                    st.write(reason)
 
-        # 0) 次ターン用の memory_context を構築（このターンの system に差し込む運用などを想定）
-        try:
-            mem_ctx = self.memory_ai.build_memory_context(user_query=user_text or "")
-        except Exception as e:
-            mem_ctx = ""
-            # デバッグ用に llm_meta にも残しておく
-            self.llm_meta["memory_context_error"] = str(e)
-        self.llm_meta["memory_context"] = mem_ctx
+            chosen_text = (judge.get("chosen_text") or "").strip()
+            if chosen_text:
+                with st.expander("採用テキスト（chosen_text）", expanded=True):
+                    st.text_area("chosen_text", value=chosen_text, height=260, label_visibility="collapsed")
 
-        # ① 複数モデルの回答収集
-        self.run_models(messages)
+            # 候補モデル一覧
+            candidates: List[Dict[str, Any]] = judge.get("candidates") or []
+            with st.expander("候補モデル一覧（candidates）", expanded=False):
+                for i, cand in enumerate(candidates, start=1):
+                    st.markdown(f"#### 候補 {i}: `{cand.get('name', '')}`")
+                    st.write(
+                        f"status: `{cand.get('status', 'unknown')}` / "
+                        f"score: {cand.get('score', 0):.2f} / length: {cand.get('length', 0)}"
+                    )
+                    details = cand.get("details") or {}
+                    if details:
+                        with st.expander("details", expanded=False):
+                            st.json(details)
 
-        # ② JudgeAI2 による採択
-        try:
-            models = self.llm_meta.get("models", {})
-            judge_result = self.judge_ai.process(models)
-        except Exception as e:
-            judge_result = {
-                "status": "error",
-                "error": str(e),
-                "chosen_model": "",
-                "chosen_text": "",
-                "candidates": [],
-            }
+        # ---- composer ----
+        st.subheader("ComposerAI の最終結果（llm_meta['composer']）")
+        comp = llm_meta.get("composer", {})
+        if not comp:
+            st.info("composer 情報はまだありません。")
+        else:
+            st.write(f"- status: `{comp.get('status', 'unknown')}`")
+            st.write(f"- source_model: `{comp.get('source_model', '')}`")
+            st.write(f"- mode: `{comp.get('mode', '')}`")
 
-        self.llm_meta["judge"] = judge_result
+            summary = comp.get("summary")
+            if summary:
+                with st.expander("サマリ（summary）", expanded=True):
+                    st.text_area("composer_summary", value=str(summary), height=200, label_visibility="collapsed")
 
-        # ③ ComposerAI による仕上げ
-        try:
-            composed = self.composer_ai.compose(self.llm_meta)
-        except Exception as e:
-            # 失敗時は Judge の chosen_text をフォールバックとして使う
-            fallback = ""
-            if isinstance(judge_result, dict):
-                fallback = judge_result.get("chosen_text") or ""
-            composed = {
-                "status": "error",
-                "error": str(e),
-                "text": fallback,
-                "source_model": judge_result.get("chosen_model") if isinstance(judge_result, dict) else "",
-                "mode": "judge_fallback",
-            }
+            text = (comp.get("text") or "").strip()
+            if text:
+                with st.expander("最終返答テキスト（composer.text）", expanded=True):
+                    st.text_area("composer_text", value=text, height=260, label_visibility="collapsed")
 
-        self.llm_meta["composer"] = composed
+        # ---- MemoryAI ----
+        st.subheader("MemoryAI の状態（長期記憶）")
+        memory_ctx = llm_meta.get("memory_context") or ""
+        mem_update = llm_meta.get("memory_update") or {}
 
-        # ④ 最終返答テキストの決定
-        final_text = ""
-        if isinstance(composed, dict):
-            final_text = composed.get("text") or ""
-        if not final_text and isinstance(judge_result, dict):
-            final_text = judge_result.get("chosen_text") or ""
+        # MemoryAI インスタンス（AnswerTalker が持っている物）から状態取得
+        memory_ai = getattr(self.answer_talker, "memory_ai", None)
 
-        # ⑤ MemoryAI に、このターンの会話を渡して長期記憶を更新
-        try:
-            round_val_raw = st.session_state.get("round_number", 0)
+        if memory_ai is None:
+            st.warning("AnswerTalker.memory_ai が初期化されていません。")
+        else:
+            persona_id = getattr(memory_ai, "persona_id", "default")
+            max_records = getattr(memory_ai, "max_store_items", 0)
+            storage_file = getattr(memory_ai, "file_path", "(unknown)")
+            st.write(f"- persona_id: `{persona_id}`")
+            st.write(f"- max_records: `{max_records}`")
+            st.write(f"- storage_file: `{storage_file}`")
+
             try:
-                round_val = int(round_val_raw)
-            except Exception:
-                round_val = 0
+                records = memory_ai.get_all_records()
+            except Exception as e:
+                records = []
+                st.warning(f"MemoryRecord の取得に失敗しました: {e}")
 
-            mem_update = self.memory_ai.update_from_turn(
-                messages=messages,
-                final_reply=final_text,
-                round_id=round_val,
-            )
-        except Exception as e:
-            mem_update = {
-                "status": "error",
-                "added": 0,
-                "total": 0,
-                "reason": "exception",
-                "raw_reply": "",
-                "records": [],
-                "error": str(e),
-            }
+            if not records:
+                st.info("現在、保存済みの MemoryRecord はありません。")
+            else:
+                st.markdown("#### 保存済み MemoryRecord 一覧")
+                for i, r in enumerate(records, start=1):
+                    with st.expander(f"記憶 {i}: [imp={r.importance}] {r.summary[:32]}...", expanded=False):
+                        st.write(f"- id: `{r.id}`")
+                        st.write(f"- round_id: {r.round_id}")
+                        st.write(f"- importance: {r.importance}")
+                        st.write(f"- created_at: {r.created_at}")
+                        st.write(f"- tags: {', '.join(r.tags) if r.tags else '(なし)'}")
+                        st.write("**summary:**")
+                        st.write(r.summary)
+                        if r.source_user:
+                            st.write("\n**source_user:**")
+                            st.text(r.source_user)
+                        if r.source_assistant:
+                            st.write("\n**source_assistant:**")
+                            st.text(r.source_assistant)
 
-        self.llm_meta["memory_update"] = mem_update
+        st.subheader("llm_meta 内のメモリ関連メタ情報")
+        st.write(f"- memory_context:\n\n```text\n{memory_ctx}\n```")
+        st.write("- memory_update（直近ターンの記憶更新結果）:")
+        st.json(mem_update)
 
-        # ⑥ 最終状態を session_state に反映
-        st.session_state["llm_meta"] = self.llm_meta
-
-        return final_text
+    # ここで他の補助メソッドがあれば続けて記述
 
 
-def create_answertalker_view() -> "AnswerTalkerView":
+# ===== ここが重要：ModeSwitcher から呼ぶファクトリ =====
+
+def create_answertalker_view() -> AnswerTalkerView:
     """
     ModeSwitcher から呼ぶためのシンプルなファクトリ関数。
-
-    - インスタンス生成の責務はこの関数に集約しておく。
-    - AnswerTalkerView.__init__ に引数があっても、ここで調整すればよい。
     """
     return AnswerTalkerView()
-
