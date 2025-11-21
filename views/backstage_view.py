@@ -42,4 +42,4 @@ class BackstageView:
                         st.info("リストは空です（記憶が 0 件です）。")
                 else:
                     st.write(f"- JSON の型: `{type(data)}`")
-                    st.json(data
+                    st.json(data)
