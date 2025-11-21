@@ -1,378 +1,198 @@
 # actors/composer_ai.py
-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Callable, Tuple
+from typing import Any, Dict, Optional
 
-
-# refiner 用の関数シグネチャ
-RefinerFn = Callable[
-    [
-        str,                      # question_text: ユーザーの最後の質問
-        str,                      # source_model: Judge が採用したモデル名 (例: "gpt51")
-        str,                      # chosen_text: そのモデルの回答テキスト
-        List[Dict[str, Any]],     # other_candidates: 落選候補
-        Dict[str, Any],           # llm_meta: 全メタ情報
-        Optional[str],            # refiner_model: 仕上げに使う LLM 名
-    ],
-    str,                          # refined_text
-]
+from llm.llm_manager import LLMManager
 
 
 class ComposerAI:
     """
-    AI回答パイプラインの「仕上げ」担当クラス。
+    llm_meta["models"] と llm_meta["judge"] をもとに、
+    「最終返答テキスト」を組み立てるクラス。
 
-    役割:
-      - ModelsAI.collect が集めた各モデル出力 (llm_meta["models"])
-      - JudgeAI2.process が選んだ採択情報 (llm_meta["judge"])
-        を入力として、「最終返答テキスト」を決定する。
-
-    v0.2.0 のポイント:
-      - 基本は Judge の chosen_text をベースとする
-      - refiner（任意のコールバック）を通じて、別LLM/GPT-5.1 などで
-        「他の候補も踏まえた仕上げ（リファイン）」を行える
-      - どの LLM を仕上げに使ったかを llm_meta['composer'] に記録する
+    v0.2.x の方針:
+      - 原則として追加で LLM を呼ばない（安定性優先）
+      - JudgeAI2 の chosen_text を優先採用
+      - Judge が error の場合は models からフォールバック
+      - 将来的に llm_manager を渡して refinement を有効化できる設計
     """
 
     def __init__(
         self,
-        *,
-        refiner: Optional[RefinerFn] = None,
-        refiner_model: Optional[str] = None,
-        enable_refine: bool = True,
+        llm_manager: Optional[LLMManager] = None,
+        refine_model: str = "gpt4o",
     ) -> None:
         """
         Parameters
         ----------
-        refiner:
-            実際に LLM を呼んで仕上げを行うコールバック。
-            None の場合はリファインを行わない（Judge の選択をそのまま採用）。
+        llm_manager:
+            追加の refinement に使う LLMManager。
+            いまは None を指定して、LLM呼び出しなし運用でも OK。
 
-        refiner_model:
-            refiner が使うべき LLM 名（例: "gpt51"）。
-            コールバック側でこれを見て router_fn を切り替えることを想定。
-
-        enable_refine:
-            False にすると、refiner が渡されていてもリファインをスキップする。
+        refine_model:
+            refinement に使うモデル名（llm_manager 管理下の名前）。
         """
-        self.refiner = refiner
-        self.refiner_model = refiner_model
-        self.enable_refine = enable_refine
+        self.llm_manager = llm_manager
+        self.refine_model = refine_model
 
-        self.name = "ComposerAI"
-        self.version = "0.2.0"
-
-    # ============================
-    # 公開インターフェース
-    # ============================
+    # =======================
+    # 公開 API
+    # =======================
     def compose(self, llm_meta: Dict[str, Any]) -> Dict[str, Any]:
         """
-        AnswerTalker から呼び出されるメインメソッド。
-
-        Parameters
-        ----------
-        llm_meta:
-            AnswerTalker が管理しているメタ情報辞書。
-            期待しているキー:
-              - "models": ModelsAI.collect(...) の結果
-              - "judge" : JudgeAI2.process(...) の結果
-              - "messages": Persona.build_messages() で組んだ messages（任意）
+        llm_meta 全体を受け取り、最終返答テキストとメタ情報を返す。
 
         Returns
         -------
-        Dict[str, Any]
-            例:
+        Dict[str, Any]:
             {
-              "status": "ok",
-              "text": "...最終返答テキスト...",
-              "source_model": "gpt51",
-              "mode": "judge_pass_through+refined",
-              "summary": "...デバッグ用サマリ...",
-              "composer": {"name": "ComposerAI", "version": "0.2.0"},
-              "refiner": {
-                  "model": "gpt51",
-                  "used": True,
-                  "status": "ok",
-                  "error": "",
-              },
+              "status": "ok" | "error",
+              "text": str,
+              "source_model": str,
+              "mode": "judge_choice" | "fallback_from_models" | "refined",
+              "summary": str,
             }
         """
-        if not isinstance(llm_meta, dict):
+        try:
+            return self._safe_compose(llm_meta)
+        except Exception as e:
             return {
                 "status": "error",
-                "error": "llm_meta must be dict[str, Any]",
                 "text": "",
+                "source_model": "",
+                "mode": "exception",
+                "summary": f"[ComposerAI] exception: {e}",
             }
 
-        models = llm_meta.get("models", {})
-        judge = llm_meta.get("judge", {})
+    # =======================
+    # 内部実装
+    # =======================
+    def _safe_compose(self, llm_meta: Dict[str, Any]) -> Dict[str, Any]:
+        models = llm_meta.get("models") or {}
+        judge = llm_meta.get("judge") or {}
 
-        if not isinstance(models, dict):
-            models = {}
-        if not isinstance(judge, dict):
-            judge = {}
+        # 1) JudgeAI2 の結果を優先
+        judge_status = str(judge.get("status", ""))
+        chosen_model = str(judge.get("chosen_model") or "")
+        chosen_text = str(judge.get("chosen_text") or "")
 
-        # 1) Judge の結果を読み取る
-        judge_status = judge.get("status")
-        if judge_status == "ok":
-            chosen_model = str(judge.get("chosen_model") or "")
-            chosen_text = str(judge.get("chosen_text") or "")
-            reason = str(judge.get("reason") or "")
-            reason_text = str(judge.get("reason_text") or "")
-            candidates = judge.get("candidates") or []
-        else:
-            chosen_model = ""
-            chosen_text = ""
-            reason = ""
-            reason_text = ""
-            candidates = []
-
-        # 2) ベースとなるテキスト / モデルを決める
-        final_text = ""
-        source_model = ""
-
-        if judge_status == "ok" and chosen_text:
-            final_text = chosen_text
-            source_model = chosen_model or self._fallback_model_name(models)
-            mode = "judge_pass_through"
-        else:
-            # Judge がエラー or 全員スコア0 の場合は models から決める
-            final_text, source_model = self._fallback_from_models(models)
-            mode = "fallback_from_models"
-
-        # 3) リファイン（仕上げ）処理
-        refiner_meta: Dict[str, Any] = {
-            "model": self.refiner_model,
-            "used": False,
-            "status": "skipped",  # "ok" / "skipped" / "error" / "ok_empty"
-            "error": "",
-        }
-
-        if (
-            self.enable_refine
-            and self.refiner is not None
-            and isinstance(final_text, str)
-            and final_text.strip()
-        ):
-            try:
-                messages = llm_meta.get("messages") or []
-                question = self._extract_last_user_content(messages)
-
-                other_candidates = self._build_other_candidates(
-                    candidates=candidates,
+        if judge_status == "ok" and chosen_model and chosen_text.strip():
+            text = chosen_text
+            mode = "judge_choice"
+            source_model = chosen_model
+            summary = (
+                "[ComposerAI 0.2.x] mode=judge_choice, "
+                f"source_model={source_model}, judge_status=ok"
+            )
+            # (必要であればここで refinement を噛ませる)
+            return self._maybe_refine(
+                base=dict(
+                    status="ok",
+                    text=text,
                     source_model=source_model,
-                )
+                    mode=mode,
+                    summary=summary,
+                ),
+                llm_meta=llm_meta,
+            )
 
-                refined = self.refiner(
-                    question,
-                    source_model,
-                    final_text,
-                    other_candidates,
-                    llm_meta,
-                    self.refiner_model,
-                )
+        # 2) Judge がエラー or 空のときは models からフォールバック
+        fallback_model, fallback_text = self._fallback_from_models(models)
 
-                refiner_meta["used"] = True
+        if fallback_model and fallback_text.strip():
+            text = fallback_text
+            mode = "fallback_from_models"
+            source_model = fallback_model
+            summary = (
+                "[ComposerAI 0.2.x] mode=fallback_from_models, "
+                f"source_model={source_model}, judge_status={judge_status}"
+            )
+            return self._maybe_refine(
+                base=dict(
+                    status="ok",
+                    text=text,
+                    source_model=source_model,
+                    mode=mode,
+                    summary=summary,
+                ),
+                llm_meta=llm_meta,
+            )
 
-                if isinstance(refined, str) and refined.strip():
-                    final_text = refined
-                    mode = mode + "+refined"
-                    refiner_meta["status"] = "ok"
-                else:
-                    refiner_meta["status"] = "ok_empty"
-            except Exception as e:
-                refiner_meta["used"] = True
-                refiner_meta["status"] = "error"
-                refiner_meta["error"] = str(e)
-                mode = mode + "+refine_error"
-
-        # 4) ポストプロセス（テキスト装飾など）
-        final_text = self._postprocess_text(
-            text=final_text,
-            source_model=source_model,
-            models=models,
-            judge=judge,
-        )
-
-        # 5) サマリ文字列（デバッグ用）
-        summary = self._build_summary(
-            source_model=source_model,
-            mode=mode,
-            judge_status=judge_status,
-            judge_reason=reason,
-            judge_reason_text=reason_text,
-            models=models,
-            refiner_meta=refiner_meta,
-        )
-
+        # 3) それでも何もない場合
         return {
-            "status": "ok",
-            "text": final_text,
-            "source_model": source_model,
-            "mode": mode,
-            "summary": summary,
-            "composer": {
-                "name": self.name,
-                "version": self.version,
-            },
-            "refiner": refiner_meta,
+            "status": "error",
+            "text": "",
+            "source_model": "",
+            "mode": "no_text",
+            "summary": "[ComposerAI 0.2.x] no usable text from judge or models",
         }
 
-    # ============================
-    # 内部: 候補処理
-    # ============================
-
-    def _fallback_model_name(self, models: Dict[str, Dict[str, Any]]) -> str:
+    # -----------------------
+    # モデルからのフォールバック
+    # -----------------------
+    @staticmethod
+    def _fallback_from_models(models: Dict[str, Any]) -> tuple[str, str]:
         """
-        chosen_model が空だった場合などに、models から
-        それっぽい model 名を一つ選ぶための補助ヘルパー。
-        """
-        if not isinstance(models, dict):
-            return ""
+        models から、もっとも無難なテキストを 1 つ選ぶ。
 
-        for name, info in models.items():
-            if isinstance(info, dict) and info.get("status") == "ok":
-                return str(name)
-
-        for name in models.keys():
-            return str(name)
-
-        return ""
-
-    def _fallback_from_models(
-        self,
-        models: Dict[str, Dict[str, Any]],
-    ) -> Tuple[str, str]:
-        """
-        JudgeAI2 がエラーのときに models からテキストを選ぶ。
+        いまは「status=ok かつ text が空でない最初のモデル」を返す。
+        必要であれば優先度順に見るよう拡張可能。
         """
         if not isinstance(models, dict):
             return "", ""
 
+        # まず gpt4o / gpt51 / hermes の順に見る（好みの順で OK）
+        preferred_order = ["gpt4o", "gpt51", "hermes"]
+
+        # 優先モデルからチェック
+        for name in preferred_order:
+            info = models.get(name)
+            if not isinstance(info, dict):
+                continue
+            if info.get("status") != "ok":
+                continue
+            text = str(info.get("text") or "").strip()
+            if text:
+                return name, text
+
+        # どれでも良いので最初の ok を返す
         for name, info in models.items():
             if not isinstance(info, dict):
                 continue
             if info.get("status") != "ok":
                 continue
-            text = info.get("text") or ""
+            text = str(info.get("text") or "").strip()
             if text:
-                return str(text), str(name)
-
-        for name, info in models.items():
-            if not isinstance(info, dict):
-                continue
-            text = info.get("text") or ""
-            if text:
-                return str(text), str(name)
+                return name, text
 
         return "", ""
 
-    def _build_other_candidates(
+    # -----------------------
+    # （任意）refinement
+    # -----------------------
+    def _maybe_refine(
         self,
-        *,
-        candidates: Any,
-        source_model: str,
-    ) -> List[Dict[str, Any]]:
+        base: Dict[str, Any],
+        llm_meta: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """
-        Judge の candidates から「落選候補」だけを抽出して返す。
+        将来的に gpt-5.1 / gpt-4o などで最終テキストを整形したい場合に備えたフック。
+
+        いまは llm_manager が None の場合はそのまま返すだけ。
         """
-        result: List[Dict[str, Any]] = []
-        if not isinstance(candidates, list):
-            return result
+        if self.llm_manager is None:
+            # refinement 未使用
+            base["refiner_model"] = None
+            base["refiner_used"] = False
+            base["refiner_status"] = "skipped"
+            base["refiner_error"] = ""
+            return base
 
-        for c in candidates:
-            if not isinstance(c, dict):
-                continue
-            name = c.get("name") or c.get("model")
-            if not name or name == source_model:
-                continue
-            result.append(c)
-
-        return result
-
-    # ============================
-    # 内部: ポストプロセス
-    # ============================
-
-    def _postprocess_text(
-        self,
-        *,
-        text: str,
-        source_model: str,
-        models: Dict[str, Dict[str, Any]],
-        judge: Dict[str, Any],
-    ) -> str:
-        """
-        最終テキストに対して、必要なら後処理を行う。
-        現バージョンでは「何もしない」。
-        """
-        if not text:
-            return ""
-        return text
-
-    # ============================
-    # 内部: サマリ & 補助
-    # ============================
-
-    def _build_summary(
-        self,
-        *,
-        source_model: str,
-        mode: str,
-        judge_status: Optional[str],
-        judge_reason: str,
-        judge_reason_text: str,
-        models: Dict[str, Dict[str, Any]],
-        refiner_meta: Dict[str, Any],
-    ) -> str:
-        """
-        Streamlit サイドで「どのモデルがどうだったか」を
-        一瞥できるようにするための簡易サマリ文字列。
-        """
-        lines: List[str] = []
-
-        lines.append(f"[ComposerAI {self.version}] mode={mode}")
-        lines.append(f"source_model={source_model or 'N/A'}")
-        lines.append(f"judge_status={judge_status or 'N/A'}")
-
-        if judge_reason:
-            lines.append(f"judge_reason={judge_reason}")
-        if judge_reason_text:
-            lines.append(f"judge_reason_text={judge_reason_text}")
-
-        model = refiner_meta.get("model") or "N/A"
-        lines.append(
-            f"refiner: model={model}, "
-            f"used={refiner_meta.get('used')}, "
-            f"status={refiner_meta.get('status')}, "
-            f"error={refiner_meta.get('error', '')}"
-        )
-
-        if isinstance(models, dict) and models:
-            lines.append("models:")
-            for name, info in models.items():
-                if not isinstance(info, dict):
-                    lines.append(f"  - {name}: (invalid info)")
-                    continue
-                status = info.get("status", "unknown")
-                text = info.get("text") or ""
-                length = len(text)
-                lines.append(f"  - {name}: status={status}, len={length}")
-        else:
-            lines.append("models: <empty>")
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _extract_last_user_content(messages: List[Dict[str, Any]]) -> str:
-        """
-        messages から最後の user メッセージの content を抽出。
-        見つからなければ空文字。
-        """
-        if not isinstance(messages, list):
-            return ""
-        for msg in reversed(messages):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                return str(msg.get("content", ""))
-        return ""
+        # ここから下は「本気で refinement したくなったとき」に実装していく。
+        # いまは安全のため未使用にしておく。
+        base["refiner_model"] = self.refine_model
+        base["refiner_used"] = False
+        base["refiner_status"] = "skipped"
+        base["refiner_error"] = "not implemented"
+        return base
