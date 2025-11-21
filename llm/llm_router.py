@@ -19,10 +19,24 @@ OPENROUTER_API_KEY_INITIAL = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 HERMES_MODEL = os.getenv("OPENROUTER_HERMES_MODEL", "nousresearch/hermes-4-70b")
 
+# ===== Grok / xAI（OpenAI 互換エンドポイント） =====
+GROK_API_KEY = os.getenv("GROK_API_KEY")
+GROK_BASE_URL = os.getenv("GROK_BASE_URL", "https://api.x.ai/v1")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-2-latest")
+
+# ===== Gemini / Google（OpenAI 互換エンドポイント） =====
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_BASE_URL = os.getenv(
+    "GEMINI_BASE_URL",
+    # Google Gemini OpenAI Compatibility の既定エンドポイント
+    "https://generativelanguage.googleapis.com/v1beta/openai"
+)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-pro-latest")
+
 
 class LLMRouter:
     """
-    GPT-4o / GPT-5.1 / Hermes などを呼び分ける中心クラス。
+    GPT-4o / GPT-5.1 / Hermes / Grok / Gemini などを呼び分ける中心クラス。
 
     すべての call_xxx は
       -> Tuple[reply_text: str, usage: Dict[str, Any]]
@@ -131,16 +145,107 @@ class LLMRouter:
             max_completion_tokens=int(max_tokens),
         )
 
-        # ★ ここを少しだけ強化する
+        # 中身が空なら「成功」とはみなさずエラーにする
         raw_content = resp.choices[0].message.content
 
         if not raw_content:
-            # 中身が空なら「成功」とはみなさずエラーにしてしまう
-            # → ModelsAI 側で status:error になり、llm_meta['models']['gpt51']['error']
-            #    に resp 全体の情報が入るので原因を確認しやすくなる
             raise RuntimeError(f"gpt51 returned empty content: {resp}")
 
         reply_text = raw_content
+        usage: Dict[str, Any] = {}
+        if getattr(resp, "usage", None) is not None:
+            usage = {
+                "prompt_tokens": getattr(resp.usage, "prompt_tokens", None),
+                "completion_tokens": getattr(resp.usage, "completion_tokens", None),
+                "total_tokens": getattr(resp.usage, "total_tokens", None),
+            }
+
+        return reply_text, usage
+
+    # ============================
+    # Grok 呼び出し（xAI / OpenAI 互換）
+    # ============================
+    def call_grok(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 800,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        xAI Grok 系モデルを呼び出す窓口。
+
+        環境変数:
+          - GROK_API_KEY
+          - GROK_BASE_URL (任意, 既定: https://api.x.ai/v1)
+          - GROK_MODEL (任意, 既定: grok-2-latest)
+        """
+        if not GROK_API_KEY:
+            raise RuntimeError("GROK_API_KEY が設定されていません。")
+
+        client_grok = OpenAI(
+            base_url=GROK_BASE_URL,
+            api_key=GROK_API_KEY,
+        )
+
+        try:
+            resp = client_grok.chat.completions.create(
+                model=GROK_MODEL,
+                messages=messages,
+                temperature=float(temperature),
+                max_tokens=int(max_tokens),
+            )
+        except BadRequestError as e:
+            # 上位（ModelsAI）で status:error になるようにラップして投げ直し
+            raise RuntimeError(f"Grok BadRequestError: {e}") from e
+
+        reply_text = resp.choices[0].message.content or ""
+        usage: Dict[str, Any] = {}
+        if getattr(resp, "usage", None) is not None:
+            usage = {
+                "prompt_tokens": getattr(resp.usage, "prompt_tokens", None),
+                "completion_tokens": getattr(resp.usage, "completion_tokens", None),
+                "total_tokens": getattr(resp.usage, "total_tokens", None),
+            }
+
+        return reply_text, usage
+
+    # ============================
+    # Gemini 呼び出し（Google / OpenAI 互換）
+    # ============================
+    def call_gemini(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 800,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Google Gemini（OpenAI 互換レイヤ）を呼び出す窓口。
+
+        環境変数:
+          - GEMINI_API_KEY
+          - GEMINI_BASE_URL (任意, 既定: https://generativelanguage.googleapis.com/v1beta/openai)
+          - GEMINI_MODEL (任意, 既定: gemini-1.5-pro-latest)
+        """
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY が設定されていません。")
+
+        client_gemini = OpenAI(
+            base_url=GEMINI_BASE_URL,
+            api_key=GEMINI_API_KEY,
+        )
+
+        try:
+            resp = client_gemini.chat.completions.create(
+                model=GEMINI_MODEL,
+                messages=messages,
+                temperature=float(temperature),
+                max_tokens=int(max_tokens),
+            )
+        except BadRequestError as e:
+            # 上位（ModelsAI）で status:error になるようにラップして投げ直し
+            raise RuntimeError(f"Gemini BadRequestError: {e}") from e
+
+        reply_text = resp.choices[0].message.content or ""
         usage: Dict[str, Any] = {}
         if getattr(resp, "usage", None) is not None:
             usage = {
