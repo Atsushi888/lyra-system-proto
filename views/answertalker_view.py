@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Protocol
 
+import os
+import json
 import streamlit as st
 
-from auth.roles import Role
+from auth.roles import Role  # いまは未使用だが将来の拡張用に残しておく
 from actors.actor import Actor
 from actors.answer_talker import AnswerTalker
-from personas.persona_floria_ja import Persona  # いまはフローリア固定ならそのまま
+from personas.persona_floria_ja import Persona  # いまはフローリア固定
 
 
 class View(Protocol):
@@ -46,9 +48,7 @@ class AnswerTalkerView:
         # ---- models ----
         st.subheader("llm_meta に登録された AI 回答一覧（models）")
         models = llm_meta.get("models", {})
-        
-        st.subheader("llm_meta に登録された AI 回答一覧（models）")
-        
+
         if not models:
             st.info("models 情報はまだありません。")
         else:
@@ -58,21 +58,21 @@ class AnswerTalkerView:
                     text = info.get("text", "") or ""
                     usage = info.get("usage")
                     error = info.get("error")
-        
+
                     st.write("- status:", status)
                     st.write("- len(text):", len(text))
-        
+
                     if usage is not None:
                         st.write("- usage:", usage)
-        
+
                     if error:
                         st.error(f"error: {error}")
-        
-                    # 必要なら実際のテキストも確認できるように
+
+                    # 実際のテキストも頭だけ確認できるように
                     if text:
                         st.markdown("**preview:**")
-                        st.code(text[:1000])  # 長すぎると困るので頭だけ
-                
+                        st.code(text[:1000])  # 長すぎると困るので頭だけ表示
+
         # ---- judge ----
         st.subheader("JudgeAI2 の判定結果（llm_meta['judge']）")
         judge = llm_meta.get("judge", {})
@@ -90,7 +90,12 @@ class AnswerTalkerView:
             chosen_text = (judge.get("chosen_text") or "").strip()
             if chosen_text:
                 with st.expander("採用テキスト（chosen_text）", expanded=True):
-                    st.text_area("chosen_text", value=chosen_text, height=260, label_visibility="collapsed")
+                    st.text_area(
+                        "chosen_text",
+                        value=chosen_text,
+                        height=260,
+                        label_visibility="collapsed",
+                    )
 
             # 候補モデル一覧
             candidates: List[Dict[str, Any]] = judge.get("candidates") or []
@@ -119,19 +124,29 @@ class AnswerTalkerView:
             summary = comp.get("summary")
             if summary:
                 with st.expander("サマリ（summary）", expanded=True):
-                    st.text_area("composer_summary", value=str(summary), height=200, label_visibility="collapsed")
+                    st.text_area(
+                        "composer_summary",
+                        value=str(summary),
+                        height=200,
+                        label_visibility="collapsed",
+                    )
 
             text = (comp.get("text") or "").strip()
             if text:
                 with st.expander("最終返答テキスト（composer.text）", expanded=True):
-                    st.text_area("composer_text", value=text, height=260, label_visibility="collapsed")
+                    st.text_area(
+                        "composer_text",
+                        value=text,
+                        height=260,
+                        label_visibility="collapsed",
+                    )
 
         # ---- MemoryAI ----
         st.subheader("MemoryAI の状態（長期記憶）")
         memory_ctx = llm_meta.get("memory_context") or ""
         mem_update = llm_meta.get("memory_update") or {}
 
-        # MemoryAI インスタンス（AnswerTalker が持っている物）から状態取得
+        # AnswerTalker が抱えている MemoryAI インスタンスを取得
         memory_ai = getattr(self.answer_talker, "memory_ai", None)
 
         if memory_ai is None:
@@ -144,6 +159,7 @@ class AnswerTalkerView:
             st.write(f"- max_records: `{max_records}`")
             st.write(f"- storage_file: `{storage_file}`")
 
+            # メモリ一覧（MemoryAI.get_all_records）
             try:
                 records = memory_ai.get_all_records()
             except Exception as e:
@@ -155,12 +171,17 @@ class AnswerTalkerView:
             else:
                 st.markdown("#### 保存済み MemoryRecord 一覧")
                 for i, r in enumerate(records, start=1):
-                    with st.expander(f"記憶 {i}: [imp={r.importance}] {r.summary[:32]}...", expanded=False):
+                    with st.expander(
+                        f"記憶 {i}: [imp={r.importance}] {r.summary[:32]}...",
+                        expanded=False,
+                    ):
                         st.write(f"- id: `{r.id}`")
                         st.write(f"- round_id: {r.round_id}")
                         st.write(f"- importance: {r.importance}")
                         st.write(f"- created_at: {r.created_at}")
-                        st.write(f"- tags: {', '.join(r.tags) if r.tags else '(なし)'}")
+                        st.write(
+                            f"- tags: {', '.join(r.tags) if r.tags else '(なし)'}"
+                        )
                         st.write("**summary:**")
                         st.write(r.summary)
                         if r.source_user:
@@ -170,12 +191,47 @@ class AnswerTalkerView:
                             st.write("\n**source_assistant:**")
                             st.text(r.source_assistant)
 
+            # ▼ 実ファイルの診断（JSON が本当に作られているか）
+            st.markdown("---")
+            st.markdown("### MemoryAI ファイル診断（JSON）")
+
+            if st.button("記憶ファイルを診断する", key="memfile_check_at"):
+                path = storage_file
+                st.write(f"対象ファイル: `{path}`")
+
+                if not path or path == "(unknown)":
+                    st.error("MemoryAI.file_path が正しく設定されていません。")
+                elif not os.path.exists(path):
+                    st.error(
+                        "ファイルが存在しません。まだ一度も記憶が保存されていない可能性があります。"
+                    )
+                else:
+                    st.success("ファイルは存在します。")
+
+                    size = os.path.getsize(path)
+                    st.write(f"- ファイルサイズ: `{size}` バイト")
+
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                    except Exception as e:
+                        st.error(f"JSON の読み込みに失敗しました: {e}")
+                    else:
+                        if isinstance(data, list):
+                            st.write(f"- JSON はリストです。要素数: `{len(data)}`")
+                            if data:
+                                st.write("- 先頭3件のプレビュー:")
+                                st.json(data[:3])
+                            else:
+                                st.info("リストは空です（記憶が 0 件です）。")
+                        else:
+                            st.write(f"- JSON の型: `{type(data)}`")
+                            st.json(data)
+
         st.subheader("llm_meta 内のメモリ関連メタ情報")
         st.write(f"- memory_context:\n\n```text\n{memory_ctx}\n```")
         st.write("- memory_update（直近ターンの記憶更新結果）:")
         st.json(mem_update)
-
-    # ここで他の補助メソッドがあれば続けて記述
 
 
 # ===== ここが重要：ModeSwitcher から呼ぶファクトリ =====
