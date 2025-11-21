@@ -250,17 +250,19 @@ class MemoryAI:
         messages = [{"role": "user", "content": prompt}]
 
         try:
-            # ★ ここを修正：キーワード name ではなく、第1引数 model_name で渡す
+            # ★ここを修正：name= ではなく model_name を第1引数に渡す
             raw = self.llm_manager.call_model(
                 self.model_name,
-                messages=messages,
+                messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-        except Exception:
+        except Exception as e:
+            # デバッグ用ログ（必要なら st.write に差し替えてもOK）
+            print(f"[MemoryAI] call_model error: {e}")
             return ""
 
-        # call_model は (reply_text, usage) か、単純な str を返す想定
+        # call_model は (reply_text, usage) or 文字列を返す設計
         if isinstance(raw, tuple) and raw:
             reply_text = raw[0]
         else:
