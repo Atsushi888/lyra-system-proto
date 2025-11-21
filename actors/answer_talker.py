@@ -32,7 +32,7 @@ class AnswerTalker:
         self,
         persona: Any,
         llm_manager: Optional[LLMManager] = None,
-        memory_model: str = "gpt51",
+        memory_model: str = "gpt4o",
     ) -> None:
         self.persona = persona
 
