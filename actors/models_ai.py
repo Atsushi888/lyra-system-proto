@@ -11,15 +11,22 @@ class ModelsAI:
     """
     複数の LLM モデルから回答を収集するクラス。
 
-    - LLMManager から model_props を取得して、
-      enabled かつ available なモデルを順に呼び出す。
-    - 実際の LLM 呼び出しは LLMManager.call_model() に委譲する。
+    - LLMManager に登録されているモデル一覧を見て、
+      enabled なものだけ順番に呼び出す。
+    - 実際の API 呼び出しは LLMManager.call_model() に委譲する。
     """
 
     def __init__(self, llm_manager: LLMManager) -> None:
+        # persona ごとに共有されている LLMManager
         self.llm_manager = llm_manager
 
     def _normalize_result(self, result: Any) -> Dict[str, Any]:
+        """
+        LLMManager.call_model() の戻り値を標準化する。
+
+        - 文字列だけ → text に入れる
+        - (text, usage, ...) のタプル → text / usage を取り出す
+        """
         reply_text = None
         usage = None
         meta: Dict[str, Any] = {}
@@ -42,15 +49,21 @@ class ModelsAI:
         """
         各モデルを呼び出し、結果を dict にまとめて返す。
 
-        戻り値:
+        戻り値の例:
             {
-              "gpt4o": {"status": "...", "text": "...", ...},
+              "gpt4o": {
+                "status": "ok",
+                "text": "...",
+                "usage": {...} or None,
+                "meta": {...},
+              },
               "gpt51": {...},
               "hermes": {...},
             }
         """
         results: Dict[str, Any] = {}
 
+        # LLMManager から model_props を取得
         model_props = self.llm_manager.get_model_props()
 
         for name, props in model_props.items():
@@ -58,12 +71,16 @@ class ModelsAI:
             if not enabled:
                 results[name] = {
                     "status": "disabled",
-                    "error": "disabled_or_unavailable",
+                    "error": "disabled_by_config",
                 }
                 continue
 
             try:
-                raw = self.llm_manager.call_model(name, messages)
+                # 実際の呼び出しは LLMManager に委譲
+                raw = self.llm_manager.call_model(
+                    model_name=name,
+                    messages=messages,
+                )
                 norm = self._normalize_result(raw)
                 norm["status"] = "ok"
                 results[name] = norm
