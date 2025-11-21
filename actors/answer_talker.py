@@ -107,12 +107,11 @@ class AnswerTalker:
             # messages が空なら何もできないので空文字を返す
             return ""
 
-        # 0) 次ターン用の memory_context を構築（このターンの system に差し込む運用などを想定）
+        # 0) 次ターン用の memory_context を構築
         try:
             mem_ctx = self.memory_ai.build_memory_context(user_query=user_text or "")
         except Exception as e:
             mem_ctx = ""
-            # デバッグ用に llm_meta にも残しておく
             self.llm_meta["memory_context_error"] = str(e)
         self.llm_meta["memory_context"] = mem_ctx
 
@@ -138,7 +137,6 @@ class AnswerTalker:
         try:
             composed = self.composer_ai.compose(self.llm_meta)
         except Exception as e:
-            # 失敗時は Judge の chosen_text をフォールバックとして使う
             fallback = ""
             if isinstance(judge_result, dict):
                 fallback = judge_result.get("chosen_text") or ""
@@ -152,14 +150,14 @@ class AnswerTalker:
 
         self.llm_meta["composer"] = composed
 
-        # ④ 最終返答テキストの決定
+        # ④ 最終返答テキスト
         final_text = ""
         if isinstance(composed, dict):
             final_text = composed.get("text") or ""
         if not final_text and isinstance(judge_result, dict):
             final_text = judge_result.get("chosen_text") or ""
 
-        # ⑤ MemoryAI に、このターンの会話を渡して長期記憶を更新
+        # ⑤ MemoryAI に記憶更新を依頼
         try:
             round_val_raw = st.session_state.get("round_number", 0)
             try:
@@ -185,7 +183,6 @@ class AnswerTalker:
 
         self.llm_meta["memory_update"] = mem_update
 
-        # ⑥ 最終状態を session_state に反映
         st.session_state["llm_meta"] = self.llm_meta
 
         return final_text
