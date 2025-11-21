@@ -249,15 +249,22 @@ class MemoryAI:
         """
         messages = [{"role": "user", "content": prompt}]
 
+        # ★ ここを書き換える
         try:
             raw = self.llm_manager.call_model(
-                model_name=self.model_name,   # ★ ここを name→model_name に
+                model_name=self.model_name,
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-        except Exception:
-            return ""
+        except Exception as e:
+            # ここでちゃんと中身を見る
+            import traceback
+            tb = traceback.format_exc()
+            st.error(f"[MemoryAI] call_model で例外発生: {e}")
+            st.code(tb, language="python")
+            # AnswerTalker 側の try/except まで投げて、llm_meta['memory_update']['error'] にも乗せる
+            raise
 
         # call_model は (reply_text, usage) を返す設計
         if isinstance(raw, tuple) and raw:
@@ -269,7 +276,7 @@ class MemoryAI:
             return ""
 
         return reply_text or ""
-
+    
     @staticmethod
     def _build_update_prompt(user_text: str, final_reply: str) -> str:
         return f"""
