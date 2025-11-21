@@ -149,6 +149,22 @@ class MemoryAI:
         with open(self.file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+
+    def save(self) -> None:
+        """
+        現在の記憶を JSON として保存する。
+        """
+        data = [asdict(m) for m in self.memories]
+        with open(self.file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    
+        # デバッグ用ログ
+        print(
+            f"[MemoryAI.save] persona_id={self.persona_id}, "
+            f"records={len(self.memories)}, path={self.file_path}"
+        )
+    
+
     # ============================
     # 公開: 記憶一覧取得（ビュー用）
     # ============================
