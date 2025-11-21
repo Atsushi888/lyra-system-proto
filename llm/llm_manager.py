@@ -58,8 +58,8 @@ class LLMManager:
 
         # Grok / Gemini はデフォルトでは「登録されているが disabled」
         # → UI から有効化させる前提
-        manager.register_grok(priority=1.5, enabled=False)
-        manager.register_gemini(priority=1.5, enabled=False)
+        # manager.register_grok(priority=1.5, enabled=False)
+        # manager.register_gemini(priority=1.5, enabled=False)
 
         cls._POOL[persona_id] = manager
         return manager
