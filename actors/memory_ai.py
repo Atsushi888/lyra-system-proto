@@ -243,12 +243,16 @@ class MemoryAI:
     # 内部ユーティリティ
     # ============================
     def _call_model_with_prompt(self, prompt: str) -> str:
-
+        """
+        LLMManager と model_name を使って、内部的に LLM を 1 回呼び出す。
+        Memory 抽出専用の小さなユーティリティ。
+        """
         messages = [{"role": "user", "content": prompt}]
 
         try:
+            # ★ ここを修正：キーワード name ではなく、第1引数 model_name で渡す
             raw = self.llm_manager.call_model(
-                model_name=self.model_name,
+                self.model_name,
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -256,14 +260,17 @@ class MemoryAI:
         except Exception:
             return ""
 
-        # call_model → (reply_text, usage) または reply_text
-        if isinstance(raw, tuple):
+        # call_model は (reply_text, usage) か、単純な str を返す想定
+        if isinstance(raw, tuple) and raw:
             reply_text = raw[0]
         else:
             reply_text = raw
 
-        return reply_text if isinstance(reply_text, str) else ""
+        if not isinstance(reply_text, str):
+            return ""
 
+        return reply_text or ""
+    
     @staticmethod
     def _build_update_prompt(user_text: str, final_reply: str) -> str:
         return f"""
