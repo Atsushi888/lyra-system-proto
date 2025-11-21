@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from llm.llm_manager import LLMManager
+from llm.llm_manager import LLMManager  # インターフェースは残すが、内部では使わない
 
 
 @dataclass
@@ -24,7 +23,7 @@ class MemoryRecord:
     - tags:      "関係性", "感情", "設定" などのタグ
     - created_at:ISO8601 形式の作成日時（UTC）
     - source_user:      ユーザー発話（元テキスト）
-    - source_assistant: アシスタントの最終返答（元テキスト）
+    - source_assistant: アシスタントの最終返答（元テキスト＝ComposerAI出力）
     """
     id: str
     round_id: int
@@ -38,36 +37,36 @@ class MemoryRecord:
 
 class MemoryAI:
     """
-    Lyra-System 用の記憶管理クラス（v0.2 / JSON 永続化版）。
+    Lyra-System 用の記憶管理クラス（v0.2 / ComposerAI 直結版）。
 
     役割:
-      - 1ターンの会話（ユーザー発話 + 最終返答）から、
-        「長期記憶に残すべき内容」があるかどうかを LLM に判定させる
-      - 必要な場合、その要約を MemoryRecord として保存する
-      - 次のターン用に「関連しそうな記憶のまとめテキスト」を返す
-      - 記憶は JSON ファイルとして永続化する
+      - 1ターンの会話（ユーザー発話 + ComposerAI の最終返答）から、
+        「長期記憶として残しておくべきスナップショット」を生成する
+      - 生成した MemoryRecord を JSON ファイルとして永続化する
+      - 次のターン用に「重要そうな記憶のまとめテキスト」を返す
 
     特徴:
-      - importance (1〜5) × 新しさ でソートして利用
-      - v0.2 では gpt-4o を前提とした JSON 抽出ロバスト化を実装
+      - もはや内部で LLM を呼び出さない（安定性と速度を優先）
+      - 「どのテキストを記憶に使うか」は ComposerAI の最終出力に完全依存
+      - importance / tags は、現段階ではシンプルな固定値ロジック
+        （あとからヒューリスティックや別AIによる分類に差し替えやすい設計）
     """
 
     def __init__(
         self,
-        llm_manager: LLMManager,
+        llm_manager: Optional[LLMManager],  # インターフェース互換のため引数は残すが未使用
         persona_id: str = "default",
         base_dir: str = "data/memory",
-        model_name: str = "gpt4o",          # ★ gpt4o をデフォルトに
+        model_name: str = "gpt4o",         # 互換性のため残しているが利用しない
         max_store_items: int = 200,
-        temperature: float = 0.2,
-        max_tokens: int = 400,
+        temperature: float = 0.2,          # 互換性のため残しているが利用しない
+        max_tokens: int = 400,             # 同上
     ) -> None:
         """
         Parameters
         ----------
         llm_manager:
-            LLMManager インスタンス。
-            内部で LLMRouter を保持している前提。
+            互換性のため残しているが、v0.2 では内部で LLM 呼び出しを行わない。
 
         persona_id:
             記憶ファイルを分けるための ID。
@@ -76,8 +75,8 @@ class MemoryAI:
         base_dir:
             記憶ファイルを保存するディレクトリ。
 
-        model_name:
-            記憶抽出に使うモデル名。 "gpt4o" / "gpt51" / "hermes" など。
+        model_name / temperature / max_tokens:
+            v0.1 との互換性維持のため残しているが、v0.2 では使用しない。
 
         max_store_items:
             記憶の最大保持件数。超えた分は低重要度・古いものから削除する。
@@ -95,18 +94,7 @@ class MemoryAI:
 
         # メモリ本体
         self.memories: List[MemoryRecord] = []
-
-        # デバッグ用ログ（UI から覗けるようにしておく）
-        self.debug_log: List[str] = []
-
         self.load()
-
-    # ============================
-    # 内部: デバッグログ
-    # ============================
-    def _debug(self, msg: str) -> None:
-        ts = datetime.now(timezone.utc).isoformat()
-        self.debug_log.append(f"[{ts}] {msg}")
 
     # ============================
     # 永続化
@@ -118,16 +106,14 @@ class MemoryAI:
         """
         if not os.path.exists(self.file_path):
             self.memories = []
-            self._debug(f"load: file not found -> {self.file_path}")
             return
 
         try:
             with open(self.file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except Exception as e:
+        except Exception:
             # 壊れていたら空からやり直す
             self.memories = []
-            self._debug(f"load: json load error: {e}")
             return
 
         mems: List[MemoryRecord] = []
@@ -154,22 +140,14 @@ class MemoryAI:
                     continue
 
         self.memories = mems
-        self._debug(f"load: loaded {len(self.memories)} records from {self.file_path}")
 
     def save(self) -> None:
         """
         現在の記憶を JSON として保存する。
         """
         data = [asdict(m) for m in self.memories]
-        try:
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            self._debug(
-                f"save: persona_id={self.persona_id}, "
-                f"records={len(self.memories)}, path={self.file_path}"
-            )
-        except Exception as e:
-            self._debug(f"save: error while writing file: {e}")
+        with open(self.file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     # ============================
     # 公開: 記憶一覧取得（ビュー用）
@@ -181,7 +159,7 @@ class MemoryAI:
         return list(self.memories)
 
     # ============================
-    # 公開: 記憶更新
+    # 公開: 記憶更新（ComposerAI 出力直結）
     # ============================
     def update_from_turn(
         self,
@@ -190,12 +168,44 @@ class MemoryAI:
         round_id: int,
     ) -> Dict[str, Any]:
         """
-        1ターン分の会話から、長期記憶に残すべき内容があれば追加する。
+        1ターン分の会話から、長期記憶に残す内容を生成する。
+
+        v0.2 では:
+          - 追加の LLM 呼び出しは行わない
+          - ComposerAI の最終返答（final_reply）をベースに 1 件の MemoryRecord を生成
+          - summary は final_reply からのシンプルなトリミング
+          - importance や tags は、今は固定ロジック（将来拡張を見越して関数化）
+
+        Parameters
+        ----------
+        messages:
+            Persona.build_messages(user_text) で組んだ messages。
+            少なくとも最後に user ロールが含まれていることを想定。
+
+        final_reply:
+            ComposerAI による最終返答テキスト。
+
+        round_id:
+            このターンのラウンド番号（ログ上の通し番号）。
+
+        Returns
+        -------
+        Dict[str, Any]:
+            {
+              "status": "ok" | "skip" | "error",
+              "added": int,
+              "total": int,
+              "reason": str,
+              "raw_reply": str,  # v0.1 互換のため final_reply をそのまま入れておく
+              "records": [MemoryRecord ... を dict 化したもの],
+              "error": Optional[str],
+            }
         """
+        # ユーザー側の最後の発話も保存しておく
         user_text = self._extract_last_user_content(messages)
 
+        # 何も材料がなければスキップ
         if not user_text and not final_reply:
-            self._debug("update_from_turn: empty_turn (no user_text, no final_reply)")
             return {
                 "status": "skip",
                 "added": 0,
@@ -206,92 +216,65 @@ class MemoryAI:
                 "error": None,
             }
 
-        prompt = self._build_update_prompt(user_text, final_reply)
+        # summary の素材：優先順位は「final_reply > user_text」
+        base_text = (final_reply or "").strip() or (user_text or "").strip()
 
-        # 記憶抽出用 LLM 呼び出し
-        reply_text = self._call_model_with_prompt(prompt)
-
-        if not reply_text:
-            self._debug("update_from_turn: no_reply from LLM")
+        if not base_text:
+            # 念のための二重防御
             return {
                 "status": "skip",
                 "added": 0,
                 "total": len(self.memories),
-                "reason": "no_reply",
+                "reason": "no_base_text",
                 "raw_reply": "",
                 "records": [],
                 "error": None,
             }
 
-        added_records: List[MemoryRecord] = []
-        reason = ""
-        error: Optional[str] = None
+        # ---- ここが v0.2 の肝：summary / importance / tags をローカルで決める ----
 
-        # JSON パース（壊れていても落ちないように）
-        try:
-            parsed = json.loads(reply_text)
-        except Exception as e:
-            parsed = None
-            error = f"json_load_error: {e}"
-            self._debug(f"update_from_turn: json_load_error: {e}")
+        # summary は、長すぎると扱いづらいので先頭 160 文字程度にトリミング
+        max_summary_len = 160
+        if len(base_text) > max_summary_len:
+            summary = base_text[: max_summary_len - 1] + "…"
+        else:
+            summary = base_text
 
-        items = None
-        if isinstance(parsed, dict):
-            reason = str(parsed.get("reason", ""))
-            items = parsed.get("memories")
+        # importance は現段階では固定値（将来ここにヒューリスティックを入れる）
+        importance = self._estimate_importance(user_text=user_text, final_reply=final_reply)
 
-        if isinstance(items, list):
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
+        # tags も現段階ではシンプルに ["設定"] など。将来拡張用のフック。
+        tags = self._estimate_tags(user_text=user_text, final_reply=final_reply)
 
-                summary = str(item.get("summary", "")).strip()
-                if not summary:
-                    continue
+        created_at = datetime.now(timezone.utc).isoformat()
+        mem_id = f"{created_at}_{round_id}"
 
-                # importance は 1〜5 にクリップ
-                try:
-                    importance_raw = int(item.get("importance", 1))
-                except Exception:
-                    importance_raw = 1
-                importance = max(1, min(5, importance_raw))
+        rec = MemoryRecord(
+            id=mem_id,
+            round_id=round_id,
+            importance=importance,
+            summary=summary,
+            tags=tags,
+            created_at=created_at,
+            source_user=user_text,
+            source_assistant=final_reply,
+        )
 
-                tags_val = item.get("tags") or []
-                if not isinstance(tags_val, list):
-                    tags_val = []
-                tags = [str(t) for t in tags_val]
+        self.memories.append(rec)
 
-                created_at = datetime.now(timezone.utc).isoformat()
-                mem_id = f"{created_at}_{round_id}"
-
-                rec = MemoryRecord(
-                    id=mem_id,
-                    round_id=round_id,
-                    importance=importance,
-                    summary=summary,
-                    tags=tags,
-                    created_at=created_at,
-                    source_user=user_text,
-                    source_assistant=final_reply,
-                )
-                self.memories.append(rec)
-                added_records.append(rec)
-
-            # importance が低いものから順に間引く
-            self._trim_memories(max_items=self.max_store_items)
-            # 保存
-            self.save()
-
-        status = "ok" if added_records else "skip"
+        # importance が低いものから順に間引く
+        self._trim_memories(max_items=self.max_store_items)
+        # 保存
+        self.save()
 
         return {
-            "status": status,
-            "added": len(added_records),
+            "status": "ok",
+            "added": 1,
             "total": len(self.memories),
-            "reason": reason,
-            "raw_reply": reply_text,
-            "records": [asdict(r) for r in added_records],
-            "error": error,
+            "reason": "local_summary_v0.2",
+            "raw_reply": final_reply,
+            "records": [asdict(rec)],
+            "error": None,
         }
 
     # ============================
@@ -304,9 +287,13 @@ class MemoryAI:
     ) -> str:
         """
         次のターンの system に差し込む用の「記憶コンテキスト」を組み立てる。
+
+        v0.2 でもロジックは v0.1 と同じ：
+          - importance の高い順
+          - 同じ importance 内では新しい順
+        で最大 max_items 件を取り出し、箇条書きテキストにまとめる。
         """
         if not self.memories:
-            self._debug("build_memory_context: no memories yet")
             return ""
 
         # importance / created_at でソート
@@ -318,148 +305,58 @@ class MemoryAI:
 
         picked = sorted_mems[:max_items]
         if not picked:
-            self._debug("build_memory_context: picked list empty")
             return ""
 
         lines: List[str] = []
         for m in picked:
             lines.append(f"- {m.summary}")
 
+        # ここはペルソナ依存の文言でもよいが、汎用的に記述
         context = "これまでに覚えている大切なこと:\n" + "\n".join(lines)
-        self._debug(
-            f"build_memory_context: return len={len(context)}, items={len(picked)}"
-        )
         return context
 
     # ============================
-    # 内部: LLM 呼び出し
-    # ============================
-    def _call_model_with_prompt(self, prompt: str) -> str:
-        """
-        LLMManager と model_name を使って、内部的に LLM を 1 回呼び出す。
-        Memory 抽出専用の小さなユーティリティ。
-        """
-        messages = [{"role": "user", "content": prompt}]
-        self._debug(
-            f"_call_model_with_prompt: model={self.model_name}, prompt_len={len(prompt)}"
-        )
-
-        try:
-            # ★ ここが致命傷だった: name= ではなく model_name=
-            raw = self.llm_manager.call_model(
-                model_name=self.model_name,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-            )
-        except Exception as e:
-            self._debug(f"_call_model_with_prompt: call_model error: {e}")
-            return ""
-
-        # call_model は (reply_text, usage) か、文字列そのものを返す設計
-        if isinstance(raw, tuple) and raw:
-            reply_text = raw[0]
-        else:
-            reply_text = raw
-
-        if not isinstance(reply_text, str):
-            self._debug(
-                f"_call_model_with_prompt: unexpected reply type: {type(reply_text)}"
-            )
-            return ""
-
-        text = reply_text.strip()
-        if not text:
-            self._debug("_call_model_with_prompt: empty reply text")
-            return ""
-
-        # gpt-4o が「前置き＋```json ...```」みたいに返しても耐えるための JSON 抽出
-        json_candidate = self._extract_json_block(text)
-        if json_candidate != text:
-            self._debug(
-                f"_call_model_with_prompt: extracted json block "
-                f"(orig_len={len(text)}, json_len={len(json_candidate)})"
-            )
-
-        return json_candidate
-
-    # ============================
-    # 内部: JSON 抽出ヘルパ（gpt-4o 対応）
+    # 内部: 重要度＆タグの簡易推定
     # ============================
     @staticmethod
-    def _extract_json_block(text: str) -> str:
+    def _estimate_importance(user_text: str, final_reply: str) -> int:
         """
-        LLM から返ってきたテキストから JSON 部分だけを抜き出す。
-
-        - 純粋な JSON の場合はそのまま返す
-        - ```json ... ``` で囲まれている場合は中身だけ返す
-        - それ以外は「最初の '{'〜最後の '}'」を JSON とみなす
+        v0.2 ではシンプルなヒューリスティック。
+        将来的に、別の軽量モデルやルールベースに差し替え可能。
         """
-        s = text.strip()
-        if not s:
-            return ""
+        text = (user_text or "") + " " + (final_reply or "")
 
-        # すでに純粋な JSON ぽい
-        if s[0] == "{" and s[-1] == "}":
-            return s
+        # ざっくりしたキーワードベースのブースト（必要なら調整）
+        high_keywords = ["約束", "好き", "愛してる", "結婚", "子ども", "永遠", "大事", "重要"]
+        low_keywords = ["おはよう", "こんにちは", "こんばんは", "おやすみ", "テスト", "試験"]
 
-        # ```json ... ``` ブロックを探す
-        m = re.search(r"```json\s*(\{.*?\})\s*```", s, re.DOTALL | re.IGNORECASE)
-        if m:
-            return m.group(1).strip()
+        imp = 3  # デフォルト
 
-        # 最初の '{' から最後の '}' までを雑に抜き出す
-        start = s.find("{")
-        end = s.rfind("}")
-        if start != -1 and end != -1 and start < end:
-            return s[start : end + 1].strip()
+        if any(k in text for k in high_keywords):
+            imp = 5
+        elif any(k in text for k in low_keywords):
+            imp = 2
 
-        # どうしようもなければ元の文字列を返す
-        return s
+        return imp
 
-    # ============================
-    # 内部: プロンプト構築
-    # ============================
     @staticmethod
-    def _build_update_prompt(user_text: str, final_reply: str) -> str:
+    def _estimate_tags(user_text: str, final_reply: str) -> List[str]:
         """
-        このターンからどのような記憶を残すべきかを判定させるためのプロンプト。
-        LLM から JSON を返させる。
+        v0.2 ではごく簡単なタグ付け。
+        将来、タグ分類用の小さなモデルなどに差し替えやすい構造にしておく。
         """
-        return f"""
-あなたは「長期記憶フィルタ」です。
-以下の会話ログから、このキャラクターが今後も覚えておくべき
-「重要な出来事・設定・感情の変化」だけを抽出してください。
+        text = (user_text or "") + " " + (final_reply or "")
 
-出力は必ず **有効な JSON だけ** にしてください。
-前置きの文章や解説は一切書かず、JSON オブジェクトのみを返してください。
+        tags: List[str] = []
 
-[入力フォーマット]
-- user: プレイヤーの発話
-- assistant: キャラクターの返答
+        if any(k in text for k in ["好き", "愛してる", "キス", "抱きしめ", "関係", "恋人"]):
+            tags.append("関係性")
+        if any(k in text for k in ["悲しい", "嬉しい", "楽しい", "寂しい", "怖い", "不安"]):
+            tags.append("感情")
+        if not tags:
+            tags.append("設定")
 
-[会話]
-user: {user_text}
-assistant: {final_reply}
-
-[出力フォーマット（JSON のみ）]
-{{
-  "reason": "どのような観点で記憶を選んだかの簡単な説明（日本語）",
-  "memories": [
-    {{
-      "summary": "保存すべき内容の短い要約（日本語）",
-      "importance": 1,
-      "tags": ["関係性", "感情", "設定"]
-    }}
-  ]
-}}
-
-条件:
-- 本当に何も記憶する必要がない場合、"memories" は空配列にしてください。
-- 冗長な日常会話や一時的な話題（あいさつ、ちょっとした感想など）は保存しないでください。
-- プレイヤーとの関係性の変化、今回初めて出てきた重要な情報、
-  今後の物語に関わりそうな約束などは優先的に保存してください。
-""".strip()
+        return tags
 
     # ============================
     # 内部: 補助
