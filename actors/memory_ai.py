@@ -248,27 +248,26 @@ class MemoryAI:
         Memory 抽出専用の小さなユーティリティ。
         """
         messages = [{"role": "user", "content": prompt}]
-    
+
         try:
-            # ★ここを修正★
             raw = self.llm_manager.call_model(
-                model_name=self.model_name,   # ← name ではなく model_name
+                model_name=self.model_name,   # ★ ここを name→model_name に
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
         except Exception:
             return ""
-    
-        # call_model は (reply_text, usage) or reply_text を返す設計
+
+        # call_model は (reply_text, usage) を返す設計
         if isinstance(raw, tuple) and raw:
             reply_text = raw[0]
         else:
             reply_text = raw
-    
+
         if not isinstance(reply_text, str):
             return ""
-    
+
         return reply_text or ""
 
     @staticmethod
