@@ -97,20 +97,36 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
-            # 候補モデル一覧
-            candidates: List[Dict[str, Any]] = judge.get("candidates") or []
-            with st.expander("候補モデル一覧（candidates）", expanded=False):
-                for i, cand in enumerate(candidates, start=1):
-                    st.markdown(f"#### 候補 {i}: `{cand.get('name', '')}`")
-                    st.write(
-                        f"status: `{cand.get('status', 'unknown')}` / "
-                        f"score: {cand.get('score', 0):.2f} / length: {cand.get('length', 0)}"
-                    )
-                    details = cand.get("details") or {}
-                    if details:
-                        with st.expander("details", expanded=False):
-                            st.json(details)
-
+            # ▼ 候補モデル＋スコア一覧
+            raw_candidates = judge.get("candidates") or []
+            with st.expander("候補モデル一覧（candidates / scores）", expanded=False):
+                if isinstance(raw_candidates, dict):
+                    # もし dict 形式: {model_name: {score, text, ...}}
+                    for name, info in raw_candidates.items():
+                        score = info.get("score", "-")
+                        preview = (info.get("text") or "")[:800]
+                        st.markdown(f"### {name}  |  score = `{score}`")
+                        st.write(preview)
+                        st.markdown("---")
+                elif isinstance(raw_candidates, list):
+                    # もし list 形式: [{"name":..., "score":..., "text":...}, ...]
+                    for i, cand in enumerate(raw_candidates, start=1):
+                        name = cand.get("name", f"cand-{i}")
+                        score = cand.get("score", "-")
+                        length = cand.get("length", 0)
+                        preview = (cand.get("text") or "")[:800]
+                        st.markdown(
+                            f"### 候補 {i}: `{name}`  |  score = `{score}`  |  length = {length}"
+                        )
+                        st.write(preview)
+                        details = cand.get("details") or {}
+                        if details:
+                            with st.expander("details", expanded=False):
+                                st.json(details)
+                        st.markdown("---")
+                else:
+                    st.write("candidates の形式が想定外です:", type(raw_candidates))
+    
         # ---- composer ----
         st.subheader("ComposerAI の最終結果（llm_meta['composer']）")
         comp = llm_meta.get("composer", {})
