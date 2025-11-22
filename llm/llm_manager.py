@@ -1,30 +1,25 @@
 # llm/llm_manager.py
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, List
+from typing import Dict, Any, List, Tuple, Optional
+import os
 
-from llm.llm_router import LLMRouter
-
-
-@dataclass
-class LLMModelConfig:
-    """
-    1つの LLM モデルに関する設定情報。
-
-    - params: AI内部パラメータ（temperature/top_p/system_prompt 等）
-    """
-    name: str
-    vendor: str
-    router_fn: str
-    priority: float = 1.0
-    enabled: bool = True
-    extra: Dict[str, Any] = field(default_factory=dict)
-    params: Dict[str, Any] = field(default_factory=dict)  # ★追加！
+from llm.llm_router import (
+    call_gpt4o,
+    call_gpt51,
+    call_hermes,
+    call_grok,
+    call_gemini,
+)
 
 
 class LLMManager:
+    """
+    ベンダー横断 LLM 管理クラス。
+    register_* でモデルを登録し、
+    call_model(name, messages) で任意のモデルを呼び出す。
+    """
+
     _POOL: Dict[str, "LLMManager"] = {}
 
     @classmethod
@@ -34,247 +29,134 @@ class LLMManager:
 
         manager = cls(persona_id=persona_id)
 
-        # ★標準のモデルを登録（設定パラメータは未指定→デフォルト）
+        # ===== デフォルトモデル群 =====
         manager.register_gpt4o(priority=3.0, enabled=True)
-        manager.register_gpt51(priority=2.5, enabled=True)
-        manager.register_hermes(priority=1.5, enabled=True)
-        manager.register_grok(priority=1.2, enabled=True)
-        manager.register_gemini(priority=2.0, enabled=True)
+        manager.register_gpt51(priority=2.0, enabled=True)
+        manager.register_hermes(priority=1.0, enabled=True)
+
+        # ===== Grok / Gemini：導入済みなので有効化 =====
+        manager.register_grok(priority=1.5, enabled=True)
+        manager.register_gemini(priority=1.5, enabled=True)
+
         cls._POOL[persona_id] = manager
         return manager
 
+    # -----------------------------------------------------
+
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
-        self._models: Dict[str, LLMModelConfig] = {}
-        self._router = LLMRouter()
+        self._models: Dict[str, Dict[str, Any]] = {}
 
-    # ===========================================================
-    # モデル登録
-    # ===========================================================
+    # -----------------------------------------------------
+    # ★ モデル登録関数
+    # -----------------------------------------------------
+
     def register_model(
         self,
         name: str,
-        *,
         vendor: str,
-        router_fn: str,
-        priority: float = 1.0,
-        enabled: bool = True,
+        router_fn,
+        priority: float,
+        enabled: bool,
         extra: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,   # ★追加
     ) -> None:
-        cfg = LLMModelConfig(
-            name=name,
-            vendor=vendor,
-            router_fn=router_fn,
-            priority=priority,
-            enabled=enabled,
-            extra=extra or {},
-            params=params or {},  # ★追加
-        )
-        self._models[name] = cfg
 
-    # ---- 各モデルのヘルパー ----
+        self._models[name] = {
+            "vendor": vendor,
+            "router_fn": router_fn,
+            "priority": priority,
+            "enabled": enabled,
+            "extra": extra or {},
+        }
 
-    def register_gpt4o(self, *, priority: float = 3.0, enabled: bool = True,
-                       params: Optional[Dict[str, Any]] = None) -> None:
+    # ---- 個別登録ラッパー ----
+
+    def register_gpt4o(self, priority=3.0, enabled=True):
         self.register_model(
-            "gpt4o",
+            name="gpt4o",
             vendor="openai",
-            router_fn="call_gpt4o",
+            router_fn=call_gpt4o,
             priority=priority,
             enabled=enabled,
             extra={"env_key": "OPENAI_API_KEY", "model_family": "gpt-4o"},
-            params=params,
         )
 
-    def register_gpt51(self, *, priority: float = 2.0, enabled: bool = True,
-                       params: Optional[Dict[str, Any]] = None) -> None:
+    def register_gpt51(self, priority=2.0, enabled=True):
         self.register_model(
-            "gpt51",
+            name="gpt51",
             vendor="openai",
-            router_fn="call_gpt51",
+            router_fn=call_gpt51,
             priority=priority,
             enabled=enabled,
             extra={"env_key": "OPENAI_API_KEY", "model_family": "gpt-5.1"},
-            params=params,
         )
 
-    def register_hermes(self, *, priority: float = 1.0, enabled: bool = True,
-                        params: Optional[Dict[str, Any]] = None) -> None:
+    def register_hermes(self, priority=1.0, enabled=True):
         self.register_model(
-            "hermes",
+            name="hermes",
             vendor="openrouter",
-            router_fn="call_hermes",
+            router_fn=call_hermes,
             priority=priority,
             enabled=enabled,
             extra={"env_key": "OPENROUTER_API_KEY", "model_family": "hermes"},
-            params=params,
         )
 
-    def register_grok(self, *, priority: float = 1.5, enabled: bool = True,
-                      params: Optional[Dict[str, Any]] = None) -> None:
+    def register_grok(self, priority=1.5, enabled=False):
         self.register_model(
-            "grok",
+            name="grok",
             vendor="xai",
-            router_fn="call_grok",
+            router_fn=call_grok,
             priority=priority,
             enabled=enabled,
-            extra={"env_key": "GROK_API_KEY", "model_family": "grok-2"},
-            params=params,
+            extra={"env_key": "GROK_API_KEY", "model_family": "grok"},
         )
 
-    def register_gemini(self, *, priority: float = 1.5, enabled: bool = True,
-                        params: Optional[Dict[str, Any]] = None) -> None:
+    def register_gemini(self, priority=1.5, enabled=False):
         self.register_model(
-            "gemini",
+            name="gemini",
             vendor="google",
-            router_fn="call_gemini",
+            router_fn=call_gemini,
             priority=priority,
             enabled=enabled,
-            extra={"env_key": "GEMINI_API_KEY", "model_family": "gemini-2.0"},
-            params=params,
+            extra={"env_key": "GEMINI_API_KEY", "model_family": "gemini"},
         )
 
-    # ===========================================================
-    # 実際の呼び出し
-    # ===========================================================
-    def call_model(
-        self,
-        model_name: str,
-        messages: List[Dict[str, str]],
-        **kwargs: Any,
-    ) -> Any:
-        cfg = self._models.get(model_name)
-        if cfg is None:
-            raise ValueError(f"Unknown model: {model_name}")
+    # -----------------------------------------------------
+    # ★ モデル取得系
+    # -----------------------------------------------------
 
-        fn = getattr(self._router, cfg.router_fn, None)
-        if fn is None:
-            raise AttributeError(
-                f"LLMRouter has no method '{cfg.router_fn}' for model '{model_name}'"
-            )
-
-        # ★登録された params を引数に統合
-        call_params = dict(cfg.params)
-        call_params.update(kwargs)
-
-        return fn(messages=messages, **call_params)
-
-    # ===========================================================
-    # 情報取得メソッド（ほぼ既存）
-    # ===========================================================
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
-        result: Dict[str, Dict[str, Any]] = {}
-        for name, cfg in self._models.items():
-            result[name] = {
-                "vendor": cfg.vendor,
-                "router_fn": cfg.router_fn,
-                "priority": cfg.priority,
-                "enabled": cfg.enabled,
-                "extra": dict(cfg.extra),
-                "params": dict(cfg.params),  # ★追加
-            }
-        return result
+        return self._models
 
-    def get_models_sorted(self) -> Dict[str, Dict[str, Any]]:
-        items = sorted(self._models.items(), key=lambda kv: kv[1].priority, reverse=True)
-        result: Dict[str, Dict[str, Any]] = {}
-        for name, cfg in items:
-            result[name] = {
-                "vendor": cfg.vendor,
-                "router_fn": cfg.router_fn,
-                "priority": cfg.priority,
-                "enabled": cfg.enabled,
-                "extra": dict(cfg.extra),
-                "params": dict(cfg.params),  # ★追加
-            }
-        return result
+    def get_models_sorted(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """
+        priority の高い順（降順）で返す。
+        enabled=False のモデルは除外。
+        """
+        items = [
+            (name, cfg)
+            for name, cfg in self._models.items()
+            if cfg.get("enabled", False)
+        ]
+        items.sort(key=lambda x: x[1]["priority"], reverse=True)
+        return items
 
-    def get_available_models(self) -> Dict[str, Dict[str, Any]]:
-        import os
-        try:
-            import streamlit as st
-            secrets = st.secrets
-        except Exception:
-            secrets = {}
+    # -----------------------------------------------------
+    # ★ 呼び出し本体
+    # -----------------------------------------------------
 
-        props = self.get_model_props()
+    def call_model(
+        self, name: str, messages: List[Dict[str, str]], **kwargs
+    ) -> Tuple[str, Dict[str, Any]]:
 
-        for name, p in props.items():
-            extra = p.get("extra") or {}
-            env_key = extra.get("env_key")
-            has_key = True
-            if env_key:
-                secret_val = ""
-                if isinstance(secrets, dict):
-                    secret_val = secrets.get(env_key, "")
-                has_key = bool(os.getenv(env_key) or secret_val)
-            p["has_key"] = has_key
+        if name not in self._models:
+            raise ValueError(f"Unknown model name: {name}")
 
-        return props
+        cfg = self._models[name]
 
-    def set_enabled_models(self, enabled: Dict[str, bool]) -> None:
-        for name, cfg in self._models.items():
-            if name in enabled:
-                cfg.enabled = bool(enabled[name])
+        if not cfg.get("enabled", False):
+            raise RuntimeError(f"Model '{name}' is disabled.")
 
-    # ===========================================================
-    # YAML（既存）
-    # ===========================================================
-    def load_default_config(self, path: Optional[str] = None) -> bool:
-        import os
-        if path is None:
-            path = "llm_default.yaml"
-        if not os.path.exists(path):
-            return False
-
-        try:
-            import yaml
-        except Exception:
-            return False
-
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-        except Exception:
-            return False
-
-        models = data.get("models")
-        if not isinstance(models, dict):
-            return False
-
-        for name, cfg in models.items():
-            if not isinstance(cfg, dict):
-                continue
-
-            vendor = str(cfg.get("vendor", ""))
-            router_fn = str(cfg.get("router_fn", ""))
-            if not vendor or not router_fn:
-                continue
-
-            priority_raw = cfg.get("priority", 1.0)
-            try:
-                priority = float(priority_raw)
-            except Exception:
-                priority = 1.0
-
-            enabled = bool(cfg.get("enabled", True))
-            extra = cfg.get("extra") or {}
-            if not isinstance(extra, dict):
-                extra = {}
-
-            params = cfg.get("params") or {}
-            if not isinstance(params, dict):
-                params = {}
-
-            self.register_model(
-                name,
-                vendor=vendor,
-                router_fn=router_fn,
-                priority=priority,
-                enabled=enabled,
-                extra=extra,
-                params=params,
-            )
-
-        return True
+        router_fn = cfg["router_fn"]
+        reply, usage = router_fn(messages=messages, **kwargs)
+        return reply, usage
