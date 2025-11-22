@@ -36,13 +36,10 @@ class LLMManager:
 
         # ★標準のモデルを登録（設定パラメータは未指定→デフォルト）
         manager.register_gpt4o(priority=3.0, enabled=True)
-        manager.register_gpt51(priority=2.0, enabled=True)
-        manager.register_hermes(priority=1.0, enabled=True)
-
-        # Grok / Gemini はデフォルト disabled
-        # manager.register_grok(priority=1.5, enabled=False)
-        # manager.register_gemini(priority=1.5, enabled=False)
-
+        manager.register_gpt51(priority=2.5, enabled=True)
+        manager.register_hermes(priority=1.5, enabled=True)
+        manager.register_grok(priority=1.2, enabled=True)
+        manager.register_gemini(priority=2.0, enabled=True)
         cls._POOL[persona_id] = manager
         return manager
 
