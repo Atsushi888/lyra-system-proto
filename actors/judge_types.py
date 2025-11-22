@@ -22,10 +22,9 @@ class BaseJudgeStrategy:
     """
     1つの「審査モード」を表す抽象クラス。
 
-    - mode_name: "normal" / "erotic" / "debate" などの識別子
+    - mode_name: "normal" / "erotic" / "debate" など
     - score_candidate: 候補にスコアを付ける本体メソッド
-      戻り値は (score, details) のタプルで、
-      details は AnswerTalkerView から参照できる任意情報。
+      戻り値は (score, details) のタプル。
     """
 
     mode_name: str = "base"
