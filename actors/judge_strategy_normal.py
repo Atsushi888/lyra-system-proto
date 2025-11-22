@@ -2,11 +2,7 @@
 from __future__ import annotations
 
 from typing import Dict, Any, Tuple
-from actors.judge_types import (
-    BaseJudgeStrategy,
-    JudgeCandidate,
-    JudgeContext,
-)
+from actors.judge_types import BaseJudgeStrategy, JudgeCandidate, JudgeContext
 
 
 class NormalJudgeStrategy(BaseJudgeStrategy):
