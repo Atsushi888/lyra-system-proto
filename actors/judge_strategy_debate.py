@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Dict, Any, Tuple
+
 from actors.judge_types import (
     BaseJudgeStrategy,
     JudgeCandidate,
@@ -11,8 +12,8 @@ from actors.judge_types import (
 
 class DebateJudgeStrategy(BaseJudgeStrategy):
     """
-    討論・論理重視モード。
-    接続詞や因果関係ワードの出現数をスコア化。
+    討論モード用の暫定実装。
+    接続詞や論理ワードの出現数で「論理っぽさ」を見る。
     """
 
     mode_name = "debate"
@@ -31,18 +32,16 @@ class DebateJudgeStrategy(BaseJudgeStrategy):
             "結論として", "まず", "次に", "最後に",
             "ゆえに", "したがって", "だから", "とはいえ",
         ]
-
         hits = sum(text.count(k) for k in logic_words)
 
-        base_score = length ** 0.5
-        logic_score = hits * 3.0
-
+        base_score = max(0.1, length ** 0.5 / 20.0)
+        logic_score = hits * 1.2
         score = base_score + logic_score
 
-        details = {
+        details: Dict[str, Any] = {
             "length": length,
-            "base_score": base_score,
             "logic_hits": hits,
+            "base_score": base_score,
             "logic_score": logic_score,
         }
-        return score, details
+        return float(score), details
