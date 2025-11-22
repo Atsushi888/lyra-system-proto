@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import streamlit as st
 
 from actors.models_ai import ModelsAI
-from actors.judge_ai2 import JudgeAI2
+from actors.judge_ai3 import JudgeAI3  # ★ JudgeAI3 に切り替え
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from llm.llm_manager import LLMManager
@@ -17,8 +17,8 @@ class AnswerTalker:
     """
     AI回答パイプラインの司令塔クラス。
 
-    - ModelsAI:   複数モデルから回答収集（gpt4o / gpt51 / hermes など）
-    - JudgeAI2:   どのモデルの回答を採用するかを決定
+    - ModelsAI:   複数モデルから回答収集（gpt4o / gpt51 / hermes / grok / gemini など）
+    - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
     - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
 
@@ -60,7 +60,11 @@ class AnswerTalker:
         st.session_state["llm_meta"] = self.llm_meta
 
         self.models_ai = ModelsAI(self.llm_manager)
-        self.judge_ai = JudgeAI2(self.model_props)
+
+        # ★ JudgeAI3 を導入（初期モードは session_state["judge_mode"] or "normal"）
+        initial_mode = st.session_state.get("judge_mode", "normal")
+        self.judge_ai = JudgeAI3(mode=str(initial_mode))
+
         self.composer_ai = ComposerAI()
         self.memory_ai = MemoryAI(
             llm_manager=self.llm_manager,
@@ -90,15 +94,22 @@ class AnswerTalker:
         self,
         messages: List[Dict[str, str]],
         user_text: str = "",
+        judge_mode: Optional[str] = None,
     ) -> str:
         """
         Actor から messages（および任意で user_text）を受け取り、
         - MemoryAI.build_memory_context
         - ModelsAI.collect
-        - JudgeAI2.process
+        - JudgeAI3.run（または JudgeAI2.process 互換呼び出し）
         - ComposerAI.compose
         - MemoryAI.update_from_turn
         を順に実行して「最終返答テキスト」を返す。
+
+        引数:
+            messages: OpenAI 互換の messages 配列
+            user_text: ユーザーの生入力テキスト（MemoryAI 用）
+            judge_mode: "normal" / "erotic" / "debate" など。
+                        None の場合は現在のモードを維持する。
 
         戻り値:
             final_text: str
@@ -106,6 +117,16 @@ class AnswerTalker:
         if not messages:
             # messages が空なら何もできないので空文字を返す
             return ""
+
+        # ★ Judge モード指定があればここで反映
+        if judge_mode is not None and hasattr(self.judge_ai, "set_mode"):
+            try:
+                self.judge_ai.set_mode(judge_mode)
+                # メタ情報としても保持しておくとデバッグしやすい
+                self.llm_meta["judge_mode"] = judge_mode
+            except Exception as e:
+                # モード変更失敗時は一応記録だけして処理は続行
+                self.llm_meta["judge_mode_error"] = str(e)
 
         # 0) 次ターン用の memory_context を構築
         try:
@@ -118,10 +139,17 @@ class AnswerTalker:
         # ① 複数モデルの回答収集
         self.run_models(messages)
 
-        # ② JudgeAI2 による採択
+        # ② Judge による採択
         try:
             models = self.llm_meta.get("models", {})
-            judge_result = self.judge_ai.process(models)
+
+            # ★ JudgeAI2 互換性も残したアダプタ
+            if hasattr(self.judge_ai, "process"):
+                # 旧 JudgeAI2 互換インターフェース
+                judge_result = self.judge_ai.process(models)
+            else:
+                # JudgeAI3.run(models_result) 想定
+                judge_result = self.judge_ai.run(models)
         except Exception as e:
             judge_result = {
                 "status": "error",
