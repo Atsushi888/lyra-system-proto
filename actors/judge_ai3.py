@@ -3,33 +3,41 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from actors.judge_types import (
+    BaseJudgeStrategy,
+    JudgeCandidate,
+    JudgeContext,
+)
 from actors.judge_strategy_normal import NormalJudgeStrategy
 from actors.judge_strategy_erotic import EroticJudgeStrategy
 from actors.judge_strategy_debate import DebateJudgeStrategy
+
 
 class JudgeAI3:
     """
     複数 LLM の回答案から 1 つを選ぶ審判 AI（モード切替対応版）。
 
     - models_result: AnswerTalker / ModelsAI が作る llm_meta["models"] 相当
-    - mode: "normal" / "erotic" / "debate" など
+    - mode: "normal" / "erotic" / "debate"
     """
 
     def __init__(self, mode: str = "normal") -> None:
-        self.mode = mode
         self._strategies: Dict[str, BaseJudgeStrategy] = {
             "normal": NormalJudgeStrategy(),
             "erotic": EroticJudgeStrategy(),
             "debate": DebateJudgeStrategy(),
         }
+        self.mode = "normal"
+        self.set_mode(mode)
 
     # ----------------------------------------
     # モード操作
     # ----------------------------------------
     def set_mode(self, mode: str) -> None:
-        if mode not in self._strategies:
-            raise ValueError(f"Unknown judge mode: {mode}")
-        self.mode = mode
+        mode_key = (mode or "normal").lower()
+        if mode_key not in self._strategies:
+            mode_key = "normal"
+        self.mode = mode_key
 
     def get_mode(self) -> str:
         return self.mode
@@ -72,12 +80,27 @@ class JudgeAI3:
                 continue
 
             cand = JudgeCandidate(name=name, info=info, text=text)
-            score, details = strategy.score_candidate(cand, context)
+
+            try:
+                score, details = strategy.score_candidate(cand, context)
+            except Exception as e:
+                # 一候補がコケても全体は止めない
+                candidates.append(
+                    {
+                        "name": name,
+                        "status": "error",
+                        "score": 0.0,
+                        "length": len(text),
+                        "text": text,
+                        "details": {"error": str(e)},
+                    }
+                )
+                continue
 
             entry: Dict[str, Any] = {
                 "name": name,
                 "status": info.get("status", "ok"),
-                "score": score,
+                "score": float(score),
                 "length": len(text),
                 "text": text,
                 "details": details or {},
@@ -89,17 +112,19 @@ class JudgeAI3:
                 best_name = name
                 best_text = text
 
+        # 1件もまともな候補がなかった
         if best_name is None:
             return {
-                "status": "no_candidate",
+                "status": "error",
                 "mode": self.mode,
                 "chosen_model": "",
                 "chosen_text": "",
-                "reason": "JudgeAI3: no suitable candidate",
+                "reason": "no valid candidates",
                 "candidates": candidates,
+                "error": "no_valid_candidates",
             }
 
-        result: Dict[str, Any] = {
+        return {
             "status": "ok",
             "mode": self.mode,
             "chosen_model": best_name,
@@ -109,5 +134,5 @@ class JudgeAI3:
                 f"with score={best_score:.3f}"
             ),
             "candidates": candidates,
+            "error": None,
         }
-        return result
