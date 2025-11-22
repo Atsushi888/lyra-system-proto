@@ -3,11 +3,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from actors.judge_types import (
-    BaseJudgeStrategy,
-    JudgeCandidate,
-    JudgeContext,
-)
 from actors.judge_strategy_normal import NormalJudgeStrategy
 from actors.judge_strategy_erotic import EroticJudgeStrategy
 from actors.judge_strategy_debate import DebateJudgeStrategy
