@@ -157,6 +157,34 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
+        # ---- EmotionAI ----
+        st.subheader("EmotionAI の解析結果（llm_meta['emotion']）")
+        emo = llm_meta.get("emotion") or {}
+        emo_err = llm_meta.get("emotion_error")
+
+        if emo_err:
+            st.error(f"EmotionAI error: {emo_err}")
+
+        if not emo:
+            st.info("emotion 情報はまだありません。")
+        else:
+            # 軽く見やすく整形
+            mode = emo.get("mode", "normal")
+            st.markdown(f"- mode: `{mode}`")
+            cols = st.columns(3)
+            with cols[0]:
+                st.write(f"affection: {emo.get('affection', 0.0):.2f}")
+                st.write(f"arousal:   {emo.get('arousal', 0.0):.2f}")
+            with cols[1]:
+                st.write(f"tension:   {emo.get('tension', 0.0):.2f}")
+                st.write(f"anger:     {emo.get('anger', 0.0):.2f}")
+            with cols[2]:
+                st.write(f"sadness:   {emo.get('sadness', 0.0):.2f}")
+                st.write(f"excitement:{emo.get('excitement', 0.0):.2f}")
+
+            with st.expander("raw_text（LLM 生返答 / JSON）", expanded=False):
+                st.code(emo.get("raw_text", ""), language="json")
+
         # ---- MemoryAI ----
         st.subheader("MemoryAI の状態（長期記憶）")
         memory_ctx = llm_meta.get("memory_context") or ""
