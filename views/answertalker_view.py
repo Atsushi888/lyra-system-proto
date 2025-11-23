@@ -157,6 +157,20 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
+        # ---- Judge モード状態 ----
+        st.subheader("Judge モード状態")
+        current_mode_meta = llm_meta.get("judge_mode", None)
+        next_mode_meta = llm_meta.get("judge_mode_next", None)
+        session_mode = st.session_state.get("judge_mode", None)
+
+        cols_mode = st.columns(3)
+        with cols_mode[0]:
+            st.write(f"llm_meta['judge_mode']: `{current_mode_meta}`")
+        with cols_mode[1]:
+            st.write(f"llm_meta['judge_mode_next']: `{next_mode_meta}`")
+        with cols_mode[2]:
+            st.write(f"session_state['judge_mode']: `{session_mode}`")
+        
         # ---- EmotionAI ----
         st.subheader("EmotionAI の解析結果（llm_meta['emotion']）")
         
