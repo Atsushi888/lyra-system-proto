@@ -9,7 +9,7 @@ from actors.models_ai import ModelsAI
 from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
-from actors.emotion_ai import EmotionAI, EmotionResult  # ★ 追加
+from actors.emotion_ai import EmotionAI, EmotionResult
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -21,7 +21,7 @@ class AnswerTalker:
     - ModelsAI:   複数モデルから回答収集（gpt4o / gpt51 / hermes / grok / gemini など）
     - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
     - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
-    - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
+    - EmotionAI:  Composer の最終返答＋記憶コンテキストから「短期感情」を推定
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
 
     仕様:
@@ -76,8 +76,8 @@ class AnswerTalker:
             model_name=memory_model,
         )
 
-        # ★ EmotionAI を初期化（感情解析専用）
-        #    モデルは gpt-5.1 を想定（必要なら設定で差し替え）
+        # EmotionAI を初期化（短期感情解析専用）
+        # モデルは gpt-5.1 を想定（必要なら設定で差し替え）
         self.emotion_ai = EmotionAI(
             llm_manager=self.llm_manager,
             model_name="gpt51",
@@ -93,6 +93,7 @@ class AnswerTalker:
         """
         if not messages:
             return
+
         results = self.models_ai.collect(messages)
         self.llm_meta["models"] = results
         st.session_state["llm_meta"] = self.llm_meta
@@ -112,7 +113,7 @@ class AnswerTalker:
         - ModelsAI.collect
         - JudgeAI3.run
         - ComposerAI.compose
-        - EmotionAI.analyze
+        - EmotionAI.analyze（短期感情）
         - MemoryAI.update_from_turn
         を順に実行して「最終返答テキスト」を返す。
 
@@ -185,7 +186,7 @@ class AnswerTalker:
 
         self.llm_meta["composer"] = composed
 
-        # 5) EmotionAI による感情解析
+        # 5) EmotionAI による短期感情解析
         try:
             if isinstance(composed, dict):
                 emotion_result: EmotionResult = self.emotion_ai.analyze(
