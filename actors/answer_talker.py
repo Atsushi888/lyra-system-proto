@@ -26,8 +26,8 @@ class AnswerTalker:
 
     仕様:
       Persona と conversation_log から組み立てた messages を入力として、
-      Models → Judge → Composer → Emotion → Memory → Emotion(long) を回し、
-      最終的な返答テキストを返す。
+      Models → Judge → Composer → Emotion → Memory → Emotion(long-term)
+      を回し、最終的な返答テキストを返す。
     """
 
     def __init__(
@@ -50,22 +50,27 @@ class AnswerTalker:
         if not isinstance(llm_meta, dict):
             llm_meta = {}
 
+        # 必要キーのデフォルトを埋める
         llm_meta.setdefault("models", {})
         llm_meta.setdefault("judge", {})
-        llm_meta.setdefault("judge_mode", "normal")
+        llm_meta.setdefault("judge_mode", "normal")        # このターンで実際に使ったモード
         llm_meta.setdefault("judge_mode_next", llm_meta.get("judge_mode", "normal"))
         llm_meta.setdefault("composer", {})
         llm_meta.setdefault("emotion", {})
         llm_meta.setdefault("memory_context", "")
         llm_meta.setdefault("memory_update", {})
+        llm_meta.setdefault("emotion_long_term", {})
 
         self.llm_meta: Dict[str, Any] = llm_meta
 
         # session_state 側の judge_mode も同期しておく
         if "judge_mode" not in st.session_state:
-            st.session_state["judge_mode"] = self.llm_meta.get("judge_mode", "normal")
+            st.session_state["judge_mode"] = self.llm_meta.get(
+                "judge_mode_next",
+                self.llm_meta.get("judge_mode", "normal"),
+            )
         else:
-            # どちらかがズレていた場合は session_state 優先
+            # session_state 優先で llm_meta を上書き
             self.llm_meta["judge_mode"] = st.session_state["judge_mode"]
 
         st.session_state["llm_meta"] = self.llm_meta
@@ -73,9 +78,20 @@ class AnswerTalker:
         # Multi-LLM 集計
         self.models_ai = ModelsAI(self.llm_manager)
 
-        # JudgeAI3（初期モードは llm_meta / session_state の judge_mode）
-        initial_mode = str(self.llm_meta.get("judge_mode", "normal"))
-        self.judge_ai = JudgeAI3(mode=initial_mode)
+        # EmotionAI（感情解析＋長期感情管理）
+        self.emotion_ai = EmotionAI(
+            llm_manager=self.llm_manager,
+            model_name="gpt51",
+        )
+
+        # JudgeAI3（初期モードは llm_meta / session_state / emotion のいずれか）
+        initial_mode = (
+            st.session_state.get("judge_mode")
+            or self.llm_meta.get("judge_mode")
+            or self.llm_meta.get("emotion", {}).get("mode")
+            or "normal"
+        )
+        self.judge_ai = JudgeAI3(mode=str(initial_mode))
 
         # Composer / Memory
         self.composer_ai = ComposerAI()
@@ -85,25 +101,26 @@ class AnswerTalker:
             model_name=memory_model,
         )
 
-        # EmotionAI を初期化（感情解析＋長期感情管理）
-        # モデルは gpt-5.1 を想定（必要なら設定で差し替え）
-        self.emotion_ai = EmotionAI(
-            llm_manager=self.llm_manager,
-            model_name="gpt51",
-        )
-
     # ---------------------------------------
     # ModelsAI 呼び出し
     # ---------------------------------------
-    def run_models(self, messages: List[Dict[str, str]]) -> None:
+    def run_models(
+        self,
+        messages: List[Dict[str, str]],
+        mode_current: str = "normal",
+    ) -> None:
         """
         Persona.build_messages() で組み立てた messages を受け取り、
         ModelsAI.collect() を実行して llm_meta["models"] を更新する。
+
+        mode_current:
+            "normal" / "erotic" / "debate" など、現在の Judge モード。
+            現時点では導線のみで、LLM 側での詳細反映は今後実装。
         """
         if not messages:
             return
 
-        results = self.models_ai.collect(messages)
+        results = self.models_ai.collect(messages, mode=mode_current)
         self.llm_meta["models"] = results
         st.session_state["llm_meta"] = self.llm_meta
 
@@ -119,42 +136,44 @@ class AnswerTalker:
         """
         Actor から messages（および任意で user_text）を受け取り、
 
-        0. Judge モード（manual override があればここで反映）
+        0. Judge モード決定（前ターンの感情 or 明示指定）
         1. MemoryAI.build_memory_context
-        2. ModelsAI.collect
+        2. ModelsAI.collect（mode_current を渡す）
         3. JudgeAI3.run
         4. ComposerAI.compose
         5. EmotionAI.analyze
         6. MemoryAI.update_from_turn
-        7. EmotionAI.update_long_term
-        7.5 EmotionAI.decide_judge_mode → 次ターン用 judge_mode を決定
-        8. 各種メタ情報を保存し、最終返答テキストを返す
-
-        引数:
-            messages: OpenAI 互換の messages 配列
-            user_text: ユーザーの生入力テキスト（MemoryAI / EmotionAI 用）
-            judge_mode: "normal" / "erotic" / "debate" など。
-                        None の場合は EmotionAI による自動判定に任せる。
-
-        戻り値:
-            final_text: str
+        7. EmotionAI.update_long_term（あれば）
+        8. llm_meta 保存 → 最終返答テキストを返す
         """
+
         if not messages:
             return ""
 
-        # 0) Judge モード指定があれば（手動上書き）
-        manual_override = False
-        if judge_mode is not None:
-            manual_override = True
-            try:
-                mode_str = str(judge_mode)
-                self.judge_ai.set_mode(mode_str)
-                self.llm_meta["judge_mode"] = mode_str
-                st.session_state["judge_mode"] = mode_str
-            except Exception as e:
-                self.llm_meta["judge_mode_error"] = str(e)
+        # -------------------------------
+        # 0) このターンで使う judge_mode を決定
+        # -------------------------------
+        # 優先度: 明示引数 > session_state > llm_meta['judge_mode_next'] > "normal"
+        mode_current = (
+            judge_mode
+            or st.session_state.get("judge_mode")
+            or self.llm_meta.get("judge_mode_next")
+            or "normal"
+        )
 
+        try:
+            self.judge_ai.set_mode(mode_current)
+            self.llm_meta["judge_mode"] = mode_current
+            self.llm_meta["judge_mode_error"] = None
+        except Exception as e:
+            self.llm_meta["judge_mode_error"] = str(e)
+
+        # デバッグ用に session_state にも反映
+        st.session_state["judge_mode"] = mode_current
+
+        # -------------------------------
         # 1) 次ターン用の memory_context を構築
+        # -------------------------------
         try:
             mem_ctx = self.memory_ai.build_memory_context(user_query=user_text or "")
             self.llm_meta["memory_context_error"] = None
@@ -164,10 +183,14 @@ class AnswerTalker:
 
         self.llm_meta["memory_context"] = mem_ctx
 
-        # 2) 複数モデルの回答収集
-        self.run_models(messages)
+        # -------------------------------
+        # 2) 複数モデルの回答収集（mode_current を渡す）
+        # -------------------------------
+        self.run_models(messages, mode_current=mode_current)
 
+        # -------------------------------
         # 3) JudgeAI3 による採択
+        # -------------------------------
         try:
             models = self.llm_meta.get("models", {})
             judge_result = self.judge_ai.run(models)
@@ -182,7 +205,9 @@ class AnswerTalker:
 
         self.llm_meta["judge"] = judge_result
 
+        # -------------------------------
         # 4) ComposerAI による仕上げ
+        # -------------------------------
         try:
             composed = self.composer_ai.compose(self.llm_meta)
         except Exception as e:
@@ -203,7 +228,9 @@ class AnswerTalker:
 
         self.llm_meta["composer"] = composed
 
+        # -------------------------------
         # 5) EmotionAI による感情解析
+        # -------------------------------
         try:
             if isinstance(composed, dict):
                 emotion_result: EmotionResult = self.emotion_ai.analyze(
@@ -211,21 +238,33 @@ class AnswerTalker:
                     memory_context=self.llm_meta.get("memory_context", ""),
                     user_text=user_text or "",
                 )
+                # 結果をメタ情報化
                 self.llm_meta["emotion"] = emotion_result.to_dict()
                 self.llm_meta["emotion_error"] = None
+
+                # 次ターン用 judge_mode を EmotionAI の結果から決定
+                next_mode = emotion_result.mode or "normal"
+                self.llm_meta["judge_mode_next"] = next_mode
+
+                # 「次のターンから使うモード」として session_state に保存
+                st.session_state["judge_mode"] = next_mode
             else:
                 self.llm_meta["emotion_error"] = "composer is not a dict"
         except Exception as e:
             self.llm_meta["emotion_error"] = str(e)
 
+        # -------------------------------
         # 6) 最終返答テキスト決定
+        # -------------------------------
         final_text = ""
         if isinstance(composed, dict):
             final_text = composed.get("text") or ""
         if (not final_text) and isinstance(judge_result, dict):
             final_text = judge_result.get("chosen_text") or ""
 
+        # -------------------------------
         # 7) MemoryAI に記憶更新を依頼
+        # -------------------------------
         try:
             round_val_raw = st.session_state.get("round_number", 0)
             try:
@@ -251,56 +290,21 @@ class AnswerTalker:
 
         self.llm_meta["memory_update"] = mem_update
 
-        # 7) EmotionAI に長期感情を更新させる
-        try:
-            self.emotion_ai.update_long_term(mem_update)
-            self.llm_meta["emotion_long_term_error"] = None
-        except Exception as e:
-            self.llm_meta["emotion_long_term_error"] = str(e)
-
-        # 7.5) EmotionAI による judge_mode 自動決定（次ターン用）
-        try:
-            if manual_override:
-                # 手動指定があった場合は、その値を「next」としても記録だけする
-                next_mode = self.llm_meta.get("judge_mode", "normal")
-                reason = "manual_override"
-                details: Dict[str, Any] = {}
-            else:
-                # decide_judge_mode の戻り値は
-                # - dict: {"mode": "...", "reason": "...", ...}
-                # - または (mode, reason) のタプル
-                decided = self.emotion_ai.decide_judge_mode()
-
-                if isinstance(decided, dict):
-                    next_mode = str(decided.get("mode", "normal"))
-                    reason = decided.get("reason", "")
-                    details = decided
-                elif isinstance(decided, (list, tuple)) and decided:
-                    next_mode = str(decided[0] or "normal")
-                    reason = decided[1] if len(decided) > 1 else ""
-                    details = {"raw": list(decided)}
-                else:
-                    next_mode = "normal"
-                    reason = "decide_judge_mode_unexpected_return"
-                    details = {"raw": str(decided)}
-
-            # メタ情報として保持
-            self.llm_meta["judge_mode_next"] = next_mode
-            self.llm_meta["judge_mode_next_reason"] = reason
-            self.llm_meta["judge_mode_next_details"] = details
-
-            # session_state と JudgeAI3 にも適用（次ターンから利用される）
-            st.session_state["judge_mode"] = next_mode
-            self.llm_meta["judge_mode"] = next_mode
+        # -------------------------------
+        # 7.5) EmotionAI に長期感情を反映（実装されていれば）
+        # -------------------------------
+        if hasattr(self.emotion_ai, "update_long_term"):
             try:
-                self.judge_ai.set_mode(next_mode)
+                lt_state = self.emotion_ai.update_long_term(mem_update)
+                # デバッグ確認用に llm_meta へ
+                self.llm_meta["emotion_long_term"] = lt_state
+                self.llm_meta["emotion_long_term_error"] = None
             except Exception as e:
-                self.llm_meta["judge_mode_set_error"] = str(e)
+                self.llm_meta["emotion_long_term_error"] = str(e)
 
-        except Exception as e:
-            self.llm_meta["judge_mode_next_error"] = str(e)
-
+        # -------------------------------
         # 8) llm_meta を保存
+        # -------------------------------
         st.session_state["llm_meta"] = self.llm_meta
 
         return final_text
