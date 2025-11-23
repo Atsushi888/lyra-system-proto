@@ -431,6 +431,43 @@ mode の決め方（目安）：
             # 失敗しても古い long_term をそのまま返す
             return self.long_term
 
+
+    def decide_judge_mode(self, last: Optional[EmotionResult] = None) -> str:
+        """
+        直近の EmotionResult（または emotion_history の最新）から
+        次ターンで使う judge_mode を決定する。
+
+        戻り値: "normal" / "erotic" / "debate" など
+        """
+        # 対象となる EmotionResult を決める
+        if last is None:
+            if getattr(self, "emotion_history", None):
+                last = self.emotion_history[-1]
+            else:
+                last = self.last_result
+
+        if last is None:
+            return "normal"
+
+        aff = last.affection
+        aro = last.arousal
+        ten = last.tension
+        ang = last.anger
+        sad = last.sadness
+        exc = last.excitement
+
+        # ---- ざっくりルール Ver.0.1 ----
+        # 1) エロ寄り：愛情＋性的興奮が高いとき
+        if aff >= 0.7 and aro >= 0.6:
+            return "erotic"
+
+        # 2) 討論・緊張寄り：怒り or 緊張が高いとき
+        if ang >= 0.5 or ten >= 0.6:
+            return "debate"
+
+        # 3) それ以外は通常
+        return "normal"
+
     # ---------------------------------------------
     # judge_mode 決定ヘルパ
     # ---------------------------------------------
