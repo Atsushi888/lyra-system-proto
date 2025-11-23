@@ -108,7 +108,6 @@ class ModelsAI:
         meta: Dict[str, Any] = {}
 
         # GPT-5.1 の empty-response 問題に対するガード
-        # （content="" なのに finish_reason="length" などのケース）
         if name == "gpt51" and isinstance(text, str) and text.strip() == "":
             # エラーとして扱い、他モデルに任せる
             return {
@@ -134,10 +133,18 @@ class ModelsAI:
     # ============================
     # 公開 API
     # ============================
-    def collect(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def collect(
+        self,
+        messages: List[Dict[str, str]],
+        mode: str = "normal",
+    ) -> Dict[str, Any]:
         """
-        すべての有効モデルに対して LLM 呼び出しを行い、
-        結果を dict で返す。
+        すべての有効モデルに対して LLM 呼び出しを行い、結果を dict で返す。
+
+        mode:
+            "normal" / "erotic" / "debate" など、
+            現在の Judge / Emotion モードを示す。
+            現段階では導線のみで、LLM 側での詳細な反映は今後実装予定。
 
         戻り値フォーマット:
         {
@@ -152,8 +159,6 @@ class ModelsAI:
         if not messages:
             return results
 
-        # priority 高い順に回したい場合は get_models_sorted() を使う手もあるが、
-        # ここでは登録順（get_model_props の結果）で十分なのでそのまま。
         for name, props in self.model_props.items():
             enabled = props.get("enabled", True)
             if not enabled:
@@ -161,7 +166,7 @@ class ModelsAI:
                     "status": "disabled",
                     "text": "",
                     "usage": None,
-                    "meta": {},
+                    "meta": {"mode": mode},
                     "error": "disabled_by_config",
                 }
                 continue
@@ -171,8 +176,13 @@ class ModelsAI:
                 raw = self.llm_manager.call_model(
                     model_name=name,
                     messages=messages,
+                    mode=mode,  # ★ 感情モードをパラメータとして渡す（今は導線だけ）
                 )
                 norm = self._normalize_result(name, raw)
+                # meta にも mode を入れておくとデバッグしやすい
+                norm_meta = norm.get("meta") or {}
+                norm_meta["mode"] = mode
+                norm["meta"] = norm_meta
                 results[name] = norm
             except Exception as e:
                 # 例外はここで吸収して "status=error" として記録
@@ -180,7 +190,7 @@ class ModelsAI:
                     "status": "error",
                     "text": "",
                     "usage": None,
-                    "meta": {},
+                    "meta": {"mode": mode},
                     "error": str(e),
                 }
 
