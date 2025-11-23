@@ -26,16 +26,16 @@ class Actor:
         # Persona で messages を組み立てる
         messages = self.persona.build_messages(user_text)
 
-        # 従来どおり GPT-4o に一発投げる
-        result = self.router.call_gpt4o(messages)
+        # # 従来どおり GPT-4o に一発投げる
+        # result = self.router.call_gpt4o(messages)
 
-        # reply_text 抽出
-        if isinstance(result, tuple):
-            reply_text = result[0]
-        else:
-            reply_text = result
+        # # reply_text 抽出
+        # if isinstance(result, tuple):
+        #     reply_text = result[0]
+        # else:
+        #     reply_text = result
 
         messages = self.persona.build_messages(user_text)
         final_reply = self.answer_talker.speak(messages, user_text=user_text)
-        # return final_reply
-        return reply_text
+        return final_reply
+        # return reply_text
