@@ -159,18 +159,18 @@ class AnswerTalkerView:
 
         # ---- EmotionAI ----
         st.subheader("EmotionAI の解析結果（llm_meta['emotion']）")
+        
         emo = llm_meta.get("emotion") or {}
         emo_err = llm_meta.get("emotion_error")
-
+        
         if emo_err:
             st.error(f"EmotionAI error: {emo_err}")
-
+        
         if not emo:
-            st.info("emotion 情報はまだありません。")
+            st.info("Emotion 情報はまだありません。")
         else:
-            # 軽く見やすく整形
-            mode = emo.get("mode", "normal")
-            st.markdown(f"- mode: `{mode}`")
+            st.markdown(f"- 推定 judge_mode: `{emo.get('mode', 'normal')}`")
+        
             cols = st.columns(3)
             with cols[0]:
                 st.write(f"affection: {emo.get('affection', 0.0):.2f}")
@@ -181,8 +181,9 @@ class AnswerTalkerView:
             with cols[2]:
                 st.write(f"sadness:   {emo.get('sadness', 0.0):.2f}")
                 st.write(f"excitement:{emo.get('excitement', 0.0):.2f}")
-
-            with st.expander("raw_text（LLM 生返答 / JSON）", expanded=False):
+        
+            # EmotionAI が実際に LLM に投げた生テキスト（デバッグ）
+            with st.expander("raw_text（EmotionAI の LLM 出力）", expanded=False):
                 st.code(emo.get("raw_text", ""), language="json")
 
         # ---- MemoryAI ----
