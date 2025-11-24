@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from emotion_modes.context import JudgeSignal
+from .context import JudgeSignal
 
 
 class BaseModeSelector(ABC):
