@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import json
 
 from llm.llm_manager import LLMManager
+from actors.emotion_modes.context import JudgeSignal, get_default_selectors
 
 
 # ==============================
@@ -91,9 +92,10 @@ class EmotionAI:
     ComposerAI の最終返答と MemoryAI の記憶コンテキスト・記憶レコードから、
     フローリアの感情状態（短期・長期）を推定するクラス。
 
-    - analyze():  短期的な感情（EmotionResult）を推定
-    - update_long_term():  MemoryRecord 群から長期感情 LongTermEmotion を更新
-    - decide_judge_mode(): 短期＋長期の感情から judge_mode を決定
+    - analyze():          短期的な感情（EmotionResult）を推定
+    - update_long_term(): MemoryRecord 群から長期感情 LongTermEmotion を更新
+    - decide_judge_mode():短期＋長期の感情から judge_mode を決定
+                          （内部で Strategy クラス群に委譲）
     """
 
     def __init__(
@@ -109,6 +111,9 @@ class EmotionAI:
 
         # 直近ターンの短期感情（analyze() の結果）
         self.last_short_result: Optional[EmotionResult] = None
+
+        # judge_mode 決定用 Strategy 群
+        self._selectors = get_default_selectors()
 
     # ---------------------------------------------
     # 短期感情：Composer + memory_context ベース
@@ -169,6 +174,9 @@ JSON 形式は以下です：
         memory_context: str = "",
         user_text: str = "",
     ) -> EmotionResult:
+        """
+        短期的な感情スコアを推定するメイン関数。
+        """
         messages = self._build_messages(
             composer=composer,
             memory_context=memory_context,
@@ -223,7 +231,40 @@ JSON 形式は以下です：
     ) -> List[Dict[str, str]]:
         system_prompt = """
 あなたは「長期感情解析専用 AI」です。
-（中略：元のままでOK）
+
+以下に、キャラクター『フローリア』に関する重要な記憶の一覧があります。
+それぞれの記憶は、フローリアの人生や対人関係に影響を与えています。
+
+仕事は以下です：
+
+1. 記憶から「フローリアが世界全体をどう感じているか」を推定し、
+   global_mood として 0.0〜1.0 の数値で表してください。
+   例: hope, loneliness, despair, calmness など（ラベルは自由ですが英単語で）
+
+2. 記憶から「フローリアが特定の人物に対してどのような感情を抱いているか」を推定し、
+   relations として 0.0〜1.0 の数値で表してください。
+   - キーは短い英語ID（例: "traveler", "black_knight", "priestess" など）にしてください。
+   - 各人物について、以下のフィールドを出力してください：
+       affection, trust, anger, fear, sadness, jealousy, attraction
+
+必ず **次の形式の JSON オブジェクトのみ** を出力してください。
+説明文、日本語、コメントは一切書かないでください。
+
+{
+  "global_mood": { ... },
+  "relations": {
+    "traveler": {
+      "affection": 0.9,
+      "trust": 0.85,
+      "anger": 0.0,
+      "fear": 0.0,
+      "sadness": 0.2,
+      "jealousy": 0.1,
+      "attraction": 0.95
+    },
+    ...
+  }
+}
 """
         lines: List[str] = []
         lines.append("=== Important memories of Floria ===")
@@ -267,6 +308,9 @@ JSON 形式は以下です：
         current_round: int = 0,
         alpha: float = 0.3,
     ) -> LongTermEmotion:
+        """
+        MemoryRecord のリストから LongTermEmotion を更新する。
+        """
         if not memory_records:
             return self.long_term
 
@@ -296,6 +340,7 @@ JSON 形式は以下です：
                 current_round or self.long_term.last_updated_round
             )
 
+            # global_mood
             all_mood_keys = set(self.long_term.global_mood.keys()) | set(
                 parsed.global_mood.keys()
             )
@@ -304,6 +349,7 @@ JSON 形式は以下です：
                 new_val = parsed.global_mood.get(key, 0.0)
                 merged.global_mood[key] = self._smooth(old_val, new_val, alpha=alpha)
 
+            # relations
             all_rel_keys = set(self.long_term.relations.keys()) | set(
                 parsed.relations.keys()
             )
@@ -335,29 +381,33 @@ JSON 形式は以下です：
             return self.long_term
 
     # ---------------------------------------------
-    # judge_mode 決定ヘルパ
+    # judge_mode 決定ヘルパ（Strategy に委譲）
     # ---------------------------------------------
     def decide_judge_mode(self, emotion: Optional[EmotionResult] = None) -> str:
         """
         短期感情（EmotionResult）＋長期感情（self.long_term）から、
         JudgeAI3 に渡すべき judge_mode を決定する。
+
+        - 長期感情がまだ空の段階では、短期感情の mode をそのまま採用
+        - それ以降は JudgeSignal を作り、Strategy 群に判定を委譲
         """
+        # 対象となる短期感情を決める
         if emotion is None:
             emotion = self.last_short_result
 
         if emotion is None:
             return "normal"
 
-        # ★★ 追加ポイント：長期感情がまだ空なら short の mode をそのまま採用
+        # 1) long_term がまだ一度も更新されていない → raw の mode を信用
         if (
             (not self.long_term.global_mood)
             and (not self.long_term.relations)
             and self.long_term.last_updated_round == 0
         ):
-            # LLM が JSON で返した mode を信用する
+            # erotic 判定が出ているのに normal に潰される問題はここで防ぐ
             return emotion.mode or "normal"
 
-        # --- 長期側の代表値をざっくり抽出 ---
+        # 2) 長期側の代表値をざっくり抽出
         lt = self.long_term or LongTermEmotion()
         rels = lt.relations or {}
 
@@ -373,7 +423,7 @@ JSON 形式は以下です：
             if r.anger > max_anger:
                 max_anger = r.anger
 
-        # --- 短期＋長期の合成（短期7 : 長期3） ---
+        # 3) 短期＋長期の合成（短期7 : 長期3）
         def mix(short_val: float, long_val: float) -> float:
             v = short_val * 0.7 + long_val * 0.3
             if v < 0.0:
@@ -386,22 +436,25 @@ JSON 形式は以下です：
         arousal = mix(emotion.arousal, max_attraction)
         tension = mix(emotion.tension, 0.0)   # 長期緊張は未定義
         anger = mix(emotion.anger, max_anger)
+        sadness = mix(emotion.sadness, 0.0)   # いまは mode 判定に未使用
         excitement = mix(emotion.excitement, 0.0)
 
-        # --- しきい値ロジック ---
-        if arousal >= 0.55:
-            return "erotic"
+        # 4) JudgeSignal を構築して Strategy 群に渡す
+        signal = JudgeSignal(
+            short_mode=emotion.mode or "normal",
+            affection=affection,
+            arousal=arousal,
+            tension=tension,
+            anger=anger,
+            sadness=sadness,
+            excitement=excitement,
+        )
 
-        if affection >= 0.75 and excitement >= 0.40:
-            return "erotic"
+        # 優先度順に Selector を適用
+        for selector in self._selectors:
+            mode = selector.select(signal)
+            if mode:
+                return mode
 
-        if anger >= 0.50:
-            return "debate"
-
-        if tension >= 0.65:
-            return "debate"
-
-        if excitement >= 0.70 and arousal < 0.30:
-            return "debate"
-
+        # どれも選ばなければ normal
         return "normal"
