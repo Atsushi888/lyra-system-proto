@@ -143,67 +143,46 @@ class AnswerTalker:
         user_text: str = "",
         judge_mode: Optional[str] = None,
     ) -> str:
-        """
-        Actor から messages（および任意で user_text）を受け取り、
-
-        0. Judge モード決定（前ターンの感情 or 明示指定）
-        1. MemoryAI.build_memory_context
-        2. ModelsAI.collect（mode_current を渡す）
-        3. JudgeAI3.run
-        4. ComposerAI.compose
-        5. EmotionAI.analyze → decide_judge_mode で次ターン用モード決定
-        6. MemoryAI.update_from_turn
-        7. EmotionAI.update_long_term（長期感情）
-        8. llm_meta 保存 → 最終返答テキストを返す
-        """
-
+    
         if not messages:
             return ""
-
-        # -------------------------------
-        # 0) このターンで使う judge_mode を決定
-        # -------------------------------
-        # 優先度: 明示引数 > session_state > llm_meta['judge_mode_next'] > "normal"
+    
+        # ======================================================
+        # 0) 「このターンで使う judge_mode」を決定
+        # ======================================================
+        # ※ EmotionAI が決めた次ターンモードを speak() 開始時に上書きしないよう修正
         mode_current = (
             judge_mode
+            or self.llm_meta.get("judge_mode")
             or st.session_state.get("judge_mode")
-            or self.llm_meta.get("judge_mode_next")
             or "normal"
         )
-
-        try:
-            self.judge_ai.set_mode(mode_current)
-            self.llm_meta["judge_mode"] = mode_current
-            self.llm_meta["judge_mode_error"] = None
-        except Exception as e:
-            self.llm_meta["judge_mode_error"] = str(e)
-
-        # デバッグ用に session_state にも反映
+    
+        self.judge_ai.set_mode(mode_current)
+        self.llm_meta["judge_mode"] = mode_current
         st.session_state["judge_mode"] = mode_current
-
-        # -------------------------------
-        # 1) 次ターン用の memory_context を構築
-        # -------------------------------
+    
+        # ======================================================
+        # 1) MemoryAI.build_memory_context
+        # ======================================================
         try:
             mem_ctx = self.memory_ai.build_memory_context(user_query=user_text or "")
+            self.llm_meta["memory_context"] = mem_ctx
             self.llm_meta["memory_context_error"] = None
         except Exception as e:
-            mem_ctx = ""
             self.llm_meta["memory_context_error"] = str(e)
-
-        self.llm_meta["memory_context"] = mem_ctx
-
-        # -------------------------------
-        # 2) 複数モデルの回答収集（mode_current を渡す）
-        # -------------------------------
+            self.llm_meta["memory_context"] = ""
+    
+        # ======================================================
+        # 2) ModelsAI.collect
+        # ======================================================
         self.run_models(messages, mode_current=mode_current)
-
-        # -------------------------------
-        # 3) JudgeAI3 による採択
-        # -------------------------------
+    
+        # ======================================================
+        # 3) JudgeAI3
+        # ======================================================
         try:
-            models = self.llm_meta.get("models", {})
-            judge_result = self.judge_ai.run(models)
+            judge_result = self.judge_ai.run(self.llm_meta.get("models", {}))
         except Exception as e:
             judge_result = {
                 "status": "error",
@@ -212,129 +191,90 @@ class AnswerTalker:
                 "chosen_text": "",
                 "candidates": [],
             }
-
         self.llm_meta["judge"] = judge_result
-
-        # -------------------------------
-        # 4) ComposerAI による仕上げ
-        # -------------------------------
+    
+        # ======================================================
+        # 4) ComposerAI
+        # ======================================================
         try:
             composed = self.composer_ai.compose(self.llm_meta)
         except Exception as e:
-            fallback = ""
-            if isinstance(judge_result, dict):
-                fallback = judge_result.get("chosen_text") or ""
+            fallback = judge_result.get("chosen_text") or ""
             composed = {
                 "status": "error",
                 "error": str(e),
                 "text": fallback,
-                "source_model": (
-                    judge_result.get("chosen_model", "")
-                    if isinstance(judge_result, dict)
-                    else ""
-                ),
+                "source_model": judge_result.get("chosen_model", ""),
                 "mode": "judge_fallback",
             }
-
         self.llm_meta["composer"] = composed
-
-        # -------------------------------
-        # 5) EmotionAI による短期感情解析＋次ターン judge_mode 決定
-        # -------------------------------
+    
+        # ======================================================
+        # 5) EmotionAI.analyze + decide_judge_mode
+        # ======================================================
         try:
-            if isinstance(composed, dict):
-                emotion_result: EmotionResult = self.emotion_ai.analyze(
-                    composer=composed,
-                    memory_context=self.llm_meta.get("memory_context", ""),
-                    user_text=user_text or "",
-                )
-                # 結果をメタ情報化
-                self.llm_meta["emotion"] = emotion_result.to_dict()
-                self.llm_meta["emotion_error"] = None
-
-                # decide_judge_mode で次ターン用モードを決定
-                try:
-                    next_mode = self.emotion_ai.decide_judge_mode(emotion_result)
-                except Exception as e:
-                    next_mode = "normal"
-                    self.llm_meta["judge_mode_decide_error"] = str(e)
-
-                self.llm_meta["judge_mode_next"] = next_mode
-
-                # 「次のターンから使うモード」として session_state に保存
-                st.session_state["judge_mode"] = next_mode
-            else:
-                self.llm_meta["emotion_error"] = "composer is not a dict"
+            emotion_res: EmotionResult = self.emotion_ai.analyze(
+                composer=composed,
+                memory_context=self.llm_meta.get("memory_context", ""),
+                user_text=user_text or "",
+            )
+            self.llm_meta["emotion"] = emotion_res.to_dict()
+    
+            # ★ここが今回の重要修正ポイント★
+            # → EmotionAI が決めた judge_mode をそのまま次ターンの judge_mode_next に反映
+            next_mode = self.emotion_ai.decide_judge_mode(emotion_res)
+            self.llm_meta["judge_mode_next"] = next_mode
+            st.session_state["judge_mode"] = next_mode
+    
         except Exception as e:
             self.llm_meta["emotion_error"] = str(e)
-
-        # -------------------------------
-        # 6) 最終返答テキスト決定
-        # -------------------------------
-        final_text = ""
-        if isinstance(composed, dict):
-            final_text = composed.get("text") or ""
-        if (not final_text) and isinstance(judge_result, dict):
-            final_text = judge_result.get("chosen_text") or ""
-
-        # -------------------------------
-        # 7) MemoryAI に記憶更新を依頼
-        # -------------------------------
+    
+        # ======================================================
+        # 6) 最終返答テキスト
+        # ======================================================
+        final_text = composed.get("text") or judge_result.get("chosen_text") or ""
+    
+        # ======================================================
+        # 7) MemoryAI.update_from_turn
+        # ======================================================
         try:
-            round_val_raw = st.session_state.get("round_number", 0)
-            try:
-                round_val = int(round_val_raw)
-            except Exception:
-                round_val = 0
-
+            round_val = int(st.session_state.get("round_number", 0))
             mem_update = self.memory_ai.update_from_turn(
                 messages=messages,
                 final_reply=final_text,
                 round_id=round_val,
             )
         except Exception as e:
-            round_val = 0  # 例外時も long_term 側で使えるようにしておく
             mem_update = {
                 "status": "error",
-                "added": 0,
-                "total": 0,
-                "reason": "exception",
-                "raw_reply": "",
-                "records": [],
                 "error": str(e),
+                "records": [],
             }
-
         self.llm_meta["memory_update"] = mem_update
-
-        # -------------------------------
-        # 7.5) EmotionAI に長期感情を反映
-        #       MemoryAI.get_all_records() を渡して LongTermEmotion を更新
-        # -------------------------------
-        if hasattr(self.emotion_ai, "update_long_term"):
-            try:
+    
+        # ======================================================
+        # 7.5) EmotionAI.update_long_term
+        # ======================================================
+        try:
+            if hasattr(self.memory_ai, "get_all_records"):
+                records = self.memory_ai.get_all_records()
+            else:
                 records = []
-                if hasattr(self.memory_ai, "get_all_records"):
-                    records = self.memory_ai.get_all_records()
-
-                lt_state = self.emotion_ai.update_long_term(
-                    memory_records=records,
-                    current_round=round_val,
-                    alpha=0.3,
-                )
-
-                # デバッグ確認用に llm_meta へ dict で保存
-                if hasattr(lt_state, "to_dict"):
-                    self.llm_meta["emotion_long_term"] = lt_state.to_dict()
-                else:
-                    # 念のため fallback
-                    self.llm_meta["emotion_long_term"] = {}
-                self.llm_meta["emotion_long_term_error"] = None
-            except Exception as e:
-                self.llm_meta["emotion_long_term_error"] = str(e)
-
-        # -------------------------------
-        # 8) llm_meta を保存
-        # -------------------------------
+    
+            lt_state = self.emotion_ai.update_long_term(
+                memory_records=records,
+                current_round=round_val,
+                alpha=0.3,
+            )
+    
+            if hasattr(lt_state, "to_dict"):
+                self.llm_meta["emotion_long_term"] = lt_state.to_dict()
+        except Exception as e:
+            self.llm_meta["emotion_long_term_error"] = str(e)
+    
+        # ======================================================
+        # 8) 保存
+        # ======================================================
         st.session_state["llm_meta"] = self.llm_meta
-
+    
         return final_text
