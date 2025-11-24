@@ -21,7 +21,6 @@ class LLMManager:
     _POOL: Dict[str, "LLMManager"] = {}
 
     @classmethod
-    @classmethod
     def get_or_create(cls, persona_id: str = "default") -> "LLMManager":
         """
         persona_id ごとに LLMManager を 1 個だけ作って共有するヘルパ。
