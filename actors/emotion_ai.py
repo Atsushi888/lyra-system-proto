@@ -423,20 +423,20 @@ JSON 形式は以下です：
             if r.anger > max_anger:
                 max_anger = r.anger
 
-        # 3) 短期＋長期の合成（短期8 : 長期2）
-        def mix(short_val: float, long_val: float, w_short: float = 0.8, w_long: float = 0.2) -> float:
-            v = short_val * w_short + long_val * w_long
+        # 3) 短期 × 1.0 ＋ 長期 × 0.2
+        def mix(short_val: float, long_val: float) -> float:
+            v = short_val * 1.0 + long_val * 0.2
             if v < 0.0:
                 return 0.0
             if v > 1.0:
                 return 1.0
             return v
 
-        affection = mix(emotion.affection, max_affection)
-        arousal   = mix(emotion.arousal,   max_attraction)
-        tension   = mix(emotion.tension,   0.0)          # 長期緊張は未定義
-        anger     = mix(emotion.anger,     max_anger)
-        sadness   = mix(emotion.sadness,   0.0)          # いまは mode 判定に未使用
+        affection  = mix(emotion.affection,  max_affection)
+        arousal    = mix(emotion.arousal,    max_attraction)
+        tension    = mix(emotion.tension,    0.0)
+        anger      = mix(emotion.anger,      max_anger)
+        sadness    = mix(emotion.sadness,    0.0)
         excitement = mix(emotion.excitement, 0.0)
 
         # 4) JudgeSignal を構築して Strategy 群に渡す
