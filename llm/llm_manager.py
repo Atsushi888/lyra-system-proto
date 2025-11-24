@@ -21,19 +21,31 @@ class LLMManager:
     _POOL: Dict[str, "LLMManager"] = {}
 
     @classmethod
+    @classmethod
     def get_or_create(cls, persona_id: str = "default") -> "LLMManager":
+        """
+        persona_id ごとに LLMManager を 1 個だけ作って共有するヘルパ。
+
+        - すでに作られていればそれを返す
+        - なければ新規作成し、デフォルトモデルを登録してから保存する
+        """
         if persona_id in cls._POOL:
             return cls._POOL[persona_id]
 
         manager = cls(persona_id=persona_id)
 
+        # ここで標準モデルを登録（llm_default.yaml 未使用でも動く）
         manager.register_gpt4o(priority=3.0, enabled=True)
         manager.register_gpt51(priority=2.0, enabled=True)
         manager.register_hermes(priority=1.0, enabled=True)
 
+        # Grok / Gemini もデフォルトで登録しておく（有効にするなら enabled=True）
+        manager.register_grok(priority=1.5, enabled=True)
+        manager.register_gemini(priority=1.5, enabled=True)
+
         cls._POOL[persona_id] = manager
         return manager
-
+        
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
         self._models: Dict[str, LLMModelConfig] = {}
