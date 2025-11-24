@@ -22,11 +22,12 @@ class AnswerTalker:
     - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
     - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
     - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
+                  ＋ 長期感情（LongTermEmotion）の更新と judge_mode 決定
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
 
     仕様:
       Persona と conversation_log から組み立てた messages を入力として、
-      Models → Judge → Composer → Emotion → Memory → Emotion(long-term)
+      Models → Judge → Composer → Emotion(short) → Memory → Emotion(long)
       を回し、最終的な返答テキストを返す。
     """
 
@@ -141,9 +142,9 @@ class AnswerTalker:
         2. ModelsAI.collect（mode_current を渡す）
         3. JudgeAI3.run
         4. ComposerAI.compose
-        5. EmotionAI.analyze
+        5. EmotionAI.analyze → decide_judge_mode で次ターン用モード決定
         6. MemoryAI.update_from_turn
-        7. EmotionAI.update_long_term（あれば）
+        7. EmotionAI.update_long_term（長期感情）
         8. llm_meta 保存 → 最終返答テキストを返す
         """
 
@@ -229,7 +230,7 @@ class AnswerTalker:
         self.llm_meta["composer"] = composed
 
         # -------------------------------
-        # 5) EmotionAI による感情解析
+        # 5) EmotionAI による短期感情解析＋次ターン judge_mode 決定
         # -------------------------------
         try:
             if isinstance(composed, dict):
@@ -242,8 +243,13 @@ class AnswerTalker:
                 self.llm_meta["emotion"] = emotion_result.to_dict()
                 self.llm_meta["emotion_error"] = None
 
-                # 次ターン用 judge_mode を EmotionAI の結果から決定
-                next_mode = emotion_result.mode or "normal"
+                # ★ decide_judge_mode で次ターン用モードを決定
+                try:
+                    next_mode = self.emotion_ai.decide_judge_mode(emotion_result)
+                except Exception as e:
+                    next_mode = "normal"
+                    self.llm_meta["judge_mode_decide_error"] = str(e)
+
                 self.llm_meta["judge_mode_next"] = next_mode
 
                 # 「次のターンから使うモード」として session_state に保存
@@ -278,6 +284,7 @@ class AnswerTalker:
                 round_id=round_val,
             )
         except Exception as e:
+            round_val = 0  # 例外時も long_term 側で使えるようにしておく
             mem_update = {
                 "status": "error",
                 "added": 0,
@@ -291,13 +298,27 @@ class AnswerTalker:
         self.llm_meta["memory_update"] = mem_update
 
         # -------------------------------
-        # 7.5) EmotionAI に長期感情を反映（実装されていれば）
+        # 7.5) EmotionAI に長期感情を反映
+        #       MemoryAI.get_all_records() を渡して LongTermEmotion を更新
         # -------------------------------
         if hasattr(self.emotion_ai, "update_long_term"):
             try:
-                lt_state = self.emotion_ai.update_long_term(mem_update)
-                # デバッグ確認用に llm_meta へ
-                self.llm_meta["emotion_long_term"] = lt_state
+                records = []
+                if hasattr(self.memory_ai, "get_all_records"):
+                    records = self.memory_ai.get_all_records()
+
+                lt_state = self.emotion_ai.update_long_term(
+                    memory_records=records,
+                    current_round=round_val,
+                    alpha=0.3,
+                )
+
+                # デバッグ確認用に llm_meta へ dict で保存
+                if hasattr(lt_state, "to_dict"):
+                    self.llm_meta["emotion_long_term"] = lt_state.to_dict()
+                else:
+                    # 念のため fallback
+                    self.llm_meta["emotion_long_term"] = {}
                 self.llm_meta["emotion_long_term_error"] = None
             except Exception as e:
                 self.llm_meta["emotion_long_term_error"] = str(e)
