@@ -214,7 +214,7 @@ mode の決め方（目安）：
                 model_name=self.model_name,
                 messages=messages,
                 temperature=0.1,
-                max_tokens=320,
+                max_completion_tokens=320,
             )
 
             # call_model の返り値が (text, usage) or str 想定
@@ -382,7 +382,7 @@ mode の決め方（目安）：
                 model_name=self.model_name,
                 messages=messages,
                 temperature=0.1,
-                max_tokens=512,
+                max_completion_tokens=512,
             )
 
             if isinstance(raw, tuple):
@@ -439,19 +439,25 @@ mode の決め方（目安）：
         短期感情（EmotionResult）＋長期感情（self.long_term）から、
         JudgeAI3 に渡すべき judge_mode を決定する。
 
-        引数:
-            emotion: 直近ターンで analyze() が返した EmotionResult。
-                     None の場合は self.last_short_result を使用。
-
-        戻り値:
-            "normal" / "erotic" / "debate"
+        優先順位:
+          1) LLM が返した emotion.mode を最優先で採用
+          2) それが空 or "normal" のときだけ、数値しきい値＋長期感情で補正
         """
+
         # 対象となる短期感情を決める
         if emotion is None:
             emotion = self.last_short_result
 
         if emotion is None:
             return "normal"
+
+        # まずは LLM が返してきた mode をそのまま信頼する
+        raw_mode = (emotion.mode or "").strip().lower()
+        if raw_mode in {"erotic", "debate"}:
+            return raw_mode
+
+        # "normal" または空/未知の場合は、数値で再判定する
+        base_mode = "normal"
 
         # --- 長期側の代表値をざっくり抽出 ---
         lt = self.long_term or LongTermEmotion()
@@ -510,5 +516,5 @@ mode の決め方（目安）：
         if excitement >= 0.70 and arousal < 0.30:
             return "debate"
 
-        # 3) それ以外は normal
-        return "normal"
+        # 3) どれにも当てはまらなければ base_mode（通常は "normal"）
+        return base_mode
