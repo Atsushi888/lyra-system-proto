@@ -22,35 +22,27 @@ class LLMManager:
 
     @classmethod
     def get_or_create(cls, persona_id: str = "default") -> "LLMManager":
-        """
-        persona_id ごとに LLMManager を 1 個だけ作って共有するヘルパ。
-
-        - すでに作られていればそれを返す
-        - なければ新規作成し、デフォルトモデルを登録してから保存する
-        """
         if persona_id in cls._POOL:
             return cls._POOL[persona_id]
 
         manager = cls(persona_id=persona_id)
 
-        # ここで標準モデルを登録（llm_default.yaml 未使用でも動く）
+        # === Default models ===
         manager.register_gpt4o(priority=3.0, enabled=True)
         manager.register_gpt51(priority=2.0, enabled=True)
         manager.register_hermes(priority=1.0, enabled=True)
-
-        # Grok / Gemini もデフォルトで登録しておく（有効にするなら enabled=True）
         manager.register_grok(priority=1.5, enabled=True)
         manager.register_gemini(priority=1.5, enabled=True)
 
         cls._POOL[persona_id] = manager
         return manager
-        
+
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
         self._models: Dict[str, LLMModelConfig] = {}
         self._router = LLMRouter()
 
-        # ★ EmotionAI のモード受け取り保存用
+        # EmotionAI → LLMManager 経由でモードを受け取る用
         self._last_mode: Optional[str] = None
 
     # ==================================================
@@ -114,7 +106,7 @@ class LLMManager:
         }
         if params:
             extra["params"] = params
-    
+
         self.register_model(
             "grok",
             vendor="xai",
@@ -123,8 +115,7 @@ class LLMManager:
             enabled=enabled,
             extra=extra,
         )
-    
-    
+
     def register_gemini(self, *, priority: float = 1.5, enabled: bool = True,
                         params: Optional[Dict[str, Any]] = None) -> None:
         extra = {
@@ -133,7 +124,7 @@ class LLMManager:
         }
         if params:
             extra["params"] = params
-    
+
         self.register_model(
             "gemini",
             vendor="google",
@@ -152,10 +143,6 @@ class LLMManager:
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Any:
-        """
-        ModelsAI や MemoryAI から呼ばれる実行用メソッド。
-        kwargs に mode が入っていても安全に処理する。
-        """
 
         cfg = self._models.get(model_name)
         if cfg is None:
@@ -167,16 +154,15 @@ class LLMManager:
                 f"LLMRouter has no method '{cfg.router_fn}' for '{model_name}'"
             )
 
-        # ★★ 重要：EmotionAI が渡した mode をここで受け取り、Router に渡さない
+        # EmotionAI → モードだけを引き取り、Router へは渡さない
         mode = kwargs.pop("mode", None)
         if mode is not None:
-            self._last_mode = mode  # 保存だけしておく
+            self._last_mode = mode
 
-        # ★ Router には安全な kwargs だけ渡す
         return fn(messages=messages, **kwargs)
 
     # ==================================================
-    # 取得系
+    # 取得
     # ==================================================
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
         result: Dict[str, Dict[str, Any]] = {}
@@ -202,5 +188,3 @@ class LLMManager:
             }
             for name, cfg in items
         }
-
-    # その他のメソッドは変更なし…
