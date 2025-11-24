@@ -431,93 +431,84 @@ mode の決め方（目安）：
             # 失敗しても古い long_term をそのまま返す
             return self.long_term
 
-
-    def decide_judge_mode(self, last: Optional[EmotionResult] = None) -> str:
-        """
-        直近の EmotionResult（または emotion_history の最新）から
-        次ターンで使う judge_mode を決定する。
-
-        戻り値: "normal" / "erotic" / "debate" など
-        """
-        # 対象となる EmotionResult を決める
-        if last is None:
-            if getattr(self, "emotion_history", None):
-                last = self.emotion_history[-1]
-            else:
-                last = self.last_result
-
-        if last is None:
-            return "normal"
-
-        aff = last.affection
-        aro = last.arousal
-        ten = last.tension
-        ang = last.anger
-        sad = last.sadness
-        exc = last.excitement
-
-        # ---- ざっくりルール Ver.0.1 ----
-        # 1) エロ寄り：愛情＋性的興奮が高いとき
-        if aff >= 0.7 and aro >= 0.6:
-            return "erotic"
-
-        # 2) 討論・緊張寄り：怒り or 緊張が高いとき
-        if ang >= 0.5 or ten >= 0.6:
-            return "debate"
-
-        # 3) それ以外は通常
-        return "normal"
-
     # ---------------------------------------------
     # judge_mode 決定ヘルパ
     # ---------------------------------------------
-    def decide_judge_mode(
-        self,
-        target_relation_id: Optional[str] = None,
-        fallback_mode: str = "normal",
-    ) -> str:
+    def decide_judge_mode(self, emotion: Optional[EmotionResult] = None) -> str:
         """
-        短期感情（last_short_result）＋長期感情（self.long_term）から、
-        JudgeAI3 に渡すべき judge_mode を決定するヘルパ。
+        短期感情（EmotionResult）＋長期感情（self.long_term）から、
+        JudgeAI3 に渡すべき judge_mode を決定する。
 
-        - target_relation_id:
-            「誰との会話か」を指定するための ID（例: "traveler", "black_knight"）。
-            None の場合は relations 全体をざっくり見る。
-        - fallback_mode:
-            条件に合致しなかった場合のデフォルトモード。
+        引数:
+            emotion: 直近ターンで analyze() が返した EmotionResult。
+                     None の場合は self.last_short_result を使用。
+
+        戻り値:
+            "normal" / "erotic" / "debate"
         """
+        # 対象となる短期感情を決める
+        if emotion is None:
+            emotion = self.last_short_result
 
-        short = self.last_short_result
-        long_rel: Optional[RelationEmotion] = None
+        if emotion is None:
+            return "normal"
 
-        if target_relation_id and target_relation_id in self.long_term.relations:
-            long_rel = self.long_term.relations[target_relation_id]
+        # --- 長期側の代表値をざっくり抽出 ---
+        lt = self.long_term or LongTermEmotion()
+        rels = lt.relations or {}
 
-        # 短期と長期をざっくりマージして評価用の値を作る
-        def get(val_short: Optional[float], val_long: Optional[float], ws: float, wl: float) -> float:
-            s = float(val_short) if val_short is not None else 0.0
-            l = float(val_long) if val_long is not None else 0.0
-            return ws * s + wl * l
+        # 関係性の中で最も強い感情を代表値とする（かなりラフな近似）
+        max_affection = 0.0
+        max_attraction = 0.0
+        max_anger = 0.0
 
-        # ベース値（長期）
-        laff = long_rel.affection if long_rel else 0.0
-        latr = long_rel.attraction if long_rel else 0.0
-        lang = long_rel.anger if long_rel else 0.0
+        for r in rels.values():
+            if r.affection > max_affection:
+                max_affection = r.affection
+            if r.attraction > max_attraction:
+                max_attraction = r.attraction
+            if r.anger > max_anger:
+                max_anger = r.anger
 
-        # 短期があれば混ぜる
-        aff = get(short.affection if short else 0.0, laff, ws=0.4, wl=0.6)
-        arousal = get(short.arousal if short else 0.0, latr, ws=0.5, wl=0.5)
-        anger = get(short.anger if short else 0.0, lang, ws=0.5, wl=0.5)
-        tension = short.tension if short else 0.0
+        # --- 短期＋長期の合成（短期7 : 長期3） ---
+        def mix(short_val: float, long_val: float) -> float:
+            v = short_val * 0.7 + long_val * 0.3
+            if v < 0.0:
+                return 0.0
+            if v > 1.0:
+                return 1.0
+            return v
 
-        # ── モード判定ルール（暫定） ──
-        # erotic: 愛情＋惹かれ＋短期arousal が高い
-        if aff > 0.6 and arousal > 0.5:
+        affection  = mix(emotion.affection,  max_affection)
+        arousal    = mix(emotion.arousal,    max_attraction)
+        tension    = mix(emotion.tension,    0.0)          # 長期緊張はまだ未定義なので 0
+        anger      = mix(emotion.anger,      max_anger)
+        sadness    = mix(emotion.sadness,    0.0)          # いまは mode 判定に未使用
+        excitement = mix(emotion.excitement, 0.0)          # 将来 global_mood から拾ってもよい
+
+        # --- しきい値ロジック ---
+
+        # 1) erotic 優先
+        #   - 性的昂揚が高い
+        if arousal >= 0.55:
             return "erotic"
 
-        # debate: 怒り・緊張が高い
-        if anger > 0.5 or tension > 0.6:
+        #   - 好意＋元気が高い場合も erotic 寄り
+        if affection >= 0.75 and excitement >= 0.40:
+            return "erotic"
+
+        # 2) debate 判定
+        #   - 怒りが高い
+        if anger >= 0.50:
             return "debate"
 
-        # それ以外
-        return fallback_mode
+        #   - 緊張が高い
+        if tension >= 0.65:
+            return "debate"
+
+        #   - 興奮は高いが arousal は低い → 白熱した議論モード
+        if excitement >= 0.70 and arousal < 0.30:
+            return "debate"
+
+        # 3) それ以外は normal
+        return "normal"
