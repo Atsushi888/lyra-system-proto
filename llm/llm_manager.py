@@ -106,6 +106,30 @@ class LLMManager:
             extra={"env_key": "OPENROUTER_API_KEY", "model_family": "hermes"},
         )
 
+    def register_grok(self, *, priority: float = 1.5, enabled: bool = True,
+                      params: Optional[Dict[str, Any]] = None) -> None:
+        self.register_model(
+            "grok",
+            vendor="xai",
+            router_fn="call_grok",
+            priority=priority,
+            enabled=enabled,
+            extra={"env_key": "GROK_API_KEY", "model_family": "grok-2"},
+            params=params,
+        )
+
+    def register_gemini(self, *, priority: float = 1.5, enabled: bool = True,
+                        params: Optional[Dict[str, Any]] = None) -> None:
+        self.register_model(
+            "gemini",
+            vendor="google",
+            router_fn="call_gemini",
+            priority=priority,
+            enabled=enabled,
+            extra={"env_key": "GEMINI_API_KEY", "model_family": "gemini-2.0"},
+            params=params,
+        )
+
     # ==================================================
     # 実行
     # ==================================================
