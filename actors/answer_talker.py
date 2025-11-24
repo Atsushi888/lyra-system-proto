@@ -139,7 +139,7 @@ class AnswerTalker:
 
         0. Judge モード決定（前ターンの感情 or 明示指定）
         1. MemoryAI.build_memory_context
-        2. ModelsAI.collect（mode_current を渡す）
+        2. ModelsAI.collect（mode_for_models を渡す）
         3. JudgeAI3.run
         4. ComposerAI.compose
         5. EmotionAI.analyze → decide_judge_mode で次ターン用モード決定
@@ -185,9 +185,16 @@ class AnswerTalker:
         self.llm_meta["memory_context"] = mem_ctx
 
         # -------------------------------
-        # 2) 複数モデルの回答収集（mode_current を渡す）
+        # 2) 複数モデルの回答収集
+        #    ※ このターンでは「前ターンの EmotionAI が決めた judge_mode_next」
+        #       を優先的に使って各モデルに指示を出す
         # -------------------------------
-        self.run_models(messages, mode_current=mode_current)
+        mode_for_models = (
+            self.llm_meta.get("judge_mode_next")  # 前ターンの EmotionAI の結果
+            or mode_current                       # 無ければ現行モード
+        )
+        self.llm_meta["judge_mode_for_models"] = mode_for_models
+        self.run_models(messages, mode_current=mode_for_models)
 
         # -------------------------------
         # 3) JudgeAI3 による採択
