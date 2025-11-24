@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Optional
 
 from .base_selector import BaseModeSelector
-from .context import JudgeSignal
 
 
 class NormalModeSelector(BaseModeSelector):
