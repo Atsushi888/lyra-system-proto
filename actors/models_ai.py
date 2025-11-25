@@ -1,3 +1,4 @@
+# actors/models_ai.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,62 +24,8 @@ class ModelsAI:
     # ============================
     # 内部ヘルパ
     # ============================
-
     @staticmethod
-    def _parse_openai_like_completion(obj: Any) -> Tuple[str, Optional[Dict[str, Any]]]:
-        """
-        ChatCompletion っぽいオブジェクトから text / usage を抜き出す。
-        gpt-5.1 のように content が list[part] の場合にも対応。
-        """
-        text = ""
-        usage_dict: Optional[Dict[str, Any]] = None
-
-        try:
-            choices = getattr(obj, "choices", None) or []
-            if choices:
-                first = choices[0]
-                msg = getattr(first, "message", None)
-                content_obj = getattr(msg, "content", "") or ""
-
-                if isinstance(content_obj, str):
-                    text = content_obj
-                elif isinstance(content_obj, list):
-                    parts: List[str] = []
-                    for p in content_obj:
-                        t = getattr(p, "text", None)
-                        if t is None and isinstance(p, dict):
-                            t = p.get("text")
-                        if t is None:
-                            t = str(p)
-                        parts.append(t)
-                    text = "".join(parts)
-                else:
-                    text = str(content_obj)
-            else:
-                text = ""
-
-            usage_obj = getattr(obj, "usage", None)
-            if usage_obj is not None:
-                if isinstance(usage_obj, dict):
-                    usage_dict = usage_obj
-                else:
-                    usage_dict = {
-                        "prompt_tokens": getattr(usage_obj, "prompt_tokens", 0),
-                        "completion_tokens": getattr(usage_obj, "completion_tokens", 0),
-                        "total_tokens": getattr(usage_obj, "total_tokens", 0),
-                    }
-        except Exception:
-            text = str(obj)
-            usage_dict = None
-
-        return text, usage_dict
-
-    @staticmethod
-    def _looks_like_completion(obj: Any) -> bool:
-        return hasattr(obj, "choices")
-
-    @classmethod
-    def _extract_text_and_usage(cls, raw: Any) -> Tuple[str, Optional[Dict[str, Any]]]:
+    def _extract_text_and_usage(raw: Any) -> Tuple[str, Optional[Dict[str, Any]]]:
         """
         LLMAdapter / OpenAI SDK などから返ってきた値を
         (text, usage) の形に正規化する。
@@ -86,36 +33,22 @@ class ModelsAI:
         想定パターン:
         - str
         - (text, usage_dict)
-        - (ChatCompletion, usage_dict)
-        - ChatCompletion 単体
+        - OpenAI の ChatCompletion オブジェクト
+          * gpt-5.1 のように message.content が「パーツのリスト」のケースも含む
         - それ以外 → 文字列化して usage=None
         """
-        # (text, usage) 形式 or (completion, usage) 形式
+        # (text, usage) タプル形式
         if isinstance(raw, tuple):
             if not raw:
                 return "", None
-
-            head = raw[0]
-            tail = raw[1] if len(raw) >= 2 else None
-
-            # 0番目が ChatCompletion っぽい場合はそこから text を抜く
-            if cls._looks_like_completion(head):
-                text, usage_from_head = cls._parse_openai_like_completion(head)
-
-                if isinstance(tail, dict):
-                    usage_dict = tail
+            text = raw[0]
+            usage_dict = None
+            if len(raw) >= 2:
+                second = raw[1]
+                if isinstance(second, dict):
+                    usage_dict = second
                 else:
-                    usage_dict = usage_from_head
-
-                return text, usage_dict
-
-            # ふつうの (text, usage) 形式
-            text = head
-            usage_dict: Optional[Dict[str, Any]] = None
-            if isinstance(tail, dict):
-                usage_dict = tail
-            elif tail is not None:
-                usage_dict = {"raw_usage": tail}
+                    usage_dict = {"raw_usage": second}
             if not isinstance(text, str):
                 text = "" if text is None else str(text)
             return text, usage_dict
@@ -124,12 +57,53 @@ class ModelsAI:
         if isinstance(raw, str):
             return raw, None
 
-        # ChatCompletion 単体
-        if cls._looks_like_completion(raw):
-            return cls._parse_openai_like_completion(raw)
+        # ChatCompletion っぽいオブジェクト（旧ルート用の保険＋gpt-5.1 新形式対応）
+        try:
+            choices = getattr(raw, "choices", None) or []
+            if choices and isinstance(choices, list):
+                first = choices[0]
+                msg = getattr(first, "message", None)
+                content_obj = getattr(msg, "content", "") if msg is not None else ""
 
-        # それ以外：保険として文字列化
-        return str(raw), None
+                # 1) content が str
+                if isinstance(content_obj, str):
+                    content = content_obj
+
+                # 2) content が list[part,...] （gpt-5.1 / 画像モードなど）
+                elif isinstance(content_obj, list):
+                    parts: List[str] = []
+                    for p in content_obj:
+                        # p.text を優先
+                        t = getattr(p, "text", None)
+                        if t is None and isinstance(p, dict):
+                            t = p.get("text")
+                        if t is None:
+                            t = str(p)
+                        parts.append(t)
+                    content = "".join(parts)
+
+                # 3) それ以外は文字列化
+                else:
+                    content = str(content_obj)
+            else:
+                content = ""
+
+            usage_obj = getattr(raw, "usage", None)
+            usage_dict: Optional[Dict[str, Any]] = None
+            if usage_obj is not None:
+                if isinstance(usage_obj, dict):
+                    usage_dict = usage_obj
+                else:
+                    tmp = getattr(usage_obj, "dict", None)
+                    if callable(tmp):
+                        usage_dict = tmp()
+                    else:
+                        usage_dict = {"raw_usage": str(usage_obj)}
+
+            return content, usage_dict
+        except Exception:
+            # 失敗したらとりあえず文字列化
+            return str(raw), None
 
     def _normalize_result(self, name: str, raw: Any) -> Dict[str, Any]:
         """
@@ -139,6 +113,8 @@ class ModelsAI:
         meta: Dict[str, Any] = {}
 
         # GPT-5.1 の empty-response ガード
+        # usage.completion_tokens も 0（あるいは usage 自体が無い）場合だけ
+        # 「完全な空返答」とみなしてエラー扱いにする。
         comp_tokens = 0
         if isinstance(usage, dict):
             try:
