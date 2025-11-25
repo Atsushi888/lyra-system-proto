@@ -24,12 +24,6 @@ class LLMModelConfig:
 
 
 class LLMManager:
-    """
-    旧構成どおり、LLMRouter の各 call_xxx() を直接叩くマネージャ。
-
-    - call_model() は LLMRouter.<router_fn>() を呼び出し、
-      その戻り値（通常は (text, usage_dict) タプル）をそのまま返す。
-    """
     _POOL: Dict[str, "LLMManager"] = {}
 
     @classmethod
@@ -39,7 +33,7 @@ class LLMManager:
 
         manager = cls(persona_id=persona_id)
 
-        # ★標準のモデルを登録（昔の構成に揃える）
+        # 標準モデル登録
         manager.register_gpt4o(priority=3.0, enabled=True)
         manager.register_gpt51(priority=2.0, enabled=True)
         manager.register_hermes(priority=1.0, enabled=True)
@@ -52,8 +46,9 @@ class LLMManager:
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
         self._models: Dict[str, LLMModelConfig] = {}
-        # ★ 旧来どおり Router を直接持つ
         self._router = LLMRouter()
+        # Emotion モードを一応記録だけしておく
+        self._last_mode: Optional[str] = None
 
     # ===========================================================
     # モデル登録
@@ -186,15 +181,19 @@ class LLMManager:
                 f"LLMRouter has no method '{cfg.router_fn}' for model '{model_name}'"
             )
 
-        # 登録された params を引数に統合
+        # ★ Emotion モードはここで吸収して Router には渡さない
+        mode = kwargs.pop("mode", None)
+        if mode is not None:
+            self._last_mode = str(mode)
+
+        # ★登録された params を引数に統合
         call_params = dict(cfg.params)
         call_params.update(kwargs)
 
-        # ★ ここで Router を直接呼ぶ（戻り値は通常 (text, usage_dict)）
         return fn(messages=messages, **call_params)
 
     # ===========================================================
-    # 情報取得メソッド
+    # 情報取得
     # ===========================================================
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
         result: Dict[str, Dict[str, Any]] = {}
@@ -256,7 +255,7 @@ class LLMManager:
                 cfg.enabled = bool(enabled[name])
 
     # ===========================================================
-    # YAML （既存機能）
+    # YAML 読み込み
     # ===========================================================
     def load_default_config(self, path: Optional[str] = None) -> bool:
         import os
