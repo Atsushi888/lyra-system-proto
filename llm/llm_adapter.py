@@ -19,9 +19,7 @@ def _split_text_and_usage_from_openai_completion(
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """
     OpenAI ChatCompletion オブジェクトから text/usage を取り出す。
-    gpt-4o 系の「content が str」のパターンと、
-    gpt-5.1 系の「content が ContentPart の list」パターンの
-    両方に対応する。
+    gpt-5.1 のように message.content が「パーツのリスト」になっている形にも対応する。
     """
     text = ""
     usage_dict: Optional[Dict[str, Any]] = None
@@ -41,7 +39,7 @@ def _split_text_and_usage_from_openai_completion(
                 elif isinstance(content_obj, list):
                     parts: List[str] = []
                     for p in content_obj:
-                        # p.text を優先
+                        # p.text を優先して取り出す
                         t = getattr(p, "text", None)
                         if t is None and isinstance(p, dict):
                             t = p.get("text")
@@ -54,7 +52,7 @@ def _split_text_and_usage_from_openai_completion(
                 else:
                     text = str(content_obj)
     except Exception:
-        logger.exception("OpenAI completion parse error (helper)")
+        logger.exception("OpenAI completion parse error")
         text = ""
 
     usage = getattr(completion, "usage", None)
@@ -84,20 +82,7 @@ def _split_text_and_usage_from_dict(
         choices = data.get("choices") or []
         if choices:
             msg = choices[0].get("message") or {}
-            content_obj = msg.get("content", "") or ""
-
-            if isinstance(content_obj, str):
-                text = content_obj
-            elif isinstance(content_obj, list):
-                parts: List[str] = []
-                for p in content_obj:
-                    t = p.get("text") if isinstance(p, dict) else None
-                    if t is None:
-                        t = str(p)
-                    parts.append(t)
-                text = "".join(parts)
-            else:
-                text = str(content_obj)
+            text = msg.get("content", "") or ""
     except Exception:
         logger.exception("LLM dict response parse error")
         text = ""
@@ -114,6 +99,7 @@ def _normalize_max_tokens(kwargs: Dict[str, Any]) -> None:
     - 呼び出し側が max_tokens を指定してきた場合：
         * max_completion_tokens が未指定ならコピー
         * その後 max_tokens キーは削除
+    こうしておけば、gpt-5.1 のように max_tokens を拒否するモデルでも安全。
     """
     if "max_completion_tokens" in kwargs:
         kwargs.pop("max_tokens", None)
@@ -170,17 +156,6 @@ class OpenAIChatAdapter(BaseLLMAdapter):
             OpenAIClient(api_key=api_key) if api_key else None
         )
 
-    def _ensure_max_tokens(self, kwargs: Dict[str, Any]) -> None:
-        # 呼び出し側が max_* を指定していない場合、TARGET_TOKENS をデフォルトとして使用
-        if (
-            self.TARGET_TOKENS is not None
-            and "max_tokens" not in kwargs
-            and "max_completion_tokens" not in kwargs
-        ):
-            kwargs["max_completion_tokens"] = int(self.TARGET_TOKENS)
-
-        _normalize_max_tokens(kwargs)
-
     def call(
         self,
         messages: List[Dict[str, str]],
@@ -191,7 +166,15 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 f"{self.name}: OpenAI API キーが設定されていません。"
             )
 
-        self._ensure_max_tokens(kwargs)
+        # 呼び出し側が max_* を指定していない場合、TARGET_TOKENS をデフォルトとして使用
+        if (
+            self.TARGET_TOKENS is not None
+            and "max_tokens" not in kwargs
+            and "max_completion_tokens" not in kwargs
+        ):
+            kwargs["max_completion_tokens"] = int(self.TARGET_TOKENS)
+
+        _normalize_max_tokens(kwargs)
 
         completion = self._client.chat.completions.create(
             model=self.model_id,
@@ -217,57 +200,12 @@ class GPT51Adapter(OpenAIChatAdapter):
     """
     gpt-5.1 用アダプタ。
     出力が長くなりがちなので、やや短めの max_completion_tokens をデフォルトにする。
-    gpt-5.1 固有の content 形式の揺れにも強めに対処する。
     """
 
     def __init__(self) -> None:
         super().__init__(name="gpt51", model_id="gpt-5.1")
         # 感情豊かだがクドくなりすぎない程度
         self.TARGET_TOKENS = 220
-
-    def call(
-        self,
-        messages: List[Dict[str, str]],
-        **kwargs: Any,
-    ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        if self._client is None:
-            raise RuntimeError("gpt51: OpenAI API キーが設定されていません。")
-
-        self._ensure_max_tokens(kwargs)
-
-        completion = self._client.chat.completions.create(
-            model=self.model_id,
-            messages=messages,
-            **kwargs,
-        )
-
-        # まずは通常ヘルパーで取得
-        text, usage_dict = _split_text_and_usage_from_openai_completion(completion)
-
-        # それでも空なら、model_dump() した dict から再度テキスト抽出を試みる
-        if not isinstance(text, str) or text.strip() == "":
-            try:
-                if hasattr(completion, "model_dump"):
-                    data = completion.model_dump()
-                elif hasattr(completion, "to_dict"):
-                    data = completion.to_dict()
-                else:
-                    data = None
-
-                if isinstance(data, dict):
-                    text2, usage2 = _split_text_and_usage_from_dict(data)
-                    if text2.strip():
-                        text = text2
-                        if usage2 is not None:
-                            usage_dict = usage2
-            except Exception:
-                logger.exception("gpt51 fallback parse error")
-
-        # それでも空なら、とりあえず completion 全体を文字列化して返す
-        if not isinstance(text, str) or text.strip() == "":
-            text = str(completion)
-
-        return text, usage_dict
 
 
 # ============================================================
@@ -277,7 +215,7 @@ class GPT51Adapter(OpenAIChatAdapter):
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 HERMES_MODEL_OLD_DEFAULT = os.getenv(
     "OPENROUTER_HERMES_MODEL",
-    "nousresearch/hermes-2-pro-mistral",  # ← 旧安定版（無効ならエラーになる）
+    "nousresearch/hermes-2-pro-mistral",  # ← 旧安定版
 )
 
 
