@@ -36,7 +36,7 @@ class LLMModelConfig:
     router_fn: Optional[str] = None
 
 
-class LLMManager:
+class LLMManagerV2:
     """
     v2: adapter / router のハイブリッド版 LLMManager
 
