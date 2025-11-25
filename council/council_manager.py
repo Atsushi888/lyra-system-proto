@@ -1,29 +1,25 @@
 # council_manager.py
 
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import streamlit as st
 
 from actors.actor import Actor
 from personas.persona_floria_ja import Persona
-from llm.llm_router import LLMRouter
 
 
 def get_or_create_council_actor() -> Actor:
     """
     会談システム用の Actor を1つだけ生成・再利用する。
-    （CouncilView で使っている Actor と揃えてもOK）
+    LLMRouter はもう利用しない。AnswerTalker の内部で LLMManager を利用するため。
     """
     actor_key = "council_actor"
 
     if actor_key not in st.session_state:
-        # ここは実際に CouncilView で使っているのと
-        # 同じ初期化処理に揃えるのがベスト
         st.session_state[actor_key] = Actor(
             name="フローリア",
             persona=Persona(),
-            router=LLMRouter(),
         )
 
     return st.session_state[actor_key]
