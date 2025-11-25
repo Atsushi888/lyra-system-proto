@@ -1,4 +1,3 @@
-# llm/llm_adapter.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -209,6 +208,10 @@ class HermesBaseAdapter(BaseLLMAdapter):
         self._endpoint = OPENROUTER_BASE_URL.rstrip("/") + "/chat/completions"
         self._api_key = os.getenv("OPENROUTER_API_KEY", "")
 
+        # OpenRouter 用の追加メタ（推奨）
+        self._site = os.getenv("OPENROUTER_SITE", "")
+        self._app_title = os.getenv("OPENROUTER_APP_NAME", "Lyra-System Proto")
+
     def call(
         self,
         messages: List[Dict[str, str]],
@@ -220,7 +223,13 @@ class HermesBaseAdapter(BaseLLMAdapter):
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
+            # OpenRouter 推奨ヘッダ
+            "X-Title": self._app_title,
         }
+        if self._site:
+            # ドキュメント上は Referer だが、環境によっては HTTP-Referer 名義を要求する
+            headers["HTTP-Referer"] = self._site
+
         payload: Dict[str, Any] = {
             "model": self.model_id,
             "messages": messages,
@@ -238,7 +247,12 @@ class HermesBaseAdapter(BaseLLMAdapter):
             json=payload,
             timeout=60,
         )
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            # 400 系のときにレスポンス本文もログへ
+            logger.error("Hermes HTTPError: %s / body=%s", e, resp.text)
+            raise
         data = resp.json()
         return _split_text_and_usage_from_dict(data)
 
