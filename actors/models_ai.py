@@ -13,7 +13,7 @@ class ModelsAI:
     まとめて返すユーティリティ。
 
     - AnswerTalker.run_models() から呼ばれる前提。
-    - LLM 本体は LLMRouter → OpenAI / OpenRouter 側に委譲。
+    - 実際の LLM 呼び出しは LLMManager → Adapter 側に委譲。
     """
 
     def __init__(self, llm_manager: LLMManager) -> None:
@@ -30,16 +30,17 @@ class ModelsAI:
     @staticmethod
     def _extract_text_and_usage(raw: Any) -> Tuple[str, Optional[Dict[str, Any]]]:
         """
-        LLMRouter / OpenAI SDK から返ってきた値を
+        Adapter / OpenAI SDK などから返ってきた値を
         (text, usage) の形に正規化する。
 
         想定パターン:
         - str
         - (text, usage_dict)
         - OpenAI の ChatCompletion オブジェクト
+        - OpenRouter / Grok / Gemini の dict っぽいオブジェクト
         - それ以外 → 文字列化して usage=None
         """
-        # (text, usage) 形式
+        # (text, usage) 形式（Adapter 経由の基本ケース）
         if isinstance(raw, tuple):
             if not raw:
                 return "", None
@@ -94,32 +95,27 @@ class ModelsAI:
     def _normalize_result(self, name: str, raw: Any) -> Dict[str, Any]:
         """
         各モデルの生返却値 raw を統一フォーマットに整形する。
+
+        戻り値:
+        {
+          "status": "ok" | "error",
+          "text": str,
+          "usage": Optional[Dict[str, Any]],
+          "meta": Dict[str, Any],
+          "error": Optional[str],
+        }
         """
         text, usage = self._extract_text_and_usage(raw)
         meta: Dict[str, Any] = {}
 
-        # GPT-5.1 の empty-response 問題に対するガード
-        if name == "gpt51" and isinstance(text, str) and text.strip() == "":
-            # completion_tokens == 0 のときだけ、本当に空レスポンスとみなしてエラー扱い
-            comp_tokens = 0
-            if isinstance(usage, dict):
-                comp_tokens = int(usage.get("completion_tokens", 0) or 0)
-            if comp_tokens == 0:
-                return {
-                    "status": "error",
-                    "text": "",
-                    "usage": usage,
-                    "meta": meta,
-                    "error": "empty_response",
-                }
-            # completion_tokens があるのにテキストだけ取れなかったケースでは、
-            # ひとまず空文字のまま「ok」として返す（UI で中身を確認できるようにする）
-    def _normalize_result(self, name: str, raw: Any) -> Dict[str, Any]:
-        text, usage = self._extract_text_and_usage(raw)
-        meta: Dict[str, Any] = {}
+        # ここで「中身が ChatCompletion の repr っぽい文字列」を弾く。
+        # （OpenAI SDK のオブジェクトがそのまま文字列化されてしまったケース）
+        if isinstance(text, str) and text.strip().startswith("ChatCompletion("):
+            text = ""
 
         # GPT-5.1 の empty-response 問題に対するガード
         if name == "gpt51" and isinstance(text, str) and text.strip() == "":
+            # エラーとして扱い、他モデルに任せる
             return {
                 "status": "error",
                 "text": "",
@@ -127,39 +123,6 @@ class ModelsAI:
                 "meta": meta,
                 "error": "empty_response",
             }
-
-        # ★ ここから追加：ChatCompletion オブジェクトの文字列化を弾く ★
-        if isinstance(text, str) and text.strip().startswith("ChatCompletion("):
-            return {
-                "status": "error",
-                "text": "",
-                "usage": usage,
-                "meta": meta,
-                "error": "malformed_chatcompletion_str",
-            }
-        # ★ 追加ここまで ★
-
-        if not isinstance(text, str):
-            text = "" if text is None else str(text)
-
-        return {
-            "status": "ok",
-            "text": text,
-            "usage": usage,
-            "meta": meta,
-            "error": None,
-        }
-
-        if not isinstance(text, str):
-            text = "" if text is None else str(text)
-
-        return {
-            "status": "ok",
-            "text": text,
-            "usage": usage,
-            "meta": meta,
-            "error": None,
-        }
 
         # 通常パターン
         if not isinstance(text, str):
