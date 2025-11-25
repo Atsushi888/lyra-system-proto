@@ -67,7 +67,7 @@ class AnswerTalker:
         st.session_state["llm_meta"] = self.llm_meta
 
         # Multi-LLM 集計 → ModelsAI2 (LLMAI ベース)
-        self.models_ai = ModelsAI2()
+        self.models_ai = ModelsAI2(llm_manager=self.llm_manager)
 
         # EmotionAI（感情解析＋長期感情管理）
         self.emotion_ai = EmotionAI(
