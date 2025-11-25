@@ -11,9 +11,6 @@ class ModelsAI:
     LLMManager を使って複数モデルに問い合わせ、
     各モデルの回答テキスト・usage・エラー状態などを
     まとめて返すユーティリティ。
-
-    - AnswerTalker.run_models() から呼ばれる前提。
-    - 実際の LLM 呼び出しは LLMManager → Adapter 側に委譲。
     """
 
     def __init__(self, llm_manager: LLMManager) -> None:
@@ -30,17 +27,16 @@ class ModelsAI:
     @staticmethod
     def _extract_text_and_usage(raw: Any) -> Tuple[str, Optional[Dict[str, Any]]]:
         """
-        Adapter / OpenAI SDK などから返ってきた値を
+        LLMAdapter / OpenAI SDK などから返ってきた値を
         (text, usage) の形に正規化する。
 
         想定パターン:
         - str
         - (text, usage_dict)
         - OpenAI の ChatCompletion オブジェクト
-        - OpenRouter / Grok / Gemini の dict っぽいオブジェクト
         - それ以外 → 文字列化して usage=None
         """
-        # (text, usage) 形式（Adapter 経由の基本ケース）
+        # (text, usage) 形式
         if isinstance(raw, tuple):
             if not raw:
                 return "", None
@@ -51,7 +47,6 @@ class ModelsAI:
                 if isinstance(second, dict):
                     usage_dict = second
                 else:
-                    # usage が dict 以外のパターンは一旦そのまま詰める
                     usage_dict = {"raw_usage": second}
             if not isinstance(text, str):
                 text = "" if text is None else str(text)
@@ -61,8 +56,7 @@ class ModelsAI:
         if isinstance(raw, str):
             return raw, None
 
-        # OpenAI / OpenRouter の ChatCompletion っぽいオブジェクト
-        # choices[0].message.content / usage を拾う
+        # ChatCompletion っぽいオブジェクト
         try:
             choices = getattr(raw, "choices", None)
             if choices and isinstance(choices, list) and choices:
@@ -76,17 +70,14 @@ class ModelsAI:
             usage_obj = getattr(raw, "usage", None)
             usage_dict = None
             if usage_obj is not None:
-                # usage_obj が pydantic / dataclass でも dict 化を試みる
                 if isinstance(usage_obj, dict):
                     usage_dict = usage_obj
                 else:
-                    usage_dict = getattr(usage_obj, "dict", None)
-                    if callable(usage_dict):
-                        usage_dict = usage_dict()
+                    tmp = getattr(usage_obj, "dict", None)
+                    if callable(tmp):
+                        usage_dict = tmp()
                     else:
-                        usage_dict = {
-                            "raw_usage": str(usage_obj),
-                        }
+                        usage_dict = {"raw_usage": str(usage_obj)}
             return content, usage_dict
         except Exception:
             # 失敗したらとりあえず文字列化
@@ -95,27 +86,12 @@ class ModelsAI:
     def _normalize_result(self, name: str, raw: Any) -> Dict[str, Any]:
         """
         各モデルの生返却値 raw を統一フォーマットに整形する。
-
-        戻り値:
-        {
-          "status": "ok" | "error",
-          "text": str,
-          "usage": Optional[Dict[str, Any]],
-          "meta": Dict[str, Any],
-          "error": Optional[str],
-        }
         """
         text, usage = self._extract_text_and_usage(raw)
         meta: Dict[str, Any] = {}
 
-        # ここで「中身が ChatCompletion の repr っぽい文字列」を弾く。
-        # （OpenAI SDK のオブジェクトがそのまま文字列化されてしまったケース）
-        if isinstance(text, str) and text.strip().startswith("ChatCompletion("):
-            text = ""
-
         # GPT-5.1 の empty-response 問題に対するガード
         if name == "gpt51" and isinstance(text, str) and text.strip() == "":
-            # エラーとして扱い、他モデルに任せる
             return {
                 "status": "error",
                 "text": "",
@@ -124,7 +100,6 @@ class ModelsAI:
                 "error": "empty_response",
             }
 
-        # 通常パターン
         if not isinstance(text, str):
             text = "" if text is None else str(text)
 
@@ -150,53 +125,58 @@ class ModelsAI:
         mode:
             "normal" / "erotic" / "debate" など、
             現在の Judge / Emotion モードを示す。
-            現段階では導線のみで、LLM 側での詳細な反映は今後実装予定。
-
-        戻り値フォーマット:
-        {
-          "gpt4o": { "status": "...", "text": "...", "usage": {...}, "meta": {...}, "error": "..."},
-          "gpt51": { ... },
-          "hermes": { ... },
-          ...
-        }
         """
         results: Dict[str, Any] = {}
 
         if not messages:
             return results
 
+        mode_key = (mode or "normal").lower()
+
         for name, props in self.model_props.items():
-            enabled = props.get("enabled", True)
+            # ==== 参加可否フィルタ ====
+            enabled_cfg = props.get("enabled", True)
+
+            # 1) gpt4o は常時不参加
+            if name == "gpt4o":
+                enabled = False
+
+            # 2) Hermes（旧）は erotic のときだけ参加
+            elif name == "hermes":
+                enabled = enabled_cfg and (mode_key == "erotic")
+
+            # 3) それ以外（gpt51 / grok / gemini / hermes_new）は config どおり
+            else:
+                enabled = enabled_cfg
+
             if not enabled:
                 results[name] = {
                     "status": "disabled",
                     "text": "",
                     "usage": None,
-                    "meta": {"mode": mode},
+                    "meta": {"mode": mode_key},
                     "error": "disabled_by_config",
                 }
                 continue
 
+            # ==== 実行 ====
             try:
-                # LLMManager 経由でモデルを実行
                 raw = self.llm_manager.call_model(
                     model_name=name,
                     messages=messages,
-                    mode=mode,  # ★ 感情モードをパラメータとして渡す（今は導線だけ）
+                    mode=mode_key,
                 )
                 norm = self._normalize_result(name, raw)
-                # meta にも mode を入れておくとデバッグしやすい
                 norm_meta = norm.get("meta") or {}
-                norm_meta["mode"] = mode
+                norm_meta["mode"] = mode_key
                 norm["meta"] = norm_meta
                 results[name] = norm
             except Exception as e:
-                # 例外はここで吸収して "status=error" として記録
                 results[name] = {
                     "status": "error",
                     "text": "",
                     "usage": None,
-                    "meta": {"mode": mode},
+                    "meta": {"mode": mode_key},
                     "error": str(e),
                 }
 
