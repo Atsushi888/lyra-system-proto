@@ -216,9 +216,11 @@ class GPT51Adapter(OpenAIChatAdapter):
 # ============================================================
 
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+# 旧 Hermes のデフォルト ID（OpenRouter 用）
 HERMES_MODEL_OLD_DEFAULT = os.getenv(
     "OPENROUTER_HERMES_MODEL",
-    "nousresearch/hermes-2-pro-mistral",
+    "nousresearch/hermes-2-pro-llama-3-8b",  # ← ここを変更
 )
 
 
