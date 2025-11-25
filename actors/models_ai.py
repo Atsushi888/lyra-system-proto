@@ -1,4 +1,3 @@
-# actors/models_ai.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,7 +55,7 @@ class ModelsAI:
         if isinstance(raw, str):
             return raw, None
 
-        # ChatCompletion っぽいオブジェクト
+        # ChatCompletion っぽいオブジェクト（旧ルート用の保険）
         try:
             choices = getattr(raw, "choices", None)
             if choices and isinstance(choices, list) and choices:
@@ -90,8 +89,22 @@ class ModelsAI:
         text, usage = self._extract_text_and_usage(raw)
         meta: Dict[str, Any] = {}
 
-        # GPT-5.1 の empty-response 問題に対するガード
-        if name == "gpt51" and isinstance(text, str) and text.strip() == "":
+        # GPT-5.1 の empty-response ガード
+        # usage.completion_tokens も 0（あるいは usage 自体が無い）場合だけ
+        # 「完全な空返答」とみなしてエラー扱いにする。
+        comp_tokens = 0
+        if isinstance(usage, dict):
+            try:
+                comp_tokens = int(usage.get("completion_tokens", 0) or 0)
+            except Exception:
+                comp_tokens = 0
+
+        if (
+            name == "gpt51"
+            and isinstance(text, str)
+            and text.strip() == ""
+            and comp_tokens == 0
+        ):
             return {
                 "status": "error",
                 "text": "",
