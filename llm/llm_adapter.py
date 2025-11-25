@@ -13,61 +13,70 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # 共通ヘルパ
 # ============================================================
-
 def _split_text_and_usage_from_openai_completion(
     completion: Any,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """
     OpenAI ChatCompletion オブジェクトから text/usage を取り出す。
-    gpt-5.1 のように message.content が「パーツのリスト」になっている形にも対応する。
+
+    - gpt-4o 系のような `message.content: str`
+    - gpt-5.1 系のような `message.content: list[...text part...]`
+    の両方に対応する。
     """
-    text = ""
-    usage_dict: Optional[Dict[str, Any]] = None
-
+    # ---------- 本文取り出し ----------
     try:
-        choices = getattr(completion, "choices", None) or []
-        if choices:
-            msg = getattr(choices[0], "message", None)
-            if msg is not None:
-                content_obj = getattr(msg, "content", "") or ""
+        # choices[0].message までは昔の llm_router と同じ
+        choice0 = completion.choices[0]
+        message = getattr(choice0, "message", None)
 
-                # 1) すでに str の場合
-                if isinstance(content_obj, str):
-                    text = content_obj
+        if message is None:
+            # message 自体が無いのは異常ケースなのでログだけ残す
+            logger.warning("OpenAI completion has no message: %r", completion)
+            text = ""
+        else:
+            raw_content = getattr(message, "content", None)
 
-                # 2) list[part, part, ...] の場合（gpt-5.1 など）
-                elif isinstance(content_obj, list):
-                    parts: List[str] = []
-                    for p in content_obj:
-                        # p.text を優先して取り出す
-                        t = getattr(p, "text", None)
-                        if t is None and isinstance(p, dict):
-                            t = p.get("text")
-                        if t is None:
-                            t = str(p)
-                        parts.append(t)
-                    text = "".join(parts)
+            # 1) ふつうの string
+            if isinstance(raw_content, str):
+                text = raw_content
 
-                # 3) その他の型はとりあえず文字列化
-                else:
-                    text = str(content_obj)
+            # 2) list[part, part, ...] 形式（gpt-5.1 でよくある）
+            elif isinstance(raw_content, list):
+                parts: List[str] = []
+                for p in raw_content:
+                    # p.text を優先、それが無ければ dict["text"]、最後に str()。
+                    t = getattr(p, "text", None)
+                    if t is None and isinstance(p, dict):
+                        t = p.get("text")
+                    if t is None:
+                        t = str(p)
+                    parts.append(t)
+                text = "".join(parts)
+
+            # 3) その他の型はそのまま文字列化
+            else:
+                text = "" if raw_content is None else str(raw_content)
+
     except Exception:
+        # ここで落ちた場合は、とりあえず空文字にして usage だけ返す
         logger.exception("OpenAI completion parse error")
         text = ""
 
-    usage = getattr(completion, "usage", None)
-    if usage is not None:
-        try:
+    # ---------- usage 取り出し ----------
+    usage_dict: Optional[Dict[str, Any]] = None
+    try:
+        usage = getattr(completion, "usage", None)
+        if usage is not None:
             usage_dict = {
                 "prompt_tokens": getattr(usage, "prompt_tokens", 0),
                 "completion_tokens": getattr(usage, "completion_tokens", 0),
                 "total_tokens": getattr(usage, "total_tokens", 0),
             }
-        except Exception:
-            usage_dict = None
+    except Exception:
+        logger.exception("OpenAI usage parse error")
+        usage_dict = None
 
     return text, usage_dict
-
 
 def _split_text_and_usage_from_dict(
     data: Dict[str, Any],
