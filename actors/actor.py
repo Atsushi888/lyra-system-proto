@@ -4,38 +4,28 @@ from __future__ import annotations
 from typing import List, Dict, Any
 
 from personas.persona_floria_ja import Persona
-from llm.llm_router import LLMRouter
 from actors.answer_talker import AnswerTalker
 
 
 class Actor:
-    def __init__(self, name: str, persona: Persona, router: LLMRouter | None = None) -> None:
+    def __init__(self, name: str, persona: Persona) -> None:
         self.name = name
         self.persona = persona
-        self.router = router or LLMRouter()
+
+        # LLMRouterはもう使わない。AnswerTalker内部で自動的にLLMManager/Routerへ接続する
         self.answer_talker = AnswerTalker(persona=self.persona)
 
     def speak(self, conversation_log: List[Dict[str, str]]) -> str:
-        # 最新のプレイヤー発言を拾う
+        # プレイヤーの最新発言を取得
         user_text = ""
         for entry in reversed(conversation_log):
             if entry.get("role") == "player":
                 user_text = entry.get("content", "")
                 break
 
-        # Persona で messages を組み立てる
+        # Persona に messages を作らせる
         messages = self.persona.build_messages(user_text)
 
-        # # 従来どおり GPT-4o に一発投げる
-        # result = self.router.call_gpt4o(messages)
-
-        # # reply_text 抽出
-        # if isinstance(result, tuple):
-        #     reply_text = result[0]
-        # else:
-        #     reply_text = result
-
-        messages = self.persona.build_messages(user_text)
+        # AnswerTalker によるLLMパイプライン処理
         final_reply = self.answer_talker.speak(messages, user_text=user_text)
         return final_reply
-        # return reply_text
