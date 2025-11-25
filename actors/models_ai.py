@@ -33,9 +33,14 @@ class ModelsAI:
         - str
         - (text, usage_dict)
         - OpenAI の ChatCompletion オブジェクト
+          （gpt-5.1 のように message.content が list[part] でも対応）
+        - dict（OpenRouter / Grok / Gemini など）
         - それ以外 → 文字列化して usage=None
         """
+
+        # ----------------------------------------
         # (text, usage) 形式
+        # ----------------------------------------
         if isinstance(raw, tuple):
             if not raw:
                 return "", None
@@ -51,23 +56,72 @@ class ModelsAI:
                 text = "" if text is None else str(text)
             return text, usage_dict
 
+        # ----------------------------------------
         # すでに str の場合
+        # ----------------------------------------
         if isinstance(raw, str):
             return raw, None
 
-        # ChatCompletion っぽいオブジェクト（旧ルート用の保険）
+        # ----------------------------------------
+        # dict 形式（OpenRouter / Grok / Gemini など）
+        # ----------------------------------------
+        if isinstance(raw, dict):
+            try:
+                choices = raw.get("choices") or []
+                if choices:
+                    msg = choices[0].get("message") or {}
+                    content = msg.get("content", "")
+                    # gpt-5.1 型の list[part] にも対応
+                    if isinstance(content, list):
+                        parts: List[str] = []
+                        for p in content:
+                            t = None
+                            if isinstance(p, dict):
+                                t = p.get("text")
+                            if t is None and hasattr(p, "text"):
+                                t = getattr(p, "text", None)
+                            if t is None:
+                                t = str(p)
+                            parts.append(t)
+                        text = "".join(parts)
+                    else:
+                        text = content or ""
+                else:
+                    text = ""
+                usage_dict = raw.get("usage")
+                return text, usage_dict
+            except Exception:
+                # 失敗したらとりあえず文字列化
+                return str(raw), None
+
+        # ----------------------------------------
+        # ChatCompletion っぽいオブジェクト（OpenAI）
+        # ----------------------------------------
         try:
             choices = getattr(raw, "choices", None)
             if choices and isinstance(choices, list) and choices:
                 first = choices[0]
                 msg = getattr(first, "message", None)
-                content = getattr(msg, "content", None)
-                if not isinstance(content, str):
-                    content = "" if content is None else str(content)
+                content = getattr(msg, "content", "")
+
+                # ★ gpt-5.1: content が list[part] のケース
+                if isinstance(content, list):
+                    parts: List[str] = []
+                    for p in content:
+                        t = getattr(p, "text", None)
+                        if t is None and isinstance(p, dict):
+                            t = p.get("text")
+                        if t is None:
+                            t = str(p)
+                        parts.append(t)
+                    text = "".join(parts)
+                else:
+                    text = content or ""
             else:
-                content = ""
+                text = ""
+
             usage_obj = getattr(raw, "usage", None)
-            usage_dict = None
+            usage_dict: Optional[Dict[str, Any]] = None
             if usage_obj is not None:
                 if isinstance(usage_obj, dict):
                     usage_dict = usage_obj
@@ -77,7 +131,8 @@ class ModelsAI:
                         usage_dict = tmp()
                     else:
                         usage_dict = {"raw_usage": str(usage_obj)}
-            return content, usage_dict
+
+            return text, usage_dict
         except Exception:
             # 失敗したらとりあえず文字列化
             return str(raw), None
