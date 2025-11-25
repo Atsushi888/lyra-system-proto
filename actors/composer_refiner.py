@@ -4,44 +4,27 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Callable
 
-from llm.llm_router import LLMRouter
+from llm.llm_manager import LLMManager
 
 
-def _call_router_dynamic(
-    router: LLMRouter,
+def _call_llm_dynamic(
+    llm_manager: LLMManager,
     model_name: str,
-    model_props: Dict[str, Dict[str, Any]],
     prompt: str,
     *,
     temperature: float = 0.8,
     max_tokens: int = 900,
 ) -> str:
     """
-    refiner_model (例: "gpt51") と model_props から router_fn を引き、
-    LLMRouter の call_xxx(...) を呼び出してテキストを生成する。
+    refiner_model (例: "gpt51") から LLMManager.call_model を経由して
+    各モデルの Adapter を呼び出し、テキストを生成する。
 
-    LLMRouter のインターフェース:
-      call_gpt4o(messages, temperature=..., max_tokens=...) -> (reply_text, usage)
-      call_gpt51(messages, temperature=..., max_tokens=...) -> (reply_text, usage)
-      call_hermes(messages, temperature=..., max_tokens=...) -> (reply_text, usage)
+    LLMManager のインターフェース:
+      call_model(model_name, messages, temperature=..., max_tokens=..., ...)
     を前提とする。
     """
-    if not isinstance(router, LLMRouter):
-        raise TypeError("router must be an instance of LLMRouter")
-
-    props = model_props.get(model_name, {}) if isinstance(model_props, dict) else {}
-    router_fn = ""
-    if isinstance(props, dict):
-        router_fn = props.get("router_fn", "")
-
-    fn_name = router_fn or model_name
-
-    if not hasattr(router, fn_name):
-        raise RuntimeError(f"Router has no method '{fn_name}' for model '{model_name}'")
-
-    fn = getattr(router, fn_name)
-    if not callable(fn):
-        raise RuntimeError(f"Router attribute '{fn_name}' is not callable")
+    if not isinstance(llm_manager, LLMManager):
+        raise TypeError("llm_manager must be an instance of LLMManager")
 
     messages = [
         {
@@ -50,11 +33,21 @@ def _call_router_dynamic(
         }
     ]
 
-    reply_text, usage = fn(
+    raw = llm_manager.call_model(
+        model_name=model_name,
         messages=messages,
         temperature=float(temperature),
         max_tokens=int(max_tokens),
     )
+
+    # call_model の戻りは (text, usage) or str を想定
+    if isinstance(raw, tuple):
+        reply_text = raw[0]
+    else:
+        reply_text = raw
+
+    if not isinstance(reply_text, str):
+        reply_text = "" if reply_text is None else str(reply_text)
 
     return reply_text or ""
 
@@ -114,8 +107,7 @@ def build_refine_prompt(
 
 def make_default_refiner(
     *,
-    router: LLMRouter,
-    model_props: Dict[str, Dict[str, Any]],
+    llm_manager: LLMManager,
     temperature: float = 0.85,
     max_tokens: int = 900,
 ) -> Callable[
@@ -124,6 +116,11 @@ def make_default_refiner(
 ]:
     """
     ComposerAI に注入するための「標準 refiner」を生成するファクトリ。
+
+    旧仕様:
+      make_default_refiner(router=..., model_props=..., ...)
+    新仕様:
+      make_default_refiner(llm_manager=..., ...)
     """
 
     def refiner(
@@ -147,12 +144,12 @@ def make_default_refiner(
             persona_style_hint=persona_style_hint,
         )
 
+        # 既定では gpt51 でリファイン
         model_name = refiner_model or "gpt51"
 
-        refined_text = _call_router_dynamic(
-            router=router,
+        refined_text = _call_llm_dynamic(
+            llm_manager=llm_manager,
             model_name=model_name,
-            model_props=model_props,
             prompt=prompt,
             temperature=temperature,
             max_tokens=max_tokens,
