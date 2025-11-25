@@ -4,10 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, List
 
+from llm.llm_router import LLMRouter
 from llm.llm_adapter import (
-    BaseLLMAdapter,
     GPT4oAdapter,
-    GPT51Adapter,
     HermesOldAdapter,
     HermesNewAdapter,
     GrokAdapter,
@@ -18,255 +17,242 @@ from llm.llm_adapter import (
 @dataclass
 class LLMModelConfigV2:
     """
-    1つの LLM モデルに関する設定情報（adapter 版）。
+    1つの LLM モデルに関する設定情報（v2）。
 
-    - extra: env_key や model_family などのメタ情報
-    - params: temperature / top_p / system_prompt などのデフォルト値
+    backend:
+        "router"  … 旧 LLMRouter の call_xxx を使う
+        "adapter" … llm_adapter の Adapter.call() を使う
     """
+
     name: str
     vendor: str
+    backend: str  # "router" | "adapter"
     priority: float = 1.0
     enabled: bool = True
+
+    # router 用
+    router_fn: Optional[str] = None
+
+    # adapter 用（self._adapters のキー）
+    adapter_key: Optional[str] = None
+
     extra: Dict[str, Any] = field(default_factory=dict)
     params: Dict[str, Any] = field(default_factory=dict)
 
 
 class LLMManagerV2:
     """
-    adapter ベースの LLM 呼び出しマネージャ。
+    v2 LLM マネージャ。
 
-    旧 LLMManager（router 版）とは独立して動かす想定。
-    call_model() は adapter にそのまま委譲し、
-    (text, usage_dict or None) を返す。
+    - gpt51 だけ backend="router"（旧 LLMRouter.call_gpt51 を使用）
+    - それ以外（gpt4o / hermes / grok / gemini / hermes_new）は backend="adapter"
+      として llm_adapter の各 Adapter を使う。
     """
 
     _POOL: Dict[str, "LLMManagerV2"] = {}
 
-    # ==========================================
-    # プール管理
-    # ==========================================
+    # ---------------------------------------------------------
+    # シングルトン取得
+    # ---------------------------------------------------------
     @classmethod
     def get_or_create(cls, persona_id: str = "default") -> "LLMManagerV2":
         if persona_id in cls._POOL:
             return cls._POOL[persona_id]
 
         manager = cls(persona_id=persona_id)
-
-        # === デフォルト登録 ===
-        # gpt4o は「常時登録するが、会話システムでは使わない」運用なので enabled=True のまま
-        manager.register_gpt4o(priority=3.0, enabled=True)
-        manager.register_gpt51(priority=2.0, enabled=True)
-        manager.register_hermes(priority=1.0, enabled=True)        # 旧 Hermes
-        manager.register_grok(priority=1.5, enabled=True)
-        manager.register_gemini(priority=1.5, enabled=True)
-        # 新 Hermes はテスト用としてひとまず無効
-        manager.register_hermes_new(priority=0.5, enabled=False)
-
         cls._POOL[persona_id] = manager
         return manager
 
-    # ==========================================
+    # ---------------------------------------------------------
     # 初期化
-    # ==========================================
+    # ---------------------------------------------------------
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
 
-        # name -> config
+        # 旧実装の LLMRouter（gpt51 専用に使う）
+        self._router = LLMRouter()
+
+        # Adapter 群
+        self._adapters: Dict[str, Any] = {
+            "gpt4o": GPT4oAdapter(),
+            # gpt51 はあえて Adapter を使わず router 経由に戻す
+            "hermes": HermesOldAdapter(),
+            "hermes_new": HermesNewAdapter(),
+            "grok": GrokAdapter(),
+            "gemini": GeminiAdapter(),
+        }
+
+        # モデル設定
         self._models: Dict[str, LLMModelConfigV2] = {}
-        # name -> Adapter インスタンス
-        self._adapters: Dict[str, BaseLLMAdapter] = {}
 
-        # Emotion / Judge 側から渡される mode を記録だけしておく
-        self._last_mode: Optional[str] = None
+        # デフォルト登録（必要ならあとから load_default_config で上書き可）
+        self._register_defaults()
 
-    # ==========================================
-    # モデル登録（共通）
-    # ==========================================
+    # ---------------------------------------------------------
+    # デフォルトモデル登録
+    # ---------------------------------------------------------
+    def _register_defaults(self) -> None:
+        # gpt4o … adapter（ただし UI 側で disabled にしても OK）
+        self.register_model(
+            name="gpt4o",
+            vendor="openai",
+            backend="adapter",
+            adapter_key="gpt4o",
+            priority=3.0,
+            enabled=True,
+            extra={"env_key": "OPENAI_API_KEY", "model_family": "gpt-4o"},
+            params={},
+        )
+
+        # gpt51 … ★旧 router 経由に戻す★
+        self.register_model(
+            name="gpt51",
+            vendor="openai",
+            backend="router",
+            router_fn="call_gpt51",
+            priority=2.0,
+            enabled=True,
+            extra={"env_key": "OPENAI_API_KEY", "model_family": "gpt-5.1"},
+            params={},
+        )
+
+        # hermes（旧）… OpenRouter adapter
+        self.register_model(
+            name="hermes",
+            vendor="openrouter",
+            backend="adapter",
+            adapter_key="hermes",
+            priority=1.0,
+            enabled=True,
+            extra={"env_key": "OPENROUTER_API_KEY", "model_family": "hermes"},
+            params={},
+        )
+
+        # hermes_new … テスト用
+        self.register_model(
+            name="hermes_new",
+            vendor="openrouter",
+            backend="adapter",
+            adapter_key="hermes_new",
+            priority=0.5,
+            enabled=False,
+            extra={"env_key": "OPENROUTER_API_KEY", "model_family": "hermes"},
+            params={},
+        )
+
+        # grok … xAI adapter
+        self.register_model(
+            name="grok",
+            vendor="xai",
+            backend="adapter",
+            adapter_key="grok",
+            priority=1.5,
+            enabled=True,
+            extra={"env_key": "GROK_API_KEY", "model_family": "grok-2"},
+            params={},
+        )
+
+        # gemini … Google adapter
+        self.register_model(
+            name="gemini",
+            vendor="google",
+            backend="adapter",
+            adapter_key="gemini",
+            priority=1.5,
+            enabled=True,
+            extra={"env_key": "GEMINI_API_KEY", "model_family": "gemini-2.0"},
+            params={},
+        )
+
+    # ---------------------------------------------------------
+    # モデル登録 API
+    # ---------------------------------------------------------
     def register_model(
         self,
         name: str,
         *,
         vendor: str,
+        backend: str,
         priority: float = 1.0,
         enabled: bool = True,
+        router_fn: Optional[str] = None,
+        adapter_key: Optional[str] = None,
         extra: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
-        adapter: Optional[BaseLLMAdapter] = None,
     ) -> None:
+        backend = backend.lower()
+        if backend not in ("router", "adapter"):
+            raise ValueError(f"backend must be 'router' or 'adapter', got {backend}")
+
         cfg = LLMModelConfigV2(
             name=name,
             vendor=vendor,
+            backend=backend,
             priority=priority,
             enabled=enabled,
+            router_fn=router_fn,
+            adapter_key=adapter_key or name,
             extra=extra or {},
             params=params or {},
         )
         self._models[name] = cfg
 
-        if adapter is not None:
-            self._adapters[name] = adapter
-
-    # ---------- 個別登録ヘルパ ----------
-
-    def register_gpt4o(
-        self,
-        *,
-        priority: float = 3.0,
-        enabled: bool = True,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self.register_model(
-            "gpt4o",
-            vendor="openai",
-            priority=priority,
-            enabled=enabled,
-            extra={"env_key": "OPENAI_API_KEY", "model_family": "gpt-4o"},
-            params=params,
-            adapter=GPT4oAdapter(),
-        )
-
-    def register_gpt51(
-        self,
-        *,
-        priority: float = 2.0,
-        enabled: bool = True,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self.register_model(
-            "gpt51",
-            vendor="openai",
-            priority=priority,
-            enabled=enabled,
-            extra={"env_key": "OPENAI_API_KEY", "model_family": "gpt-5.1"},
-            params=params,
-            adapter=GPT51Adapter(),
-        )
-
-    def register_hermes(
-        self,
-        *,
-        priority: float = 1.0,
-        enabled: bool = True,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        旧 Hermes（OpenRouter）を "hermes" 名義で登録。
-        """
-        self.register_model(
-            "hermes",
-            vendor="openrouter",
-            priority=priority,
-            enabled=enabled,
-            extra={"env_key": "OPENROUTER_API_KEY", "model_family": "hermes_old"},
-            params=params,
-            adapter=HermesOldAdapter(),
-        )
-
-    def register_hermes_new(
-        self,
-        *,
-        priority: float = 0.5,
-        enabled: bool = False,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        新 Hermes（hermes-4-70b）を "hermes_new" 名義で登録。
-        """
-        self.register_model(
-            "hermes_new",
-            vendor="openrouter",
-            priority=priority,
-            enabled=enabled,
-            extra={"env_key": "OPENROUTER_API_KEY", "model_family": "hermes_new"},
-            params=params,
-            adapter=HermesNewAdapter(),
-        )
-
-    def register_grok(
-        self,
-        *,
-        priority: float = 1.5,
-        enabled: bool = True,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        extra = {
-            "env_key": "GROK_API_KEY",
-            "model_family": "grok-2",
-        }
-        self.register_model(
-            "grok",
-            vendor="xai",
-            priority=priority,
-            enabled=enabled,
-            extra=extra,
-            params=params,
-            adapter=GrokAdapter(),
-        )
-
-    def register_gemini(
-        self,
-        *,
-        priority: float = 1.5,
-        enabled: bool = True,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        extra = {
-            "env_key": "GEMINI_API_KEY",
-            "model_family": "gemini-2.0",
-        }
-        self.register_model(
-            "gemini",
-            vendor="google",
-            priority=priority,
-            enabled=enabled,
-            extra=extra,
-            params=params,
-            adapter=GeminiAdapter(),
-        )
-
-    # ==========================================
+    # ---------------------------------------------------------
     # 実際の呼び出し
-    # ==========================================
+    # ---------------------------------------------------------
     def call_model(
         self,
         model_name: str,
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Any:
-        """
-        Adapter に処理を委譲して (text, usage_dict or None) を返す。
-        """
         cfg = self._models.get(model_name)
         if cfg is None:
             raise ValueError(f"Unknown model: {model_name}")
 
-        adapter = self._adapters.get(model_name)
+        # モデルに設定された params をベースに、呼び出し時の kwargs で上書き
+        call_params = dict(cfg.params)
+        call_params.update(kwargs)
+
+        # -----------------------------
+        # router backend（gpt51 など）
+        # -----------------------------
+        if cfg.backend == "router":
+            if not cfg.router_fn:
+                raise RuntimeError(
+                    f"Model '{model_name}' is router backend but router_fn is not set"
+                )
+            fn = getattr(self._router, cfg.router_fn, None)
+            if fn is None:
+                raise AttributeError(
+                    f"LLMRouter has no method '{cfg.router_fn}' "
+                    f"for model '{model_name}'"
+                )
+            # 旧 router と同様、(text, usage_dict) のタプルをそのまま返す
+            return fn(messages=messages, **call_params)
+
+        # -----------------------------
+        # adapter backend
+        # -----------------------------
+        adapter_key = cfg.adapter_key or model_name
+        adapter = self._adapters.get(adapter_key)
         if adapter is None:
-            raise RuntimeError(f"No adapter registered for model: {model_name}")
+            raise RuntimeError(
+                f"No adapter registered for model '{model_name}' (key='{adapter_key}')"
+            )
 
-        # Emotion / Judge から渡ってきたモードは記録だけしておく
-        mode = kwargs.pop("mode", None)
-        if mode is not None:
-            self._last_mode = mode
+        # Adapter も (text, usage_dict) を返す設計
+        return adapter.call(messages=messages, **call_params)
 
-        # cfg.params のデフォルト値を統合
-        merged_kwargs = dict(cfg.params)
-        merged_kwargs.update(kwargs)
-
-        # adapter.call() は (text, usage_dict or None) を返す想定
-        return adapter.call(messages=messages, **merged_kwargs)
-
-    # ==========================================
-    # 情報取得系（UI 用）
-    # ==========================================
+    # ---------------------------------------------------------
+    # 情報取得メソッド
+    # ---------------------------------------------------------
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
-        """
-        モデル名 -> メタ情報 dict
-        """
         result: Dict[str, Dict[str, Any]] = {}
         for name, cfg in self._models.items():
             result[name] = {
                 "vendor": cfg.vendor,
+                "backend": cfg.backend,  # ← backend 情報も見えるようにする
                 "priority": cfg.priority,
                 "enabled": cfg.enabled,
                 "extra": dict(cfg.extra),
@@ -284,6 +270,7 @@ class LLMManagerV2:
         for name, cfg in items:
             result[name] = {
                 "vendor": cfg.vendor,
+                "backend": cfg.backend,
                 "priority": cfg.priority,
                 "enabled": cfg.enabled,
                 "extra": dict(cfg.extra),
@@ -293,11 +280,10 @@ class LLMManagerV2:
 
     def get_available_models(self) -> Dict[str, Dict[str, Any]]:
         """
-        env_key が入っているかどうかも含めて返す。
-        （旧 LLMManager と同じインターフェース）
+        旧 LLMManager と互換の「利用可能モデル一覧」。
+        env_key / secrets / os.environ を見て has_key を付与する。
         """
         import os
-
         try:
             import streamlit as st
             secrets = st.secrets
@@ -305,7 +291,6 @@ class LLMManagerV2:
             secrets = {}
 
         props = self.get_model_props()
-
         for name, p in props.items():
             extra = p.get("extra") or {}
             env_key = extra.get("env_key")
@@ -320,9 +305,72 @@ class LLMManagerV2:
         return props
 
     def set_enabled_models(self, enabled: Dict[str, bool]) -> None:
-        """
-        UI からの on/off 操作用。
-        """
         for name, cfg in self._models.items():
             if name in enabled:
                 cfg.enabled = bool(enabled[name])
+
+    # ---------------------------------------------------------
+    # YAML ロード（必要なら v1 とほぼ同じ形で上書き）
+    # ---------------------------------------------------------
+    def load_default_config(self, path: Optional[str] = None) -> bool:
+        import os
+        if path is None:
+            path = "llm_default.yaml"
+        if not os.path.exists(path):
+            return False
+
+        try:
+            import yaml
+        except Exception:
+            return False
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            return False
+
+        models = data.get("models")
+        if not isinstance(models, dict):
+            return False
+
+        for name, cfg in models.items():
+            if not isinstance(cfg, dict):
+                continue
+
+            vendor = str(cfg.get("vendor", ""))
+            backend = str(cfg.get("backend", "adapter")).lower()
+            if not vendor or backend not in ("router", "adapter"):
+                continue
+
+            router_fn = cfg.get("router_fn")
+            adapter_key = cfg.get("adapter_key") or name
+
+            priority_raw = cfg.get("priority", 1.0)
+            try:
+                priority = float(priority_raw)
+            except Exception:
+                priority = 1.0
+
+            enabled = bool(cfg.get("enabled", True))
+            extra = cfg.get("extra") or {}
+            if not isinstance(extra, dict):
+                extra = {}
+
+            params = cfg.get("params") or {}
+            if not isinstance(params, dict):
+                params = {}
+
+            self.register_model(
+                name=name,
+                vendor=vendor,
+                backend=backend,
+                priority=priority,
+                enabled=enabled,
+                router_fn=router_fn,
+                adapter_key=adapter_key,
+                extra=extra,
+                params=params,
+            )
+
+        return True
