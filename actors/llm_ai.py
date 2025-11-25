@@ -1,141 +1,131 @@
 # actors/llm_ai.py
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+import os
+
+try:
+    import streamlit as st
+    _HAS_ST = True
+except Exception:
+    st = None  # type: ignore
+    _HAS_ST = False
 
 
-# ============================================================
-# Base LLMAI
-# ============================================================
-
-class LLMAI(ABC):
+class LLMAI:
     """
-    個々の LLM をラップする共通インターフェイス。
+    各 LLM 用の共通ベースクラス。
 
-    - name:   論理名（"gpt51" / "grok" / "gemini" / "hermes" など）
-    - family: モデルファミリ（"gpt-5.1" / "grok-2" / "gemini-2.0" / "hermes-2" 等）
+    - name:   論理名（"gpt51", "grok", "gemini", "hermes" など）
+    - family: ファミリ名（"gpt-5.1", "grok-2", "gemini-2.0", "hermes-2" など）
     - modes:  参加モード（["normal"], ["erotic"], ["all"] など）
-    - enabled: 利用可否フラグ
+    - enabled: 有効 / 無効
+    - env_keys: この AI が使う API キーの環境変数名リスト
+                （例: ["OPENAI_API_KEY"], ["GROK_API_KEY"] など）
     """
-
-    name: str
-    family: str
-    modes: List[str]
-    enabled: bool
 
     def __init__(
         self,
+        *,
         name: str,
         family: str,
-        modes: Optional[Iterable[str]] = None,
+        modes: List[str] | str = "all",
         enabled: bool = True,
+        env_keys: Optional[List[str]] = None,
     ) -> None:
         self.name = name
         self.family = family
-        self.modes = [m.lower() for m in (modes or ["all"])]
-        self.enabled = enabled
 
-    # -------------------------------------------
-    # どのモードで参加するか
-    # -------------------------------------------
+        if isinstance(modes, str):
+            self.modes = [modes]
+        else:
+            self.modes = list(modes)
+
+        self.enabled = enabled
+        self.env_keys = env_keys or []
+
+    # --------------------------------------------------
+    # 参加可否系
+    # --------------------------------------------------
     def should_answer(self, mode: str) -> bool:
         """
-        現在の judge_mode（"normal" / "erotic" / …）に対して
-        このモデルを呼ぶべきかどうかを判定。
+        現在の judge_mode (=mode) で、この AI が回答に参加すべきか。
         """
         if not self.enabled:
             return False
 
-        if not self.modes:
+        mode_key = (mode or "normal").lower()
+        # "all" が含まれていれば常に参加
+        lower_modes = [m.lower() for m in self.modes]
+        if "all" in lower_modes:
             return True
 
-        m = (mode or "normal").lower()
+        return mode_key in lower_modes
 
-        # "all" を含んでいれば常に参加
-        if "all" in self.modes:
+    def has_api_key(self) -> bool:
+        """
+        必要な API キーが環境変数 or streamlit.secrets に
+        少なくとも 1 つは入っているかどうか。
+        env_keys が空なら True 扱い（ノーチェック）。
+        """
+        if not self.env_keys:
             return True
 
-        # 通常のモード一致判定
-        return m in self.modes
+        for key in self.env_keys:
+            if os.getenv(key):
+                return True
+            if _HAS_ST and isinstance(st.secrets, dict) and st.secrets.get(key):
+                return True
 
-    # -------------------------------------------
-    # 実際の呼び出し
-    # -------------------------------------------
-    @abstractmethod
+        return False
+
+    # --------------------------------------------------
+    # 実際の呼び出し（各サブクラスで実装）
+    # --------------------------------------------------
     def call(
         self,
         messages: List[Dict[str, str]],
         **kwargs: Any,
-    ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        """
-        LLM を呼び出し、(text, usage_dict or None) を返す。
-        """
+    ) -> Any:
         raise NotImplementedError
 
 
-# ============================================================
-# Registry
-# ============================================================
-
-@dataclass
 class LLMAIRegistry:
     """
-    LLMAI サブクラスのレジストリ。
-
-    - name（"gpt51" / "grok" / …）をキーに、LLMAI インスタンスを保持する。
+    name -> LLMAI インスタンス を管理するレジストリ。
     """
 
-    models: Dict[str, LLMAI] = field(default_factory=dict)
+    def __init__(self) -> None:
+        self._models: Dict[str, LLMAI] = {}
 
-    # -------------------------------------------
-    # 登録まわり
-    # -------------------------------------------
     def register(self, ai: LLMAI) -> None:
-        self.models[ai.name] = ai
-
-    def all(self) -> Dict[str, LLMAI]:
-        """
-        name -> LLMAI のディクショナリをコピーして返す。
-        """
-        return dict(self.models)
+        self._models[ai.name] = ai
 
     def get(self, name: str) -> Optional[LLMAI]:
-        return self.models.get(name)
+        return self._models.get(name)
 
-    # -------------------------------------------
-    # デフォルト構成の生成
-    # -------------------------------------------
+    def all(self) -> Dict[str, LLMAI]:
+        # 呼び出し側で安心して弄れるようにコピーを返す
+        return dict(self._models)
+
+    # --------------------------------------------------
+    # デフォルト構成（gpt51 / grok / gemini / hermes*)
+    # --------------------------------------------------
     @classmethod
     def create_default(cls) -> "LLMAIRegistry":
         """
-        Lyra-System 既定の LLM 構成を生成して返す。
-
-        gpt51 : 旧 router ベース
-        grok  : GrokAdapter
-        gemini: GeminiAdapter
-        hermes: HermesOldAdapter（erotic 専用）
-        hermes_new: HermesNewAdapter（デフォ無効）
-
-        ※ import はここで遅延評価して、循環 import を避ける。
+        Lyra-System 標準の AI 構成でレジストリを組み立てる。
         """
-        reg = cls()
-
-        # ---- lazy imports ----
         from actors.llm_adapters.gpt51_ai import GPT51AI
         from actors.llm_adapters.grok_ai import GrokAI
         from actors.llm_adapters.gemini_ai import GeminiAI
         from actors.llm_adapters.hermes_old_ai import HermesOldAI
         from actors.llm_adapters.hermes_new_ai import HermesNewAI
 
-        # 必須組
+        reg = cls()
         reg.register(GPT51AI())
         reg.register(GrokAI())
         reg.register(GeminiAI())
-
-        # Hermes 系
-        reg.register(HermesOldAI())   # erotic 専用
-        reg.register(HermesNewAI())   # デフォ無効だがレジストリ上は持っておく
-
+        reg.register(HermesOldAI())
+        reg.register(HermesNewAI())
         return reg
