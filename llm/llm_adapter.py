@@ -20,59 +20,42 @@ def _split_text_and_usage_from_openai_completion(
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """
     OpenAI ChatCompletion オブジェクトから text/usage を取り出す。
-    gpt-5.1 で content 形式が変わっても、なるべく空文字にならないように
-    フォールバックを多めに入れている。
+    gpt-5.1 のように message.content が「パーツのリスト」になっている形にも対応する。
     """
     text = ""
     usage_dict: Optional[Dict[str, Any]] = None
 
-    # --- メイン経路 ---
     try:
         choices = getattr(completion, "choices", None) or []
         if choices:
             msg = getattr(choices[0], "message", None)
             if msg is not None:
-                content = getattr(msg, "content", "") or ""
-                # content が list の場合（マルチパート）、text 部をつないでしまう
-                if isinstance(content, list):
+                content_obj = getattr(msg, "content", "") or ""
+
+                # 1) すでに str の場合
+                if isinstance(content_obj, str):
+                    text = content_obj
+
+                # 2) list[part, part, ...] の場合（gpt-5.1 など）
+                elif isinstance(content_obj, list):
                     parts: List[str] = []
-                    for p in content:
-                        if isinstance(p, dict):
-                            parts.append(str(p.get("text", "")))
-                        else:
-                            parts.append(str(p))
-                    content = "\n".join([s for s in parts if s])
-                text = str(content)
+                    for p in content_obj:
+                        # p.text を優先して取り出す
+                        t = getattr(p, "text", None)
+                        if t is None and isinstance(p, dict):
+                            t = p.get("text")
+                        if t is None:
+                            t = str(p)
+                        parts.append(t)
+                    text = "".join(parts)
+
+                # 3) その他の型はとりあえず文字列化
+                else:
+                    text = str(content_obj)
     except Exception:
-        logger.exception("OpenAI completion parse error (primary)")
+        logger.exception("OpenAI completion parse error")
         text = ""
 
-    # --- dict へのフォールバック ---
-    if not text:
-        try:
-            as_dict = completion.to_dict() if hasattr(completion, "to_dict") else None
-            if isinstance(as_dict, dict):
-                choices = as_dict.get("choices") or []
-                if choices:
-                    msg = choices[0].get("message") or {}
-                    content = (
-                        msg.get("content")
-                        or msg.get("text")
-                        or ""
-                    )
-                    text = str(content)
-        except Exception:
-            logger.exception("OpenAI completion parse error (fallback dict)")
-            text = ""
-
-    # --- 最終フォールバック：どうしても取れない場合は全体を文字列化 ---
-    if not text:
-        try:
-            text = str(completion)
-        except Exception:
-            text = ""
-
-    # usage
     usage = getattr(completion, "usage", None)
     if usage is not None:
         try:
@@ -114,6 +97,10 @@ def _split_text_and_usage_from_dict(
 def _normalize_max_tokens(kwargs: Dict[str, Any]) -> None:
     """
     OpenAI の新 API では max_tokens ではなく max_completion_tokens を使う。
+    - 呼び出し側が max_tokens を指定してきた場合：
+        * max_completion_tokens が未指定ならコピー
+        * その後 max_tokens キーは削除
+    こうしておけば、gpt-5.1 のように max_tokens を拒否するモデルでも安全。
     """
     if "max_completion_tokens" in kwargs:
         kwargs.pop("max_tokens", None)
@@ -131,9 +118,13 @@ def _normalize_max_tokens(kwargs: Dict[str, Any]) -> None:
 class BaseLLMAdapter:
     """
     各ベンダーごとの LLM 呼び出しをカプセル化する基底クラス。
+
+    - name:  論理モデル名（"gpt51", "grok", "gemini", "hermes" など）
+    - call:  (messages, **kwargs) -> (text, usage_dict or None)
     """
 
     name: str = ""
+    # モデルごとの「推奨トークン長」
     TARGET_TOKENS: Optional[int] = None
 
     def call(
@@ -176,7 +167,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 f"{self.name}: OpenAI API キーが設定されていません。"
             )
 
-        # デフォルト max tokens（未指定なら TARGET_TOKENS を使う）
+        # 呼び出し側が max_* を指定していない場合、TARGET_TOKENS をデフォルトとして使用
         if (
             self.TARGET_TOKENS is not None
             and "max_tokens" not in kwargs
@@ -191,16 +182,19 @@ class OpenAIChatAdapter(BaseLLMAdapter):
             messages=messages,
             **kwargs,
         )
-
-        # ★★ ここで必ず (text, usage) に変換して返す ★★
-        text, usage = _split_text_and_usage_from_openai_completion(completion)
-        return text, usage
+        return _split_text_and_usage_from_openai_completion(completion)
 
 
 class GPT4oAdapter(OpenAIChatAdapter):
+    """
+    gpt-4o-mini 用アダプタ。
+    （今後 AnswerTalker 側では使わず、別用途で使う想定）
+    """
+
     def __init__(self) -> None:
         super().__init__(name="gpt4o", model_id="gpt-4o-mini")
-        self.TARGET_TOKENS = None  # 今は使わない
+        # 必要なら TARGET_TOKENS を設定（いまは制御しない）
+        self.TARGET_TOKENS = None
 
 
 class GPT51Adapter(OpenAIChatAdapter):
@@ -211,6 +205,7 @@ class GPT51Adapter(OpenAIChatAdapter):
 
     def __init__(self) -> None:
         super().__init__(name="gpt51", model_id="gpt-5.1")
+        # 感情豊かだがクドくなりすぎない程度
         self.TARGET_TOKENS = 220
 
 
@@ -219,58 +214,60 @@ class GPT51Adapter(OpenAIChatAdapter):
 # ============================================================
 
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-
-# 旧 Hermes のデフォルト ID（OpenRouter 用）
 HERMES_MODEL_OLD_DEFAULT = os.getenv(
     "OPENROUTER_HERMES_MODEL",
-    "nousresearch/hermes-2-pro-llama-3-8b",  # ← ここを変更
+    "nousresearch/hermes-2-pro-mistral",  # ← 旧安定版
 )
 
 
 class HermesBaseAdapter(BaseLLMAdapter):
     """
     Hermes 系モデルの共通基底アダプタ。
-    OpenRouter を OpenAI 互換エンドポイントとして叩く。
     """
 
     def __init__(self, name: str, model_id: str) -> None:
         self.name = name
         self.model_id = model_id
-        api_key = os.getenv("OPENROUTER_API_KEY", "")
-        if api_key:
-            self._client: Optional[OpenAIClient] = OpenAIClient(
-                api_key=api_key,
-                base_url=OPENROUTER_BASE_URL,
-            )
-        else:
-            self._client = None
+        self._endpoint = OPENROUTER_BASE_URL.rstrip("/") + "/chat/completions"
+        self._api_key = os.getenv("OPENROUTER_API_KEY", "")
 
     def call(
         self,
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        if self._client is None:
+        if not self._api_key:
             raise RuntimeError("OPENROUTER_API_KEY が設定されていません。")
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "model": self.model_id,
+            "messages": messages,
+        }
 
         # max_tokens 未指定なら TARGET_TOKENS を使う
         if self.TARGET_TOKENS is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = int(self.TARGET_TOKENS)
 
-        # OpenAI 互換なので max_tokens → max_completion_tokens 変換も使える
-        _normalize_max_tokens(kwargs)
+        payload.update(kwargs)
 
-        completion = self._client.chat.completions.create(
-            model=self.model_id,
-            messages=messages,
-            **kwargs,
+        resp = requests.post(
+            self._endpoint,
+            headers=headers,
+            json=payload,
+            timeout=60,
         )
-        return _split_text_and_usage_from_openai_completion(completion)
+        resp.raise_for_status()
+        data = resp.json()
+        return _split_text_and_usage_from_dict(data)
 
 
 class HermesOldAdapter(HermesBaseAdapter):
     """
-    旧 Hermes（nousresearch/hermes-2-pro-mistral）用アダプタ。
+    旧 Hermes（nousresearch/hermes-2-pro-mistral など）用アダプタ。
     通常運用はこちらを "hermes" として使う。
     """
 
@@ -279,12 +276,14 @@ class HermesOldAdapter(HermesBaseAdapter):
             name="hermes",
             model_id=HERMES_MODEL_OLD_DEFAULT,
         )
+        # erotic モードでのやり取りにちょうど良い程度
         self.TARGET_TOKENS = 260
 
 
 class HermesNewAdapter(HermesBaseAdapter):
     """
-    新 Hermes（3/4 系）用アダプタ。"hermes_new" 名義でテスト用。
+    新 Hermes（3/4 系）用アダプタ。
+    当面はテスト用："hermes_new" 名義で扱う。
     """
 
     def __init__(self) -> None:
@@ -292,6 +291,7 @@ class HermesNewAdapter(HermesBaseAdapter):
             name="hermes_new",
             model_id="nousresearch/hermes-4-70b",
         )
+        # テスト用途なので少し長めでも許容
         self.TARGET_TOKENS = 320
 
 
@@ -314,6 +314,7 @@ class GrokAdapter(BaseLLMAdapter):
         self.model_id = model_id
         self._endpoint = "https://api.x.ai/v1/chat/completions"
         self._api_key = os.getenv("GROK_API_KEY", "")
+        # GPT より少し長めでもよいくらい
         self.TARGET_TOKENS = 480
 
     def call(
@@ -333,6 +334,7 @@ class GrokAdapter(BaseLLMAdapter):
             "messages": messages,
         }
 
+        # max_tokens 未指定なら TARGET_TOKENS を使う
         if self.TARGET_TOKENS is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = int(self.TARGET_TOKENS)
 
@@ -371,6 +373,7 @@ class GeminiAdapter(BaseLLMAdapter):
             f"{self.model_id}:generateContent"
         )
         self._api_key = os.getenv("GEMINI_API_KEY", "")
+        # Flash らしさは保ちつつ、短すぎない程度
         self.TARGET_TOKENS = 400
 
     def _to_gemini_contents(
@@ -401,6 +404,7 @@ class GeminiAdapter(BaseLLMAdapter):
             "contents": self._to_gemini_contents(messages),
         }
 
+        # generationConfig 未指定なら TARGET_TOKENS を反映
         if self.TARGET_TOKENS is not None and "generationConfig" not in kwargs:
             kwargs["generationConfig"] = {
                 "maxOutputTokens": int(self.TARGET_TOKENS),
@@ -427,4 +431,5 @@ class GeminiAdapter(BaseLLMAdapter):
         except Exception:
             logger.exception("Gemini response parse error")
 
+        # usage 情報は今は無し
         return text, None
