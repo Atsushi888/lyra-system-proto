@@ -176,7 +176,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 f"{self.name}: OpenAI API キーが設定されていません。"
             )
 
-        # 呼び出し側が max_* を指定していない場合、TARGET_TOKENS をデフォルトとして使用
+        # デフォルト max tokens（未指定なら TARGET_TOKENS を使う）
         if (
             self.TARGET_TOKENS is not None
             and "max_tokens" not in kwargs
@@ -191,7 +191,10 @@ class OpenAIChatAdapter(BaseLLMAdapter):
             messages=messages,
             **kwargs,
         )
-        return _split_text_and_usage_from_openai_completion(completion)
+
+        # ★★ ここで必ず (text, usage) に変換して返す ★★
+        text, usage = _split_text_and_usage_from_openai_completion(completion)
+        return text, usage
 
 
 class GPT4oAdapter(OpenAIChatAdapter):
