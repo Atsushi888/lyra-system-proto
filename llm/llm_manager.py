@@ -1,4 +1,3 @@
-# llm/llm_manager.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -36,9 +35,9 @@ class LLMManager:
         manager = cls(persona_id=persona_id)
 
         # === Default models ===
-        manager.register_gpt4o(priority=3.0, enabled=True)
+        manager.register_gpt4o(priority=3.0, enabled=False)   # ← Multi-LLM では不参加
         manager.register_gpt51(priority=2.0, enabled=True)
-        manager.register_hermes(priority=1.0, enabled=True)       # 旧 Hermes
+        manager.register_hermes(priority=1.0, enabled=True)   # 旧 Hermes
         manager.register_grok(priority=1.5, enabled=True)
         manager.register_gemini(priority=1.5, enabled=True)
         # 新 Hermes はテスト用として別途有効化できるようにする
@@ -84,8 +83,12 @@ class LLMManager:
         self,
         *,
         priority: float = 3.0,
-        enabled: bool = True,
+        enabled: bool = False,   # ← デフォルトで無効
     ) -> None:
+        """
+        gpt-4o-mini は Multi-LLM からは基本外す。
+        個別用途で使いたい場合のみ enabled=True で再登録する想定。
+        """
         self.register_model(
             "gpt4o",
             vendor="openai",
