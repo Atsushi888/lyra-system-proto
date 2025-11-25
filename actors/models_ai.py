@@ -114,6 +114,41 @@ class ModelsAI:
                 }
             # completion_tokens があるのにテキストだけ取れなかったケースでは、
             # ひとまず空文字のまま「ok」として返す（UI で中身を確認できるようにする）
+    def _normalize_result(self, name: str, raw: Any) -> Dict[str, Any]:
+        text, usage = self._extract_text_and_usage(raw)
+        meta: Dict[str, Any] = {}
+
+        # GPT-5.1 の empty-response 問題に対するガード
+        if name == "gpt51" and isinstance(text, str) and text.strip() == "":
+            return {
+                "status": "error",
+                "text": "",
+                "usage": usage,
+                "meta": meta,
+                "error": "empty_response",
+            }
+
+        # ★ ここから追加：ChatCompletion オブジェクトの文字列化を弾く ★
+        if isinstance(text, str) and text.strip().startswith("ChatCompletion("):
+            return {
+                "status": "error",
+                "text": "",
+                "usage": usage,
+                "meta": meta,
+                "error": "malformed_chatcompletion_str",
+            }
+        # ★ 追加ここまで ★
+
+        if not isinstance(text, str):
+            text = "" if text is None else str(text)
+
+        return {
+            "status": "ok",
+            "text": text,
+            "usage": usage,
+            "meta": meta,
+            "error": None,
+        }
 
         if not isinstance(text, str):
             text = "" if text is None else str(text)
