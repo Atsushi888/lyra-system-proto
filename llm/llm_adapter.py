@@ -1,4 +1,3 @@
-# llm/llm_adapter.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -40,14 +39,21 @@ def _split_text_and_usage_from_openai_completion(
                 elif isinstance(content_obj, list):
                     parts: List[str] = []
                     for p in content_obj:
+                        t: Optional[str] = None
+
                         # p.text を優先して取り出す
-                        t = getattr(p, "text", None)
+                        t = getattr(p, "text", None) if hasattr(p, "text") else None
+
+                        # dict 形式のフォールバック
                         if t is None and isinstance(p, dict):
-                            t = p.get("text")
-                        if t is None:
-                            t = str(p)
-                        parts.append(t)
-                    text = "".join(parts)
+                            # OpenAI SDK の content-part 風 {"type": "text", "text": "..."} などを想定
+                            t = p.get("text") or p.get("content")
+
+                        # 最終的に str だけ採用（それ以外は無視）
+                        if isinstance(t, str):
+                            parts.append(t)
+
+                    text = "".join(parts).strip()
 
                 # 3) その他の型はとりあえず文字列化
                 else:
@@ -56,6 +62,7 @@ def _split_text_and_usage_from_openai_completion(
         logger.exception("OpenAI completion parse error")
         text = ""
 
+    # usage
     usage = getattr(completion, "usage", None)
     if usage is not None:
         try:
@@ -216,7 +223,7 @@ class GPT51Adapter(OpenAIChatAdapter):
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 HERMES_MODEL_OLD_DEFAULT = os.getenv(
     "OPENROUTER_HERMES_MODEL",
-    "nousresearch/hermes-2-pro-mistral",  # ← 旧安定版
+    "nousresearch/hermes-2-pro-mistral",  # ← 旧安定版（環境変数で上書き可）
 )
 
 
