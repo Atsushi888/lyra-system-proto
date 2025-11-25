@@ -5,53 +5,40 @@ from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
-from actors.models_ai_v2 import ModelsAIv2
+from actors.models_ai2 import ModelsAI2          # ★ ここだけ変更
 from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from actors.emotion_ai import EmotionAI, EmotionResult
-from llm.llm_manager_v2 import LLMManagerV2
+from llm.llm_manager import LLMManager
+from llm.llm_manager_factory import get_llm_manager
 
 
 class AnswerTalker:
     """
     AI回答パイプラインの司令塔クラス。
-
-    - ModelsAIv2: 複数モデルから回答収集（gpt4o / gpt51 / hermes / grok / gemini など）
-                  ※内部は adapter ベースの LLMManagerV2 を利用
-    - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
-    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
-    - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
-                  ＋ 長期感情（LongTermEmotion）の更新と judge_mode 決定
-    - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
     """
 
     def __init__(
         self,
         persona: Any,
-        llm_manager: Optional[LLMManagerV2] = None,
+        llm_manager: Optional[LLMManager] = None,
         memory_model: str = "gpt4o",
     ) -> None:
         self.persona = persona
         persona_id = getattr(self.persona, "char_id", "default")
 
-        # LLMManagerV2 を全体共有
-        self.llm_manager: LLMManagerV2 = (
-            llm_manager or LLMManagerV2.get_or_create(persona_id)
-        )
-
-        # 登録されているモデルメタ情報
-        self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
+        # LLMManager → EmotionAI / MemoryAI 用に従来どおり利用
+        self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
 
         # llm_meta の初期化／復元
         llm_meta = st.session_state.get("llm_meta")
         if not isinstance(llm_meta, dict):
             llm_meta = {}
 
-        # 必要キーのデフォルトを埋める
         llm_meta.setdefault("models", {})
         llm_meta.setdefault("judge", {})
-        llm_meta.setdefault("judge_mode", "normal")  # このターンで実際に使ったモード
+        llm_meta.setdefault("judge_mode", "normal")
         llm_meta.setdefault("judge_mode_next", llm_meta.get("judge_mode", "normal"))
         llm_meta.setdefault("composer", {})
         llm_meta.setdefault("emotion", {})
@@ -59,7 +46,7 @@ class AnswerTalker:
         llm_meta.setdefault("memory_update", {})
         llm_meta.setdefault("emotion_long_term", {})
 
-        # ----- ★ 新しい会談開始時は強制 normal にリセットする -----
+        # ----- 新しい会談開始時は強制 normal にリセット -----
         round_no_raw = st.session_state.get("round_number", 0)
         try:
             round_no = int(round_no_raw)
@@ -67,23 +54,20 @@ class AnswerTalker:
             round_no = 0
 
         if round_no <= 1:
-            # ラウンド 0〜1 は「新規会談」とみなし、モードをリセット
             llm_meta["judge_mode"] = "normal"
             llm_meta["judge_mode_next"] = "normal"
             st.session_state["judge_mode"] = "normal"
         else:
-            # 既存会談では session_state 優先で llm_meta を上書き
             if "judge_mode" in st.session_state:
                 llm_meta["judge_mode"] = st.session_state["judge_mode"]
             else:
-                # 念のため同期
                 st.session_state["judge_mode"] = llm_meta.get("judge_mode", "normal")
 
         self.llm_meta: Dict[str, Any] = llm_meta
         st.session_state["llm_meta"] = self.llm_meta
 
-        # Multi-LLM 集計（adapter 版）
-        self.models_ai = ModelsAIv2(self.llm_manager)
+        # Multi-LLM 集計 → ModelsAI2 (LLMAI ベース)
+        self.models_ai = ModelsAI2()
 
         # EmotionAI（感情解析＋長期感情管理）
         self.emotion_ai = EmotionAI(
@@ -91,7 +75,7 @@ class AnswerTalker:
             model_name="gpt51",
         )
 
-        # JudgeAI3（初期モードは llm_meta / session_state / emotion のいずれか）
+        # JudgeAI3
         initial_mode = (
             st.session_state.get("judge_mode")
             or self.llm_meta.get("judge_mode")
@@ -118,7 +102,7 @@ class AnswerTalker:
     ) -> None:
         """
         Persona.build_messages() で組み立てた messages を受け取り、
-        ModelsAIv2.collect() を実行して llm_meta["models"] を更新する。
+        ModelsAI2.collect() を実行して llm_meta["models"] を更新する。
         """
         if not messages:
             return
@@ -141,9 +125,8 @@ class AnswerTalker:
             return ""
 
         # ======================================================
-        # 0) 「このターンで使う judge_mode」を決定
+        # 0) このターンで使う judge_mode を決定
         # ======================================================
-        # ※ EmotionAI が決めた次ターンモードを speak() 開始時に上書きしないよう修正
         mode_current = (
             judge_mode
             or self.llm_meta.get("judge_mode")
@@ -167,7 +150,7 @@ class AnswerTalker:
             self.llm_meta["memory_context"] = ""
 
         # ======================================================
-        # 2) ModelsAI.collect
+        # 2) ModelsAI2.collect
         # ======================================================
         self.run_models(messages, mode_current=mode_current)
 
@@ -213,7 +196,6 @@ class AnswerTalker:
             )
             self.llm_meta["emotion"] = emotion_res.to_dict()
 
-            # EmotionAI が決めた judge_mode を次ターンの judge_mode_next に反映
             next_mode = self.emotion_ai.decide_judge_mode(emotion_res)
             self.llm_meta["judge_mode_next"] = next_mode
             st.session_state["judge_mode"] = next_mode
