@@ -16,7 +16,7 @@ class ModelsAI:
     def __init__(self, llm_manager: LLMManager) -> None:
         # LLMManager インスタンスを保持
         self.llm_manager = llm_manager
-        # モデル定義（vendor / router_fn / priority / enabled / extra ...）
+        # モデル定義（vendor / router_fn / priority / enabled / extra / params ...）
         self.model_props: Dict[str, Dict[str, Any]] = (
             self.llm_manager.get_model_props()
         )
@@ -27,22 +27,20 @@ class ModelsAI:
     @staticmethod
     def _extract_text_and_usage(raw: Any) -> Tuple[str, Optional[Dict[str, Any]]]:
         """
-        LLMAdapter / OpenAI SDK などから返ってきた値を
-        (text, usage) の形に正規化する。
+        LLMRouter などから返ってきた値を (text, usage) に正規化する。
 
         想定パターン:
         - str
         - (text, usage_dict)
-        - OpenAI の ChatCompletion オブジェクト
-          * gpt-5.1 のように message.content が「パーツのリスト」のケースも含む
+        - OpenAI の ChatCompletion オブジェクト（旧ルート用保険）
         - それ以外 → 文字列化して usage=None
         """
-        # (text, usage) タプル形式
+        # (text, usage) 形式
         if isinstance(raw, tuple):
             if not raw:
                 return "", None
             text = raw[0]
-            usage_dict = None
+            usage_dict: Optional[Dict[str, Any]] = None
             if len(raw) >= 2:
                 second = raw[1]
                 if isinstance(second, dict):
@@ -57,39 +55,20 @@ class ModelsAI:
         if isinstance(raw, str):
             return raw, None
 
-        # ChatCompletion っぽいオブジェクト（旧ルート用の保険＋gpt-5.1 新形式対応）
+        # ChatCompletion っぽいオブジェクト（旧ルート用の保険）
         try:
-            choices = getattr(raw, "choices", None) or []
-            if choices and isinstance(choices, list):
+            choices = getattr(raw, "choices", None)
+            if choices and isinstance(choices, list) and choices:
                 first = choices[0]
                 msg = getattr(first, "message", None)
-                content_obj = getattr(msg, "content", "") if msg is not None else ""
-
-                # 1) content が str
-                if isinstance(content_obj, str):
-                    content = content_obj
-
-                # 2) content が list[part,...] （gpt-5.1 / 画像モードなど）
-                elif isinstance(content_obj, list):
-                    parts: List[str] = []
-                    for p in content_obj:
-                        # p.text を優先
-                        t = getattr(p, "text", None)
-                        if t is None and isinstance(p, dict):
-                            t = p.get("text")
-                        if t is None:
-                            t = str(p)
-                        parts.append(t)
-                    content = "".join(parts)
-
-                # 3) それ以外は文字列化
-                else:
-                    content = str(content_obj)
+                content = getattr(msg, "content", None)
+                if not isinstance(content, str):
+                    content = "" if content is None else str(content)
             else:
                 content = ""
 
             usage_obj = getattr(raw, "usage", None)
-            usage_dict: Optional[Dict[str, Any]] = None
+            usage_dict = None
             if usage_obj is not None:
                 if isinstance(usage_obj, dict):
                     usage_dict = usage_obj
@@ -113,8 +92,6 @@ class ModelsAI:
         meta: Dict[str, Any] = {}
 
         # GPT-5.1 の empty-response ガード
-        # usage.completion_tokens も 0（あるいは usage 自体が無い）場合だけ
-        # 「完全な空返答」とみなしてエラー扱いにする。
         comp_tokens = 0
         if isinstance(usage, dict):
             try:
@@ -173,7 +150,7 @@ class ModelsAI:
             # ==== 参加可否フィルタ ====
             enabled_cfg = props.get("enabled", True)
 
-            # 1) gpt4o は常時不参加
+            # 1) gpt4o は常時不参加（今は使わない）
             if name == "gpt4o":
                 enabled = False
 
@@ -181,7 +158,7 @@ class ModelsAI:
             elif name == "hermes":
                 enabled = enabled_cfg and (mode_key == "erotic")
 
-            # 3) それ以外（gpt51 / grok / gemini / hermes_new）は config どおり
+            # 3) それ以外（gpt51 / grok / gemini）は config どおり
             else:
                 enabled = enabled_cfg
 
@@ -200,7 +177,7 @@ class ModelsAI:
                 raw = self.llm_manager.call_model(
                     model_name=name,
                     messages=messages,
-                    mode=mode_key,
+                    mode=mode_key,  # いまは LLM 側では未使用だが将来用に渡しておく
                 )
                 norm = self._normalize_result(name, raw)
                 norm_meta = norm.get("meta") or {}
