@@ -3,162 +3,124 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+from abc import ABC, abstractmethod
 
 
-class LLMAI:
+# ============================================================
+# ベースクラス: LLMAI
+# ============================================================
+
+@dataclass
+class LLMAI(ABC):
     """
-    各 LLM を共通インターフェースで扱うための基底クラス。
+    各 LLM ごとの共通インターフェース。
 
-    - name:    論理名（"gpt51", "grok", "gemini", "hermes" など）
-    - family:  モデルファミリ（"gpt-5.1", "grok-2", "gemini-2.0" など任意）
-    - modes:   参加する judge_mode セット:
-                 {"all"}      … 全モード参加
-                 {"none"}     … どのモードでも参加しない
-                 {"erotic"}   … erotic のときだけ参加
-                 {"normal", "debate"} など任意組み合わせ
-    - enabled: config 上の有効フラグ
+    - name:   論理名（"gpt51", "grok", "gemini", "hermes" など）
+    - family: モデル系統名（"gpt-5.1", "grok-2", "gemini-2.0", "hermes-2" など）
+    - modes:  参加モードのリスト
+              例: ["normal"], ["erotic"], ["normal", "erotic"], ["all"]
+    - enabled: 有効/無効フラグ
+    - priority: 将来的に Judge 側での重みづけに利用予定
     """
 
-    def __init__(
-        self,
-        name: str,
-        *,
-        family: str = "",
-        modes: Optional[List[str]] = None,
-        enabled: bool = True,
-    ) -> None:
-        self.name = name
-        self.family = family or name
-        self.enabled = bool(enabled)
+    name: str
+    family: str = ""
+    modes: List[str] = field(default_factory=lambda: ["normal"])
+    enabled: bool = True
+    priority: float = 1.0
 
-        modes = modes or ["all"]
-        self._modes = {m.lower() for m in modes}
-
-    # ---- 参加可否 ----
-    def should_answer(self, judge_mode: str) -> bool:
+    # ---- 参加可否判定 -------------------------------------------------
+    def should_answer(self, mode: str) -> bool:
         """
-        現在の judge_mode に対して、このモデルが回答候補に参加すべきかどうか。
+        現在の judge_mode (=mode) で、このモデルを実行すべきかどうか。
+
+        - enabled=False → 常に不参加
+        - modes に "all" が含まれていれば、mode に関係なく参加
+        - それ以外は、mode（小文字）と modes の小文字を比較して一致したときのみ参加
         """
         if not self.enabled:
             return False
 
-        if "none" in self._modes:
-            return False
-
-        if "all" in self._modes:
+        if not mode:
+            # mode 未指定なら enabled な限り参加
             return True
 
-        mode = (judge_mode or "normal").lower()
-        return mode in self._modes
+        mode_l = mode.lower()
+        modes_l = [m.lower() for m in (self.modes or [])]
 
-    # ---- 実行本体（各サブクラスで実装） ----
+        if "all" in modes_l:
+            return True
+
+        return mode_l in modes_l
+
+    # ---- 実際の呼び出し ------------------------------------------------
+    @abstractmethod
     def call(
         self,
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """
+        実際に LLM を叩いて (text, usage_dict or None) を返す。
+        ここは各サブクラス（gpt51_ai / grok_ai / gemini_ai / hermes_xxx_ai）が実装する。
+        """
         raise NotImplementedError
 
 
-@dataclass
-class LLMAIConfig:
-    """
-    LLMAIManager 内部で使う軽いメタ情報。
-    """
-    name: str
-    family: str = ""
-    modes: List[str] = field(default_factory=lambda: ["all"])
-    enabled: bool = True
-    extra: Dict[str, Any] = field(default_factory=dict)
+# ============================================================
+# レジストリ: LLMAIRegistry
+# ============================================================
 
-
-class LLMAIManager:
+class LLMAIRegistry:
     """
-    LLMAI サブクラスを一括管理するマネージャ。
-    - register(model): モデル登録
-    - get(name):       1件取得
-    - all():           dict で全件取得
+    LLMAI インスタンスを名前付きで管理する簡易レジストリ。
+
+    ModelsAI2 からは:
+
+        reg = LLMAIRegistry()
+        reg.register(GPT51AI())
+        reg.register(GrokAI())
+        ...
+
+        for name, ai in reg.all().items():
+            ...
+
+    のように利用する想定。
     """
 
     def __init__(self) -> None:
         self._models: Dict[str, LLMAI] = {}
-        self._configs: Dict[str, LLMAIConfig] = {}
 
-    # -----------------------------
-    # 登録
-    # -----------------------------
-    def register(self, model: LLMAI, *, extra: Optional[Dict[str, Any]] = None) -> None:
-        self._models[model.name] = model
-        cfg = LLMAIConfig(
-            name=model.name,
-            family=getattr(model, "family", model.name),
-            modes=list(getattr(model, "_modes", {"all"})),
-            enabled=bool(getattr(model, "enabled", True)),
-            extra=extra or {},
-        )
-        self._configs[model.name] = cfg
+    # ---- 登録系 --------------------------------------------------------
+    def register(self, ai: LLMAI) -> None:
+        """LLMAI インスタンスを name で登録する。"""
+        self._models[ai.name] = ai
 
-    # -----------------------------
-    # 取得系
-    # -----------------------------
+    def unregister(self, name: str) -> None:
+        """名前を指定して登録を解除。なければ何もしない。"""
+        self._models.pop(name, None)
+
+    # ---- 取得系 --------------------------------------------------------
     def get(self, name: str) -> Optional[LLMAI]:
+        """名前から LLMAI インスタンスを取得。存在しなければ None。"""
         return self._models.get(name)
 
-    def all_models(self) -> Dict[str, LLMAI]:
+    def all(self) -> Dict[str, LLMAI]:
+        """全モデルの shallow copy を返す。"""
         return dict(self._models)
 
-    def all_configs(self) -> Dict[str, Dict[str, Any]]:
-        return {
-            name: {
-                "family": cfg.family,
-                "modes": list(cfg.modes),
-                "enabled": cfg.enabled,
-                "extra": dict(cfg.extra),
+    # ---- メタ情報（デバッグ用）----------------------------------------
+    def to_props(self) -> Dict[str, Dict[str, Any]]:
+        """
+        各モデルのメタ情報を dict で返す。
+        Streamlit 側での表示・デバッグ用。
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        for name, ai in self._models.items():
+            result[name] = {
+                "family": ai.family,
+                "modes": list(ai.modes or []),
+                "enabled": bool(ai.enabled),
+                "priority": float(getattr(ai, "priority", 1.0)),
             }
-            for name, cfg in self._configs.items()
-        }
-
-
-# ============================================================
-# デフォルト LLMAIManager ファクトリ
-# ============================================================
-
-def create_default_llm_ai_manager() -> LLMAIManager:
-    """
-    デフォルトの LLM 構成を持つ LLMAIManager を生成して返す。
-
-    - gpt51:   すべての judge_mode に参加
-    - grok:    すべての judge_mode に参加
-    - gemini:  すべての judge_mode に参加
-    - hermes:  erotic モードのときのみ参加
-    - hermes_new: デフォルトでは無効（テスト時に有効化想定）
-    - gpt4o:   デフォルトでは無効（将来用）
-    """
-    from actors.llm_adapters.gpt51_ai import GPT51AI
-    from actors.llm_adapters.grok_ai import GrokAI
-    from actors.llm_adapters.gemini_ai import GeminiAI
-    from actors.llm_adapters.hermes_old_ai import HermesOldAI
-    from actors.llm_adapters.hermes_new_ai import HermesNewAI
-    from actors.llm_adapters.gpt4o_ai import GPT4oAI
-
-    mgr = LLMAIManager()
-
-    # GPT-5.1 … 全モード参加
-    mgr.register(GPT51AI())
-
-    # Grok … 全モード参加
-    mgr.register(GrokAI())
-
-    # Gemini … 全モード参加
-    mgr.register(GeminiAI())
-
-    # Hermes 旧 … erotic のときだけ有効
-    mgr.register(HermesOldAI())
-
-    # Hermes 新 … デフォルトでは無効（テスト時にクラス側で enabled を切り替え）
-    mgr.register(HermesNewAI())
-
-    # GPT-4o … 将来用。現在は enabled=False
-    mgr.register(GPT4oAI())
-
-    return mgr
+        return result
