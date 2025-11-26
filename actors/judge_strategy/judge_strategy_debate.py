@@ -1,4 +1,4 @@
-# actors/judge_strategy_debate.py
+# actors/judge_strategy/judge_strategy_debate.py
 from __future__ import annotations
 
 from typing import Dict, Any, Tuple
