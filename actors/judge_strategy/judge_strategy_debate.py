@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, Any, Tuple
 
-from actors.judge_types import (
+from actors.judge_strategy.judge_types import (
     BaseJudgeStrategy,
     JudgeCandidate,
     JudgeContext,
