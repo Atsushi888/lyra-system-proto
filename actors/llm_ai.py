@@ -126,6 +126,6 @@ class LLMAIRegistry:
         reg.register(GPT51AI())
         reg.register(GrokAI())
         reg.register(GeminiAI())
-        reg.register(HermesOldAI())
-        reg.register(HermesNewAI())
+        # reg.register(HermesOldAI())
+        # reg.register(HermesNewAI())
         return reg
