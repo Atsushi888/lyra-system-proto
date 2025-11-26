@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from actors.judge_strategy.judge_types import (
+from actors.emotion_modes.judge_types import (
     BaseJudgeStrategy,
     JudgeCandidate,
     JudgeContext,
 )
-from actors.judge_strategy.judge_strategy_normal import NormalJudgeStrategy
-from actors.judge_strategy.judge_strategy_erotic import EroticJudgeStrategy
-from actors.judge_strategy.judge_strategy_debate import DebateJudgeStrategy
+from actors.emotion_modes.judge_strategy_normal import NormalJudgeStrategy
+from actors.emotion_modes.judge_strategy_erotic import EroticJudgeStrategy
+from actors.emotion_modes.judge_strategy_debate import DebateJudgeStrategy
 
 
 class JudgeAI3:
