@@ -5,6 +5,13 @@ from typing import Optional
 
 from .base_selector import BaseModeSelector
 
+from typing import Dict, Any, Tuple
+
+from actors.emotion_modes.judge_types import (
+    BaseJudgeStrategy,
+    JudgeCandidate,
+    JudgeContext,
+)
 
 class DebateModeSelector(BaseModeSelector):
     """
