@@ -8,9 +8,9 @@ from actors.emotion_modes.judge_types import (
     JudgeCandidate,
     JudgeContext,
 )
-from actors.emotion_modes.judge_strategy_normal import NormalJudgeStrategy
-from actors.emotion_modes.judge_strategy_erotic import EroticJudgeStrategy
-from actors.emotion_modes.judge_strategy_debate import DebateJudgeStrategy
+from actors.emotion_modes.normal_selector import NormalModeSelector
+from actors.emotion_modes.erotic_selector import EroticModeSelector
+from actors.emotion_modes.debate_selector import DebateModeSelector
 
 
 class JudgeAI3:
@@ -23,9 +23,9 @@ class JudgeAI3:
 
     def __init__(self, mode: str = "normal") -> None:
         self._strategies: Dict[str, BaseJudgeStrategy] = {
-            "normal": NormalJudgeStrategy(),
-            "erotic": EroticJudgeStrategy(),
-            "debate": DebateJudgeStrategy(),
+            "normal": NormalModeSelector(),
+            "erotic": EroticModeSelector(),
+            "debate": DebateModeSelector(),
         }
         self.mode = "normal"
         self.set_mode(mode)
