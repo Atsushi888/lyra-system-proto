@@ -1,4 +1,4 @@
-# actors/judge_strategy_erotic.py
+# actors/judge_strategy/judge_strategy_erotic.py
 from __future__ import annotations
 
 from typing import Dict, Any, Tuple
