@@ -1,7 +1,7 @@
-# council/council_manager.py
+# council_manager.py
 
 from __future__ import annotations
-from typing import List, Dict, Any
+from typing import Optional, List, Dict, Any
 
 import streamlit as st
 
@@ -39,7 +39,7 @@ class CouncilManager:
         # いまはフローリア AI だけ
         self.actors: Dict[str, Actor] = {
             "floria": Actor("フローリア", Persona())
-            # session_state 共有したければ:
+            # もし session_state 共有にしたいなら:
             # "floria": get_or_create_council_actor()
         }
 
@@ -48,8 +48,6 @@ class CouncilManager:
             "mode": "ongoing",
             "participants": ["player", "floria"],
             "last_speaker": None,
-            # ★ 直近の「プレイヤー発言の生テキスト」
-            "last_player_text": "",
         }
 
     # ===== 内部ヘルパ =====
@@ -65,11 +63,6 @@ class CouncilManager:
         self.conversation_log.clear()
         self.state["mode"] = "ongoing"
         self.state["last_speaker"] = None
-        self.state["last_player_text"] = ""
-
-        # 待ち状態もクリア
-        st.session_state["council_sending"] = False
-        st.session_state["council_pending_text"] = ""
 
     def get_log(self) -> List[Dict[str, str]]:
         """会談ログのコピーを返す（表示用）。"""
@@ -80,7 +73,9 @@ class CouncilManager:
         サイドバー表示用のステータス。
         round は「これからプレイヤーが行う発言の番号」として計算する。
         """
+        # すでに終わった発言数 + 1 = 次の自分の発言番号
         round_ = len(self.conversation_log) + 1
+
         return {
             "round": round_,
             "speaker": "player",  # いまは常にプレイヤーのターン開始とみなす
@@ -97,18 +92,8 @@ class CouncilManager:
         - 返事もログに追加
         を行う。
         """
-        cleaned = (user_text or "").strip()
-        if not cleaned:
-            return ""
-
-        # ★ 二重ガード：直前プレイヤー発言と同じなら何もしない
-        last_player = (self.state.get("last_player_text") or "").strip()
-        if cleaned == last_player:
-            return ""
-
         # プレイヤー発言
-        self._append_log("player", cleaned)
-        self.state["last_player_text"] = cleaned  # ★ 最後のプレイヤー発言を記録
+        self._append_log("player", user_text)
 
         reply = ""
         actor = self.actors.get("floria")
@@ -118,34 +103,15 @@ class CouncilManager:
 
         return reply
 
-    # ===== 画面描画 =====
+    # ===== 画面描画（旧 CouncilView.render 相当） =====
     def render(self) -> None:
-        # --- session_state 初期化 ---
+        # --- 二度押し防止フラグ初期化 ---
         if "council_sending" not in st.session_state:
-            st.session_state["council_sending"] = False
-        if "council_pending_text" not in st.session_state:
-            st.session_state["council_pending_text"] = ""
-
-        sending: bool = bool(st.session_state["council_sending"])
-        pending_text: str = st.session_state.get("council_pending_text", "")
-
-        # === 1. 「AI思考中モード」：この run では送信 UI を一切出さない ===
-        if sending:
-            st.markdown("## 🗣️ 会談システム（Council Prototype）")
-
-            if pending_text:
-                with st.spinner("フローリアは少し考えています…"):
-                    self.proceed(pending_text)
-
-            # 待ち状態クリア
-            st.session_state["council_pending_text"] = ""
+            # False: 待機中 / True: 送信処理中
             st.session_state["council_sending"] = False
 
-            # フローリアの返答がログに乗った状態で、通常画面に戻る
-            st.rerun()
-            return
+        sending: bool = st.session_state["council_sending"]
 
-        # === 2. 通常描画モード ===
         log = self.get_log()
         status = self.get_status()
 
@@ -176,6 +142,7 @@ class CouncilManager:
                     name = role or "？"
 
                 st.markdown(f"**[{idx}] {name}**")
+                # <br> を有効にするため unsafe_allow_html=True
                 st.markdown(text, unsafe_allow_html=True)
                 st.markdown("---")
 
@@ -194,54 +161,43 @@ class CouncilManager:
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
 
-        # ラウンドごとに key を変えることで、
-        # 送信後は別 key になり、入力欄は空の新しいボックスになる
+        # ★ ラウンドごとに key を変えることで、送信後に自動で空になるようにする
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
 
-        # 入力ウィジェット
-        st.text_area(
+        user_text = st.text_area(
             "あなたの発言：",
             key=input_key,
             placeholder="ここにフローリアへの発言を書いてください。",
         )
 
-        # 現在のテキストを state から取得
-        raw_text = (st.session_state.get(input_key) or "")
-        stripped = raw_text.strip()
-
-        # ★ 直前プレイヤー発言との比較
-        last_player = (self.state.get("last_player_text") or "").strip()
-        is_dup = bool(stripped) and (stripped == last_player)
-
-        # 空白でない かつ 直前発言と違うときだけ送信可能
-        can_send = bool(stripped) and not is_dup
-
-        # 送信ボタンのコールバック
-        def on_send() -> None:
-            text = (st.session_state.get(input_key) or "").strip()
-            if not text:
-                return
-
-            last_p = (self.state.get("last_player_text") or "").strip()
-            if text == last_p:
-                # ★ 同一内容なら完全無視
-                return
-
-            # 発言をペンディングに積む
-            st.session_state["council_pending_text"] = text
-
-            # 入力ボックスを即座にクリア
-            st.session_state[input_key] = ""
-
-            # 次の run を「思考モード」にする
-            st.session_state["council_sending"] = True
-
         send_col, _ = st.columns([1, 3])
         with send_col:
-            st.button(
+            # sending=True の間はボタンを無効化して連打を防止
+            send_clicked = st.button(
                 "送信",
                 key="council_send",
-                disabled=not can_send,  # ★ 前回と同じ or 空欄なら押せない
-                on_click=on_send,
+                disabled=sending,
             )
+
+            if send_clicked:
+                cleaned = (user_text or "").strip()
+                if not cleaned:
+                    st.warning("発言を入力してください。")
+                else:
+                    # 二重ガード：理論上 disabled なので入らないはずだが保険
+                    if st.session_state["council_sending"]:
+                        st.info("いま処理中です。少し待ってから再度お試しください。")
+                    else:
+                        # ★ 送信処理中フラグを立てる
+                        st.session_state["council_sending"] = True
+
+                        # フローリア思考中スピナー
+                        with st.spinner("フローリアは少し考えています…"):
+                            self.proceed(cleaned)
+
+                        # 処理完了 → フラグを戻す
+                        st.session_state["council_sending"] = False
+
+                        # 入力欄は、ラウンドが進んで key が変わることで自動的に空になる
+                        st.rerun()
