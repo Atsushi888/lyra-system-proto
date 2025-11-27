@@ -39,7 +39,7 @@ class CouncilManager:
         # いまはフローリア AI だけ
         self.actors: Dict[str, Actor] = {
             "floria": Actor("フローリア", Persona())
-            # もし session_state 共有にしたいなら:
+            # session_state 共有したければ:
             # "floria": get_or_create_council_actor()
         }
 
@@ -64,7 +64,7 @@ class CouncilManager:
         self.state["mode"] = "ongoing"
         self.state["last_speaker"] = None
 
-        # ついでに待ち状態も掃除
+        # 待ち状態も掃除
         st.session_state["council_sending"] = False
         st.session_state["council_pending_text"] = ""
 
@@ -115,10 +115,11 @@ class CouncilManager:
         sending: bool = bool(st.session_state["council_sending"])
         pending_text: str = st.session_state.get("council_pending_text", "")
 
-        # --- もし「送信待ちのテキスト」があれば、まずそれを処理する ---
+        # --- 「AI思考中モード」：この run はスピナー＋処理だけ ---
         if sending and pending_text:
-            # この run では UI はほとんど描画せず、
-            # スピナー＋処理 → 終わったらもう一度 rerun して通常画面に戻る。
+            # 見た目を保つためタイトルだけは出しておく（お好みで削ってOK）
+            st.markdown("## 🗣️ 会談システム（Council Prototype）")
+
             with st.spinner("フローリアは少し考えています…"):
                 self.proceed(pending_text)
 
@@ -178,35 +179,30 @@ class CouncilManager:
 
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
-    
+
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
-    
+
         user_text = st.text_area(
             "あなたの発言：",
             key=input_key,
             placeholder="ここにフローリアへの発言を書いてください。",
         )
-    
+
         send_col, _ = st.columns([1, 3])
         with send_col:
             send_clicked = st.button(
                 "送信",
                 key="council_send",
-                disabled=False,  # thinking 中はこの run には来ない想定
             )
-    
+
             if send_clicked:
-                # まず現在のテキストを取得
                 cleaned = (user_text or "").strip()
-    
-                # ★ 送信ボタンが押された瞬間に、入力ボックスを空にする
-                st.session_state[input_key] = ""
-    
-                # 空送信 → 何も表示せず完全に無視
+
+                # ★ 空送信 → 何も表示せず完全に無視
                 if not cleaned:
                     return
-    
+
                 # 待ちテキストとしてキューに積んで、思考 run に移行
                 st.session_state["council_pending_text"] = cleaned
                 st.session_state["council_sending"] = True
