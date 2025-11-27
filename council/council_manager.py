@@ -189,19 +189,22 @@ class CouncilManager:
             placeholder="ここにフローリアへの発言を書いてください。",
         )
 
+        # 生テキストと「送信可能かどうか」を判定
+        raw_text = user_text or ""
+        can_send = bool(raw_text.strip())  # ← 空白のみなら False
+
         send_col, _ = st.columns([1, 3])
         with send_col:
+            # ★ ボックスが空白のときは disabled=True で押せない
             send_clicked = st.button(
                 "送信",
                 key="council_send",
+                disabled=not can_send,
             )
 
             if send_clicked:
-                cleaned = (user_text or "").strip()
-
-                # ★ 空送信 → 何も表示せず完全に無視
-                if not cleaned:
-                    return
+                # ここに来るときは必ず can_send == True なので、空文字ではない
+                cleaned = raw_text.strip()
 
                 # 待ちテキストとしてキューに積んで、思考 run に移行
                 st.session_state["council_pending_text"] = cleaned
