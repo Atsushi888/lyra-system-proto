@@ -14,6 +14,7 @@ from views.private_view import PrivateView
 from views.council_view import CouncilView
 from views.llm_manager_view import create_llm_manager_view
 from views.answertalker_view import create_answertalker_view
+from views.emotion_control_view import create_emotion_control_view
 
 
 class View(Protocol):
@@ -33,6 +34,7 @@ class ModeSwitcher:
         "PRIVATE":       "⚙️ （※非公開※）",
         "COUNCIL":       "🗣 会談システム（β）",
         "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",
+        "EMOTION":       "💓 感情オーバーライド",
     }
 
     def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
@@ -40,7 +42,6 @@ class ModeSwitcher:
         self.session_key = session_key
 
         # 内蔵ルーティング
-        # view には「インスタンス」か「ビューを返す関数(callable)」のどちらかを入れてよい。
         self.routes: Dict[str, Dict[str, Any]] = {
             "PLAY": {
                 "label": self.LABELS["PLAY"],
@@ -49,7 +50,7 @@ class ModeSwitcher:
             },
             "USER": {
                 "label": self.LABELS["USER"],
-                "view": create_llm_manager_view,  # ★ LLM 設定ビュー（ファクトリ）
+                "view": create_llm_manager_view,  # ファクトリ
                 "min_role": Role.USER,
             },
             "BACKSTAGE": {
@@ -72,8 +73,14 @@ class ModeSwitcher:
                 "view": create_answertalker_view,   # AnswerTalker 用ファクトリ
                 "min_role": Role.ADMIN,
             },
+            "EMOTION": {
+                "label": self.LABELS["EMOTION"],
+                "view": create_emotion_control_view,  # ← 追加された感情パネル
+                "min_role": Role.ADMIN,              # USER でも良い。好みで
+            },
         }
 
+        # セッション初期化
         if self.session_key not in st.session_state:
             st.session_state[self.session_key] = self.default_key
 
@@ -90,6 +97,7 @@ class ModeSwitcher:
     def render(self, user_role: Role) -> None:
         st.sidebar.markdown("## 画面切替")
 
+        # 現在のロールでアクセス可能な画面一覧
         visible_keys = [
             k for k, cfg in self.routes.items()
             if user_role >= cfg.get("min_role", Role.USER)
@@ -100,6 +108,7 @@ class ModeSwitcher:
             cur = visible_keys[0]
             st.session_state[self.session_key] = cur
 
+        # ボタン並び
         for key in visible_keys:
             label = self.routes[key]["label"]
             disabled = (key == cur)
@@ -117,9 +126,9 @@ class ModeSwitcher:
 
         st.subheader(self.routes[cur]["label"])
 
+        # view は「インスタンス」か「ビュー生成関数」のどちらでもOK
         view_or_factory: Any = self.routes[cur]["view"]
 
-        # インスタンス or ファクトリ関数の両対応
         if callable(view_or_factory):
             view: View = view_or_factory()
         else:
