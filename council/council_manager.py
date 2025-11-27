@@ -64,6 +64,10 @@ class CouncilManager:
         self.state["mode"] = "ongoing"
         self.state["last_speaker"] = None
 
+        # ついでに待ち状態も掃除
+        st.session_state["council_sending"] = False
+        st.session_state["council_pending_text"] = ""
+
     def get_log(self) -> List[Dict[str, str]]:
         """会談ログのコピーを返す（表示用）。"""
         return list(self.conversation_log)
@@ -73,9 +77,7 @@ class CouncilManager:
         サイドバー表示用のステータス。
         round は「これからプレイヤーが行う発言の番号」として計算する。
         """
-        # すでに終わった発言数 + 1 = 次の自分の発言番号
         round_ = len(self.conversation_log) + 1
-
         return {
             "round": round_,
             "speaker": "player",  # いまは常にプレイヤーのターン開始とみなす
@@ -92,7 +94,6 @@ class CouncilManager:
         - 返事もログに追加
         を行う。
         """
-        # プレイヤー発言
         self._append_log("player", user_text)
 
         reply = ""
@@ -105,13 +106,31 @@ class CouncilManager:
 
     # ===== 画面描画 =====
     def render(self) -> None:
-        # --- 二度押し防止フラグ初期化 ---
+        # --- session_state 初期化 ---
         if "council_sending" not in st.session_state:
-            # False: 待機中 / True: 送信処理中
             st.session_state["council_sending"] = False
+        if "council_pending_text" not in st.session_state:
+            st.session_state["council_pending_text"] = ""
 
         sending: bool = bool(st.session_state["council_sending"])
+        pending_text: str = st.session_state.get("council_pending_text", "")
 
+        # --- もし「送信待ちのテキスト」があれば、まずそれを処理する ---
+        if sending and pending_text:
+            # この run では UI はほとんど描画せず、
+            # スピナー＋処理 → 終わったらもう一度 rerun して通常画面に戻る。
+            with st.spinner("フローリアは少し考えています…"):
+                self.proceed(pending_text)
+
+            # 待ち状態クリア
+            st.session_state["council_pending_text"] = ""
+            st.session_state["council_sending"] = False
+
+            # 応答をログに反映した状態で再描画
+            st.rerun()
+            return
+
+        # ======= ここから通常描画 =======
         log = self.get_log()
         status = self.get_status()
 
@@ -142,7 +161,6 @@ class CouncilManager:
                     name = role or "？"
 
                 st.markdown(f"**[{idx}] {name}**")
-                # <br> を有効にするため unsafe_allow_html=True
                 st.markdown(text, unsafe_allow_html=True)
                 st.markdown("---")
 
@@ -161,7 +179,6 @@ class CouncilManager:
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
 
-        # ラウンドごとに key を変えることで、送信後に自動で空になるようにする
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
 
@@ -173,29 +190,21 @@ class CouncilManager:
 
         send_col, _ = st.columns([1, 3])
         with send_col:
-            # 回答待ち中はボタン完全無効
             send_clicked = st.button(
                 "送信",
                 key="council_send",
-                disabled=sending,
+                # 「AI思考中」はこの通常描画には来ないので、ここでは常に False でOK
+                disabled=False,
             )
 
-            # 送信ボタン押下処理
-            if send_clicked and not sending:
+            if send_clicked:
                 cleaned = (user_text or "").strip()
 
-                # ★ 空送信の場合：何も表示せず何もしない
+                # ★ 空送信 → 何も表示せず完全に無視
                 if not cleaned:
                     return
 
-                # ★ ここから AI 応答待ち状態
+                # 待ちテキストとしてキューに積んで、思考 run に移行
+                st.session_state["council_pending_text"] = cleaned
                 st.session_state["council_sending"] = True
-
-                with st.spinner("フローリアは少し考えています…"):
-                    self.proceed(cleaned)
-
-                # 応答完了 → 待機状態に戻す
-                st.session_state["council_sending"] = False
-
-                # 入力欄は、ラウンドが進んで key が変わることで自動的に空になる
                 st.rerun()
