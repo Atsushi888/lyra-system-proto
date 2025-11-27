@@ -138,12 +138,7 @@ class BaseLLMAdapter:
 # ============================================================
 # OpenAI 系 Adapters (GPT-4o / GPT-5.1)
 # ============================================================
-
 class OpenAIChatAdapter(BaseLLMAdapter):
-    """
-    OpenAI Chat Completions 用の共通アダプタ。
-    """
-
     def __init__(
         self,
         name: str,
@@ -163,11 +158,17 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         **kwargs: Any,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
         if self._client is None:
-            raise RuntimeError(
-                f"{self.name}: OpenAI API キーが設定されていません。"
-            )
+            raise RuntimeError(f"{self.name}: OpenAI API キーが設定されていません。")
 
-        # 呼び出し側が max_* を指定していない場合、TARGET_TOKENS をデフォルトとして使用
+        # Lyra 内部用キーワードは削除
+        for k in ("mode", "judge_mode"):
+            kwargs.pop(k, None)
+
+        # gpt-5.1 系だけは推論トークン抑えめにしておく
+        if self.name == "gpt51" and "reasoning" not in kwargs:
+            kwargs["reasoning"] = {"effort": "low"}
+
+        # デフォルト max_tokens
         if (
             self.TARGET_TOKENS is not None
             and "max_tokens" not in kwargs
@@ -177,13 +178,53 @@ class OpenAIChatAdapter(BaseLLMAdapter):
 
         _normalize_max_tokens(kwargs)
 
-        completion = self._client.chat.completions.create(
-            model=self.model_id,
-            messages=messages,
-            **kwargs,
-        )
-        return _split_text_and_usage_from_openai_completion(completion)
+        last_exc: Optional[Exception] = None
 
+        def _bump_max_tokens() -> None:
+            # length 打ち切り時に少しずつ増やす（上限 2048 程度）
+            inc = 160
+            if "max_completion_tokens" in kwargs:
+                cur = int(kwargs["max_completion_tokens"])
+                kwargs["max_completion_tokens"] = min(cur + inc, 2048)
+            elif "max_tokens" in kwargs:
+                cur = int(kwargs["max_tokens"])
+                kwargs["max_tokens"] = min(cur + inc, 2048)
+            else:
+                kwargs["max_completion_tokens"] = 512
+
+        for attempt in range(3):  # 最大 2 回リトライ（合計 3 回）
+            try:
+                completion = self._client.chat.completions.create(
+                    model=self.model_id,
+                    messages=messages,
+                    **kwargs,
+                )
+                text, usage = _split_text_and_usage_from_openai_completion(completion)
+
+                choices = getattr(completion, "choices", None) or []
+                finish_reason = (
+                    getattr(choices[0], "finish_reason", "") if choices else ""
+                )
+
+                # ちゃんとテキストが取れていればそれで終了
+                if text.strip():
+                    return text, usage
+
+                # gpt-5.1 特有：「reasoning だけで打ち切り」パターンを救済
+                if finish_reason == "length" and attempt < 2:
+                    _bump_max_tokens()
+                    continue  # もう一度だけトライ
+
+                # それ以外の「空文字」は諦めてそのまま返す
+                return text, usage
+
+            except Exception as e:
+                last_exc = e
+                logger.exception(
+                    "%s: OpenAI call failed (attempt=%s)", self.name, attempt + 1
+                )
+
+        raise RuntimeError(f"{self.name}: OpenAI call failed after retry: {last_exc}")
 
 class GPT4oAdapter(OpenAIChatAdapter):
     """
@@ -401,6 +442,10 @@ class GeminiAdapter(BaseLLMAdapter):
         if not self._api_key:
             raise RuntimeError("GEMINI_API_KEY が設定されていません。")
 
+        # OpenAI / 内部用のパラメータは全部捨てる
+        for k in ("mode", "judge_mode", "max_tokens", "max_completion_tokens"):
+            kwargs.pop(k, None)
+
         params: Dict[str, Any] = {
             "contents": self._to_gemini_contents(messages),
         }
@@ -432,5 +477,4 @@ class GeminiAdapter(BaseLLMAdapter):
         except Exception:
             logger.exception("Gemini response parse error")
 
-        # usage 情報は今は無し
         return text, None
