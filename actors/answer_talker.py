@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
-from actors.models_ai import ModelsAI       # ここは現行のまま（ModelsAI2 じゃない前提）
+from actors.models_ai2 import ModelsAI2
 from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
@@ -14,36 +14,21 @@ from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
 
-# ======================================================
-# 開発者用：感情オーバーライド設定
-# ======================================================
-# ここをいじれば、EmotionAI.analyze を無視して
-# 手動で指定した感情値をそのまま採用できる。
-DEV_EMOTION_OVERRIDE: Dict[str, Any] = {
-    "enabled": False,      # ← True にすると手動値が有効になる
-
-    # ここより下を好きに調整
-    "mode": "normal",      # "normal" / "erotic" / "debate" など
-
-    "affection": 0.8,      # 好意
-    "arousal": 0.2,        # 性的な高ぶり
-    "tension": 0.1,        # 緊張
-    "anger": 0.0,
-    "sadness": 0.0,
-    "excitement": 0.6,     # ワクワク
-}
-
-
 class AnswerTalker:
     """
     AI回答パイプラインの司令塔クラス。
 
-    - ModelsAI:   複数モデルから回答収集（gpt4o / gpt51 / hermes / grok / gemini など）
+    - ModelsAI2:  複数モデルから回答収集（gpt51 / grok / gemini / hermes / ...）
     - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
     - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
     - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
                   ＋ 長期感情（LongTermEmotion）の更新と judge_mode 決定
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
+
+    仕様:
+      Persona と conversation_log から組み立てた messages を入力として、
+      Models → Judge → Composer → Emotion(short) → Memory → Emotion(long)
+      を回し、最終的な返答テキストを返す。
     """
 
     def __init__(
@@ -100,8 +85,8 @@ class AnswerTalker:
         self.llm_meta: Dict[str, Any] = llm_meta
         st.session_state["llm_meta"] = self.llm_meta
 
-        # Multi-LLM 集計
-        self.models_ai = ModelsAI(self.llm_manager)
+        # Multi-LLM 集計（新バージョン）
+        self.models_ai = ModelsAI2(llm_manager=self.llm_manager)
 
         # EmotionAI（感情解析＋長期感情管理）
         self.emotion_ai = EmotionAI(
@@ -127,16 +112,70 @@ class AnswerTalker:
         )
 
     # ---------------------------------------
+    # emotion_override 構築ヘルパ
+    # ---------------------------------------
+    def _build_emotion_override_for_models(self) -> Optional[Dict[str, Any]]:
+        """
+        ModelsAI2.collect() に渡す emotion_override を構築する。
+
+        emotion_override_mode:
+          - "auto"        : EmotionAI の短期感情をそのまま渡す
+          - "manual_full" : 手動パネルの値で完全上書き（EmotionAI は無視）
+        """
+
+        mode = st.session_state.get("emotion_override_mode", "auto")
+        manual = st.session_state.get("emotion_override_manual")
+
+        # ---------------------------
+        # 1) 手動完全上書きモード
+        # ---------------------------
+        if mode == "manual_full":
+            if isinstance(manual, dict):
+                return {
+                    "mode": manual.get("mode", "normal"),
+                    "affection": float(manual.get("affection", 0.0)),
+                    "arousal": float(manual.get("arousal", 0.0)),
+                    "tension": float(manual.get("tension", 0.0)),
+                    "anger": float(manual.get("anger", 0.0)),
+                    "sadness": float(manual.get("sadness", 0.0)),
+                    "excitement": float(manual.get("excitement", 0.0)),
+                }
+            return None
+
+        # ---------------------------
+        # 2) 通常（auto）モード
+        # ---------------------------
+        if not hasattr(self, "emotion_ai") or self.emotion_ai is None:
+            return None
+
+        short: Optional[EmotionResult] = getattr(
+            self.emotion_ai, "last_short_result", None
+        )
+        if short is None:
+            return None
+
+        return {
+            "mode": short.mode or "normal",
+            "affection": float(short.affection),
+            "arousal": float(short.arousal),
+            "tension": float(short.tension),
+            "anger": float(short.anger),
+            "sadness": float(short.sadness),
+            "excitement": float(short.excitement),
+        }
+
+    # ---------------------------------------
     # ModelsAI 呼び出し
     # ---------------------------------------
     def run_models(
         self,
         messages: List[Dict[str, str]],
         mode_current: str = "normal",
+        emotion_override: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Persona.build_messages() で組み立てた messages を受け取り、
-        ModelsAI.collect() を実行して llm_meta["models"] を更新する。
+        ModelsAI2.collect() を実行して llm_meta["models"] を更新する。
 
         mode_current:
             "normal" / "erotic" / "debate" など、現在の Judge モード。
@@ -144,7 +183,11 @@ class AnswerTalker:
         if not messages:
             return
 
-        results = self.models_ai.collect(messages, mode=mode_current)
+        results = self.models_ai.collect(
+            messages,
+            mode_current=mode_current,
+            emotion_override=emotion_override,
+        )
         self.llm_meta["models"] = results
         st.session_state["llm_meta"] = self.llm_meta
 
@@ -187,9 +230,18 @@ class AnswerTalker:
             self.llm_meta["memory_context"] = ""
 
         # ======================================================
+        # 1.5) emotion_override を構築（auto / manual_full）
+        # ======================================================
+        emotion_override = self._build_emotion_override_for_models()
+
+        # ======================================================
         # 2) ModelsAI.collect
         # ======================================================
-        self.run_models(messages, mode_current=mode_current)
+        self.run_models(
+            messages,
+            mode_current=mode_current,
+            emotion_override=emotion_override,
+        )
 
         # ======================================================
         # 3) JudgeAI3
@@ -224,38 +276,17 @@ class AnswerTalker:
 
         # ======================================================
         # 5) EmotionAI.analyze + decide_judge_mode
-        #     （★開発者用オーバーライド付き★）
         # ======================================================
         try:
-            if DEV_EMOTION_OVERRIDE.get("enabled"):
-                # ---------- 手動オーバーライド ----------
-                emo = DEV_EMOTION_OVERRIDE
-                emotion_res = EmotionResult(
-                    mode=str(emo.get("mode", "normal")),
-                    affection=float(emo.get("affection", 0.0)),
-                    arousal=float(emo.get("arousal", 0.0)),
-                    tension=float(emo.get("tension", 0.0)),
-                    anger=float(emo.get("anger", 0.0)),
-                    sadness=float(emo.get("sadness", 0.0)),
-                    excitement=float(emo.get("excitement", 0.0)),
-                    raw_text="[AnswerTalker manual override]",
-                )
-                self.llm_meta["emotion"] = emotion_res.to_dict()
+            emotion_res: EmotionResult = self.emotion_ai.analyze(
+                composer=composed,
+                memory_context=self.llm_meta.get("memory_context", ""),
+                user_text=user_text or "",
+            )
+            self.llm_meta["emotion"] = emotion_res.to_dict()
 
-                next_mode = emotion_res.mode or "normal"
-
-            else:
-                # ---------- 通常フロー（EmotionAI に任せる） ----------
-                emotion_res: EmotionResult = self.emotion_ai.analyze(
-                    composer=composed,
-                    memory_context=self.llm_meta.get("memory_context", ""),
-                    user_text=user_text or "",
-                )
-                self.llm_meta["emotion"] = emotion_res.to_dict()
-
-                next_mode = self.emotion_ai.decide_judge_mode(emotion_res)
-
-            # 次ターンのモードとして保存
+            # 次ターンの judge_mode_next を EmotionAI に委譲
+            next_mode = self.emotion_ai.decide_judge_mode(emotion_res)
             self.llm_meta["judge_mode_next"] = next_mode
             st.session_state["judge_mode"] = next_mode
 
