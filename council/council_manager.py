@@ -48,6 +48,8 @@ class CouncilManager:
             "mode": "ongoing",
             "participants": ["player", "floria"],
             "last_speaker": None,
+            # ★ 直近の「プレイヤー発言の生テキスト」
+            "last_player_text": "",
         }
 
     # ===== 内部ヘルパ =====
@@ -63,6 +65,7 @@ class CouncilManager:
         self.conversation_log.clear()
         self.state["mode"] = "ongoing"
         self.state["last_speaker"] = None
+        self.state["last_player_text"] = ""
 
         # 待ち状態もクリア
         st.session_state["council_sending"] = False
@@ -94,7 +97,18 @@ class CouncilManager:
         - 返事もログに追加
         を行う。
         """
-        self._append_log("player", user_text)
+        cleaned = (user_text or "").strip()
+        if not cleaned:
+            return ""
+
+        # ★ 二重ガード：直前プレイヤー発言と同じなら何もしない
+        last_player = (self.state.get("last_player_text") or "").strip()
+        if cleaned == last_player:
+            return ""
+
+        # プレイヤー発言
+        self._append_log("player", cleaned)
+        self.state["last_player_text"] = cleaned  # ★ 最後のプレイヤー発言を記録
 
         reply = ""
         actor = self.actors.get("floria")
@@ -194,22 +208,33 @@ class CouncilManager:
 
         # 現在のテキストを state から取得
         raw_text = (st.session_state.get(input_key) or "")
-        can_send = bool(raw_text.strip())  # ★ 空白のみなら送信不可
+        stripped = raw_text.strip()
+
+        # ★ 直前プレイヤー発言との比較
+        last_player = (self.state.get("last_player_text") or "").strip()
+        is_dup = bool(stripped) and (stripped == last_player)
+
+        # 空白でない かつ 直前発言と違うときだけ送信可能
+        can_send = bool(stripped) and not is_dup
 
         # 送信ボタンのコールバック
         def on_send() -> None:
             text = (st.session_state.get(input_key) or "").strip()
             if not text:
-                # 空送信は完全無視（メッセージも出さない）
                 return
 
-            # ★ 発言をペンディングに積む
+            last_p = (self.state.get("last_player_text") or "").strip()
+            if text == last_p:
+                # ★ 同一内容なら完全無視
+                return
+
+            # 発言をペンディングに積む
             st.session_state["council_pending_text"] = text
 
-            # ★ 入力ボックスを即座にクリア
+            # 入力ボックスを即座にクリア
             st.session_state[input_key] = ""
 
-            # ★ 次の run を「思考モード」にする
+            # 次の run を「思考モード」にする
             st.session_state["council_sending"] = True
 
         send_col, _ = st.columns([1, 3])
@@ -217,6 +242,6 @@ class CouncilManager:
             st.button(
                 "送信",
                 key="council_send",
-                disabled=not can_send,  # ★ 空欄なら押せない
+                disabled=not can_send,  # ★ 前回と同じ or 空欄なら押せない
                 on_click=on_send,
             )
