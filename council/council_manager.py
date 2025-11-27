@@ -119,7 +119,6 @@ class CouncilManager:
         if sending:
             st.markdown("## 🗣️ 会談システム（Council Prototype）")
 
-            # pending_text が入っていれば 1 回だけ処理
             if pending_text:
                 with st.spinner("フローリアは少し考えています…"):
                     self.proceed(pending_text)
@@ -186,27 +185,38 @@ class CouncilManager:
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
 
-        user_text = st.text_area(
+        # 入力ウィジェット
+        st.text_area(
             "あなたの発言：",
             key=input_key,
             placeholder="ここにフローリアへの発言を書いてください。",
         )
 
-        raw_text = user_text or ""
+        # 現在のテキストを state から取得
+        raw_text = (st.session_state.get(input_key) or "")
         can_send = bool(raw_text.strip())  # ★ 空白のみなら送信不可
+
+        # 送信ボタンのコールバック
+        def on_send() -> None:
+            text = (st.session_state.get(input_key) or "").strip()
+            if not text:
+                # 空送信は完全無視（メッセージも出さない）
+                return
+
+            # ★ 発言をペンディングに積む
+            st.session_state["council_pending_text"] = text
+
+            # ★ 入力ボックスを即座にクリア
+            st.session_state[input_key] = ""
+
+            # ★ 次の run を「思考モード」にする
+            st.session_state["council_sending"] = True
 
         send_col, _ = st.columns([1, 3])
         with send_col:
-            send_clicked = st.button(
+            st.button(
                 "送信",
                 key="council_send",
                 disabled=not can_send,  # ★ 空欄なら押せない
+                on_click=on_send,
             )
-
-            if send_clicked and can_send:
-                cleaned = raw_text.strip()
-
-                # ★ 次の run は「AI思考中モード」に入る
-                st.session_state["council_pending_text"] = cleaned
-                st.session_state["council_sending"] = True
-                st.rerun()
