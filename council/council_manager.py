@@ -1,3 +1,5 @@
+# council/council_manager.py
+
 from __future__ import annotations
 from typing import List, Dict, Any
 
@@ -62,6 +64,10 @@ class CouncilManager:
         self.state["mode"] = "ongoing"
         self.state["last_speaker"] = None
 
+        # 待ち状態もクリア
+        st.session_state["council_sending"] = False
+        st.session_state["council_pending_text"] = ""
+
     def get_log(self) -> List[Dict[str, str]]:
         """会談ログのコピーを返す（表示用）。"""
         return list(self.conversation_log)
@@ -88,7 +94,6 @@ class CouncilManager:
         - 返事もログに追加
         を行う。
         """
-        # プレイヤー発言
         self._append_log("player", user_text)
 
         reply = ""
@@ -101,6 +106,33 @@ class CouncilManager:
 
     # ===== 画面描画 =====
     def render(self) -> None:
+        # --- session_state 初期化 ---
+        if "council_sending" not in st.session_state:
+            st.session_state["council_sending"] = False
+        if "council_pending_text" not in st.session_state:
+            st.session_state["council_pending_text"] = ""
+
+        sending: bool = bool(st.session_state["council_sending"])
+        pending_text: str = st.session_state.get("council_pending_text", "")
+
+        # === 1. 「AI思考中モード」：この run では送信 UI を一切出さない ===
+        if sending:
+            st.markdown("## 🗣️ 会談システム（Council Prototype）")
+
+            # pending_text が入っていれば 1 回だけ処理
+            if pending_text:
+                with st.spinner("フローリアは少し考えています…"):
+                    self.proceed(pending_text)
+
+            # 待ち状態クリア
+            st.session_state["council_pending_text"] = ""
+            st.session_state["council_sending"] = False
+
+            # フローリアの返答がログに乗った状態で、通常画面に戻る
+            st.rerun()
+            return
+
+        # === 2. 通常描画モード ===
         log = self.get_log()
         status = self.get_status()
 
@@ -149,7 +181,8 @@ class CouncilManager:
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
 
-        # ラウンドごとに key を変えることで、送信後は別 key になり、入力欄は空になる
+        # ラウンドごとに key を変えることで、
+        # 送信後は別 key になり、入力欄は空の新しいボックスになる
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
 
@@ -173,10 +206,7 @@ class CouncilManager:
             if send_clicked and can_send:
                 cleaned = raw_text.strip()
 
-                # ★ この run の中で player → floria まで完結させる
-                with st.spinner("フローリアは少し考えています…"):
-                    self.proceed(cleaned)
-
-                # proceed でログが増えたので、次の run では round が進む
-                # → input_key も変わるので、入力欄は自動的に空の新しいボックスになる
+                # ★ 次の run は「AI思考中モード」に入る
+                st.session_state["council_pending_text"] = cleaned
+                st.session_state["council_sending"] = True
                 st.rerun()
