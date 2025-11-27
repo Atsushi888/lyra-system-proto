@@ -3,17 +3,16 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from actors.llm_ai import LLMAIRegistry
-from actors.emotion_modes.emotion_style_prompt import EmotionStyle
+from actors.llm_ai import LLMAIRegistry, LLMAI
 
 
 class ModelsAI2:
     """
     新マルチLLM集約クラス（LLMAI ベース）。
 
-    - AnswerTalker から messages / judge_mode / emotion_style を受け取る
+    - AnswerTalker から messages / judge_mode / emotion_override を受け取る
     - LLMAIRegistry に登録された AI 達を一巡させて結果を集約する
-    - 戻り値は llm_meta["models"] 相当の dict
+    - 戻り値は llm_meta["models"] 用の dict
     """
 
     def __init__(
@@ -33,23 +32,24 @@ class ModelsAI2:
         self,
         messages: List[Dict[str, str]],
         mode_current: str = "normal",
-        emotion_style: Optional[EmotionStyle] = None,
+        emotion_override: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        全登録 LLM を叩いて回答を集める。
+        全登録LLMを叩いて回答を集める。
 
         - 参加可否の判定は LLMAI.should_answer()
-        - emotion_style が指定されていれば、そのまま各 AI に渡す
+        - 文章量ヒントは llm_ai.py 側で設定した ai.max_tokens をそのまま渡す
+        - emotion_override があればそのまま ai.call(..., emotion_override=...) に渡す
+          （サブクラス側で pop して使う／無視する）
         """
         mode_key = (mode_current or "normal").lower()
         results: Dict[str, Any] = {}
 
-        # LLMAIRegistry.all() は List[LLMAI] を返す想定
         for ai in self.registry.all():
             name = ai.name
 
             # ==== 参加可否フィルタ ====
-            if not ai.should_answer(mode_key):
+            if (not ai.enabled) or (not ai.should_answer(mode_key)):
                 results[name] = {
                     "status": "disabled",
                     "text": "",
@@ -59,16 +59,21 @@ class ModelsAI2:
                 }
                 continue
 
-            # ==== 共通 kwargs を構築 ====
             call_kwargs: Dict[str, Any] = {
                 "mode": mode_key,
             }
 
-            # 感情スタイルをそのまま渡す（対応 AI だけが使う）
-            if emotion_style is not None:
-                call_kwargs["emotion_style"] = emotion_style
+            # max_tokens ヒント
+            if getattr(ai, "max_tokens", None) is not None:
+                try:
+                    call_kwargs["max_tokens"] = int(ai.max_tokens)
+                except Exception:
+                    pass
 
-            # ==== 実コール ====
+            # 感情オーバーライド（EmotionControl / EmotionAI）
+            if emotion_override is not None:
+                call_kwargs["emotion_override"] = emotion_override
+
             try:
                 text, usage = ai.call(messages, **call_kwargs)
                 results[name] = {
