@@ -178,32 +178,35 @@ class CouncilManager:
 
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
-
+    
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
-
+    
         user_text = st.text_area(
             "あなたの発言：",
             key=input_key,
             placeholder="ここにフローリアへの発言を書いてください。",
         )
-
+    
         send_col, _ = st.columns([1, 3])
         with send_col:
             send_clicked = st.button(
                 "送信",
                 key="council_send",
-                # 「AI思考中」はこの通常描画には来ないので、ここでは常に False でOK
-                disabled=False,
+                disabled=False,  # thinking 中はこの run には来ない想定
             )
-
+    
             if send_clicked:
+                # まず現在のテキストを取得
                 cleaned = (user_text or "").strip()
-
-                # ★ 空送信 → 何も表示せず完全に無視
+    
+                # ★ 送信ボタンが押された瞬間に、入力ボックスを空にする
+                st.session_state[input_key] = ""
+    
+                # 空送信 → 何も表示せず完全に無視
                 if not cleaned:
                     return
-
+    
                 # 待ちテキストとしてキューに積んで、思考 run に移行
                 st.session_state["council_pending_text"] = cleaned
                 st.session_state["council_sending"] = True
