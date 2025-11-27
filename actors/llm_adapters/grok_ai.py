@@ -4,52 +4,39 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from actors.llm_ai import LLMAI
-from llm.llm_adapter import GrokAdapter
-from actors.llm_adapters.emotion_style_prompt import (
-    inject_emotion_style_system_prompt,
-)
+from actors.emotion_modes.emotion_style_prompt import EmotionStyle
+from llm.llm_adapter import GrokAdapter  # 既存 adapter を再利用
 
 
 class GrokAI(LLMAI):
     """
     xAI Grok 用 LLMAI。
-    すべての judge_mode で参加させる。
+    EmotionStyle が渡された場合は、system メッセージとして先頭に付与する。
     """
 
-    def __init__(self, enabled: bool = True, max_tokens: Optional[int] = None) -> None:
+    def __init__(self) -> None:
         super().__init__(
             name="grok",
             family="grok-2",
             modes=["all"],
-            enabled=enabled,
+            enabled=True,
         )
         self._adapter = GrokAdapter()
-        self.max_tokens: Optional[int] = max_tokens
 
     def call(
         self,
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        # Emotion 用
-        emotion_style = kwargs.pop("emotion_style", None)
-        user_system_prompt = kwargs.pop("system_prompt", None)
+        # EmotionStyle（あれば system に反映）
+        emotion_style: Optional[EmotionStyle] = kwargs.pop("emotion_style", None)
 
-        payload = messages
+        payload: List[Dict[str, str]] = list(messages)
         if emotion_style is not None:
-            payload = inject_emotion_style_system_prompt(
-                messages=messages,
-                hint_source=emotion_style,
-                extra_system=user_system_prompt,
-            )
-        elif user_system_prompt:
-            payload = [{"role": "system", "content": user_system_prompt}] + messages
-
-        # 文章長ヒント
-        max_tokens = kwargs.pop("max_tokens", None)
-        if max_tokens is None and self.max_tokens is not None:
-            max_tokens = int(self.max_tokens)
-        if max_tokens is not None:
-            kwargs["max_tokens"] = int(max_tokens)
+            sys_msg = {
+                "role": "system",
+                "content": emotion_style.build_system_prompt(),
+            }
+            payload = [sys_msg] + payload
 
         return self._adapter.call(messages=payload, **kwargs)
