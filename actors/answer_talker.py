@@ -10,11 +10,9 @@ from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from actors.emotion_ai import EmotionAI, EmotionResult
+from actors.mixer_ai import MixerAI  # ★ 追加
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
-
-# ★ 追加：emotion_override 構築ヘルパを components 側からインポート
-from components.emotion_control import build_emotion_override_for_models
 
 
 class AnswerTalker:
@@ -27,6 +25,8 @@ class AnswerTalker:
     - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
                   ＋ 長期感情（LongTermEmotion）の更新と judge_mode 決定
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
+    - MixerAI:    EmotionAI / SceneEmotion / EmotionControl(UI) を統合し、
+                  ModelsAI2 に渡す emotion_override を構築する
 
     仕様:
       Persona と conversation_log から組み立てた messages を入力として、
@@ -97,6 +97,9 @@ class AnswerTalker:
             model_name="gpt51",
         )
 
+        # MixerAI（短期感情 / シーン / UI を統合）
+        self.mixer_ai = MixerAI(self.emotion_ai)
+
         # JudgeAI3（初期モードは llm_meta / session_state / emotion のいずれか）
         initial_mode = (
             st.session_state.get("judge_mode")
@@ -113,18 +116,6 @@ class AnswerTalker:
             persona_id=persona_id,
             model_name=memory_model,
         )
-
-    # ---------------------------------------
-    # emotion_override 構築ヘルパ
-    # ---------------------------------------
-    def _build_emotion_override_for_models(self) -> Optional[Dict[str, Any]]:
-        """
-        ModelsAI2.collect() に渡す emotion_override を構築する。
-
-        実際のロジックは components.emotion_control.build_emotion_override_for_models()
-        に委譲し、AnswerTalker 側は EmotionAI インスタンスを渡すだけにする。
-        """
-        return build_emotion_override_for_models(self.emotion_ai)
 
     # ---------------------------------------
     # ModelsAI 呼び出し
@@ -192,9 +183,23 @@ class AnswerTalker:
             self.llm_meta["memory_context"] = ""
 
         # ======================================================
-        # 1.5) emotion_override を構築（auto / manual_full）
+        # 1.5) MixerAI で emotion_override を構築
         # ======================================================
-        emotion_override = self._build_emotion_override_for_models()
+        emotion_override: Optional[Dict[str, Any]] = None
+        try:
+            if hasattr(self, "mixer_ai") and self.mixer_ai is not None:
+                # ★ 現時点では scene_emotion は未使用なので None 固定。
+                #    将来シーンシステムができたらここに渡す。
+                emotion_override = self.mixer_ai.build_for_models(
+                    scene_emotion=None,
+                )
+                # デバッグ／検証用に llm_meta にも保存しておく
+                self.llm_meta["emotion_override_for_models"] = emotion_override
+            else:
+                self.llm_meta["emotion_override_error"] = "MixerAI not initialized"
+        except Exception as e:
+            self.llm_meta["emotion_override_error"] = str(e)
+            emotion_override = None
 
         # ======================================================
         # 2) ModelsAI.collect
