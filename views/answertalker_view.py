@@ -1,3 +1,4 @@
+# views/answertalker_view.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Protocol
@@ -27,7 +28,6 @@ class AnswerTalkerView:
 
     def __init__(self) -> None:
         # Actor と AnswerTalker を初期化
-        # （必要なら将来ここに persona 選択 UI を付けられる）
         persona = Persona()
         self.actor = Actor("floria", persona)
         self.answer_talker = AnswerTalker(persona)
@@ -37,7 +37,7 @@ class AnswerTalkerView:
 
         st.info(
             "この画面では、Actor に紐づく AnswerTalker が保持している llm_meta の内容 "
-            "（models / judge / composer / memory）を参照できます。\n\n"
+            "（models / judge / composer / emotion / memory）を参照できます。\n\n"
             "※ この画面からは AnswerTalker.run_models() や MemoryAI.update_from_turn() などは実行しません。"
         )
 
@@ -66,10 +66,9 @@ class AnswerTalkerView:
                     if error:
                         st.error(f"error: {error}")
 
-                    # 実際のテキストも頭だけ確認できるように
                     if text:
                         st.markdown("**preview:**")
-                        st.code(text[:1000])  # 長すぎると困るので頭だけ表示
+                        st.code(text[:1000])
 
         # ---- judge ----
         st.subheader("JudgeAI3 の判定結果（llm_meta['judge']）")
@@ -95,11 +94,9 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
-            # ▼ 候補モデル＋スコア一覧
             raw_candidates = judge.get("candidates") or []
             with st.expander("候補モデル一覧（candidates / scores）", expanded=False):
                 if isinstance(raw_candidates, dict):
-                    # もし dict 形式: {model_name: {score, text, ...}}
                     for name, info in raw_candidates.items():
                         score = info.get("score", "-")
                         preview = (info.get("text") or "")[:800]
@@ -107,7 +104,6 @@ class AnswerTalkerView:
                         st.write(preview)
                         st.markdown("---")
                 elif isinstance(raw_candidates, list):
-                    # もし list 形式: [{"name":..., "score":..., "text":...}, ...]
                     for i, cand in enumerate(raw_candidates, start=1):
                         name = cand.get("name", f"cand-{i}")
                         score = cand.get("score", "-")
@@ -116,7 +112,6 @@ class AnswerTalkerView:
                         st.markdown(
                             f"### 候補 {i}: `{name}`  |  score = `{score}`  |  length = {length}"
                         )
-                        st.write(preview)
                         details = cand.get("details") or {}
                         if details:
                             with st.expander("details", expanded=False):
@@ -135,31 +130,15 @@ class AnswerTalkerView:
             st.write(f"- source_model: `{comp.get('source_model', '')}`")
             st.write(f"- mode: `{comp.get('mode', '')}`")
 
-            # dev_force_model が設定されている場合はここで見えるようにする
-            dev_force = llm_meta.get("dev_force_model")
+            base_src = comp.get("base_source_model")
+            if base_src:
+                st.write(f"- base_source_model: `{base_src}`")
+
+            dev_force = comp.get("dev_force_model")
             if dev_force:
                 st.write(f"- dev_force_model: `{dev_force}`")
 
-            # 追加されたデバッグ情報
-            base_source_model = comp.get("base_source_model", "")
-            base_text = (comp.get("base_text") or "").strip()
-            is_modified = bool(comp.get("is_modified", False))
-            refiner_model = comp.get("refiner_model")
-            refiner_used = comp.get("refiner_used", False)
-            refiner_status = comp.get("refiner_status", "skipped")
-            refiner_error = comp.get("refiner_error", "")
-
-            cols_comp = st.columns(3)
-            with cols_comp[0]:
-                st.write(f"base_source_model: `{base_source_model}`")
-                st.write(f"is_modified: `{is_modified}`")
-            with cols_comp[1]:
-                st.write(f"refiner_model: `{refiner_model}`")
-                st.write(f"refiner_used: `{refiner_used}`")
-            with cols_comp[2]:
-                st.write(f"refiner_status: `{refiner_status}`")
-                if refiner_error:
-                    st.write(f"refiner_error: `{refiner_error}`")
+            st.write(f"- is_modified: `{comp.get('is_modified', False)}`")
 
             summary = comp.get("summary")
             if summary:
@@ -171,9 +150,21 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
-            # 元テキスト（refine 前）
+            # Refiner 情報
+            with st.expander("Refiner 情報", expanded=False):
+                st.write(f"- refiner_model: `{comp.get('refiner_model', None)}`")
+                st.write(f"- refiner_used: `{comp.get('refiner_used', False)}`")
+                st.write(f"- refiner_status: `{comp.get('refiner_status', '')}`")
+                ref_err = comp.get("refiner_error")
+                if ref_err:
+                    st.error(f"refiner_error: {ref_err}")
+
+            # base_text / 最終テキスト比較
+            base_text = (comp.get("base_text") or "").strip()
+            final_text = (comp.get("text") or "").strip()
+
             if base_text:
-                with st.expander("元テキスト（base_text）", expanded=False):
+                with st.expander("Refiner 前のテキスト（base_text）", expanded=False):
                     st.text_area(
                         "composer_base_text",
                         value=base_text,
@@ -181,16 +172,26 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
-            # 最終テキスト
-            text = (comp.get("text") or "").strip()
-            if text:
+            if final_text:
                 with st.expander("最終返答テキスト（composer.text）", expanded=True):
                     st.text_area(
                         "composer_text",
-                        value=text,
+                        value=final_text,
                         height=260,
                         label_visibility="collapsed",
                     )
+
+        # ---- Composer 用スタイルヒント（persona 由来） ----
+        style_hint = llm_meta.get("composer_style_hint") or ""
+        if style_hint:
+            st.subheader("Composer 用スタイルヒント（persona 由来）")
+            with st.expander("composer_style_hint", expanded=False):
+                st.text_area(
+                    "composer_style_hint",
+                    value=style_hint,
+                    height=260,
+                    label_visibility="collapsed",
+                )
 
         # ---- Judge モード状態 ----
         st.subheader("Judge モード状態")
@@ -231,7 +232,6 @@ class AnswerTalkerView:
                 st.write(f"sadness:   {emo.get('sadness', 0.0):.2f}")
                 st.write(f"excitement:{emo.get('excitement', 0.0):.2f}")
 
-            # EmotionAI が実際に LLM に投げた生テキスト（デバッグ）
             with st.expander("raw_text（EmotionAI の LLM 出力）", expanded=False):
                 st.code(emo.get("raw_text", ""), language="json")
 
@@ -240,7 +240,6 @@ class AnswerTalkerView:
         memory_ctx = llm_meta.get("memory_context") or ""
         mem_update = llm_meta.get("memory_update") or {}
 
-        # AnswerTalker が抱えている MemoryAI インスタンスを取得
         memory_ai = getattr(self.answer_talker, "memory_ai", None)
 
         if memory_ai is None:
@@ -253,7 +252,6 @@ class AnswerTalkerView:
             st.write(f"- max_records: `{max_records}`")
             st.write(f"- storage_file: `{storage_file}`")
 
-            # メモリ一覧（MemoryAI.get_all_records）
             try:
                 records = memory_ai.get_all_records()
             except Exception as e:
@@ -285,7 +283,6 @@ class AnswerTalkerView:
                             st.write("\n**source_assistant:**")
                             st.text(r.source_assistant)
 
-            # ▼ 実ファイルの診断（JSON が本当に作られているか）
             st.markdown("---")
             st.markdown("### MemoryAI ファイル診断（JSON）")
 
@@ -327,8 +324,6 @@ class AnswerTalkerView:
         st.write("- memory_update（直近ターンの記憶更新結果）:")
         st.json(mem_update)
 
-
-# ===== ここが重要：ModeSwitcher から呼ぶファクトリ =====
 
 def create_answertalker_view() -> AnswerTalkerView:
     """
