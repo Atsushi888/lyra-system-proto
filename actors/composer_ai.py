@@ -8,14 +8,13 @@ from llm.llm_manager import LLMManager
 
 class ComposerAI:
     """
-    llm_meta["models"] と llm_meta["judge"] をもとに、
+    llm_meta["models"] / llm_meta["judge"] / llm_meta["style_hint"] などをもとに、
     「最終返答テキスト」を組み立てるクラス。
 
-    v0.4 方針:
-      - dev_force_model があればそれを最優先で採用
-      - なければ JudgeAI3 の chosen を優先し、ダメなら models からフォールバック
-      - 任意で refiner LLM（例: gpt51）にかけてフローリア口調で整形
-      - 仕上げ前後のテキスト両方を llm_meta['composer'] に残す
+    v0.3 方針:
+      - 原則として追加で LLM を呼ばずに完結
+      - ただし llm_manager が与えられていれば Refiner を任意で起動可能
+      - dev_force_model があればそれを最優先で採用（開発・検証用）
     """
 
     def __init__(
@@ -30,20 +29,24 @@ class ComposerAI:
     # 公開 API
     # =======================
     def compose(self, llm_meta: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        llm_meta 全体を受け取り、最終返答テキストとメタ情報を返す。
+        """
         try:
             return self._safe_compose(llm_meta)
         except Exception as e:
+            dev_force_model = str(llm_meta.get("dev_force_model") or "")
             return {
                 "status": "error",
                 "text": "",
                 "source_model": "",
                 "mode": "exception",
-                "summary": f"[ComposerAI] exception: {e}",
+                "summary": f"[ComposerAI 0.3] exception: {e}",
                 "base_text": "",
                 "base_source_model": "",
-                "dev_force_model": str(llm_meta.get("dev_force_model") or ""),
+                "dev_force_model": dev_force_model,
                 "is_modified": False,
-                "refiner_model": None,
+                "refiner_model": self.refine_model if self.llm_manager else None,
                 "refiner_used": False,
                 "refiner_status": "error",
                 "refiner_error": str(e),
@@ -55,113 +58,143 @@ class ComposerAI:
     def _safe_compose(self, llm_meta: Dict[str, Any]) -> Dict[str, Any]:
         models: Dict[str, Any] = llm_meta.get("models") or {}
         judge: Dict[str, Any] = llm_meta.get("judge") or {}
+        dev_force_model: str = str(llm_meta.get("dev_force_model") or "").strip()
 
-        dev_force_model = str(llm_meta.get("dev_force_model") or "").strip()
+        # 1) dev_force_model が指定されていれば最優先
+        base_model, base_text, mode = self._select_base_text_dev_force(
+            models=models,
+            dev_force_model=dev_force_model,
+        )
 
-        # ======================================================
-        # 1) dev_force_model があれば、最優先でそのモデルを採用
-        # ======================================================
-        if dev_force_model:
-            info = models.get(dev_force_model)
-            if isinstance(info, dict) and info.get("status") == "ok":
-                dev_text = str(info.get("text") or "")
-                if dev_text.strip():
-                    base = {
-                        "status": "ok",
-                        "text": dev_text,
-                        "source_model": dev_force_model,
-                        "mode": "dev_force",
-                        "summary": (
-                            f"[ComposerAI 0.4] mode=dev_force, "
-                            f"source_model={dev_force_model}"
-                        ),
-                        "base_text": dev_text,
-                        "base_source_model": dev_force_model,
-                        "dev_force_model": dev_force_model,
-                        "is_modified": False,
-                    }
-                    return self._maybe_refine(base, llm_meta)
+        # 2) dev_force が使えなかった場合は JudgeAI の結果を優先
+        if not base_model:
+            jm, jt, m = self._select_base_text_from_judge(models=models, judge=judge)
+            base_model, base_text, mode = jm, jt, m
 
-        # ======================================================
-        # 2) 通常ルート: Judge → models フォールバック
-        # ======================================================
-        base_model, base_text, base_mode = self._select_base(models, judge)
+        # 3) それでも決まらなければ models からフォールバック
+        if not base_model:
+            fm, ft = self._fallback_from_models(models)
+            base_model, base_text = fm, ft
+            mode = "fallback_from_models"
 
-        if base_model and base_text.strip():
-            base = {
-                "status": "ok",
-                "text": base_text,
-                "source_model": base_model,
-                "mode": base_mode,
-                "summary": (
-                    f"[ComposerAI 0.4] mode={base_mode}, "
-                    f"source_model={base_model}, judge_status={judge.get('status')}"
-                ),
-                "base_text": base_text,
-                "base_source_model": base_model,
+        # 4) まだ駄目なら完全エラー
+        if not base_model or not base_text.strip():
+            return {
+                "status": "error",
+                "text": "",
+                "source_model": "",
+                "mode": "no_text",
+                "summary": "[ComposerAI 0.3] no usable text from judge or models",
+                "base_text": "",
+                "base_source_model": "",
                 "dev_force_model": dev_force_model,
                 "is_modified": False,
+                "refiner_model": self.refine_model if self.llm_manager else None,
+                "refiner_used": False,
+                "refiner_status": "skipped",
+                "refiner_error": "",
             }
-            return self._maybe_refine(base, llm_meta)
 
-        # ======================================================
-        # 3) それでも何もない場合
-        # ======================================================
-        return {
-            "status": "error",
-            "text": "",
-            "source_model": "",
-            "mode": "no_text",
-            "summary": "[ComposerAI 0.4] no usable text from judge or models",
-            "base_text": "",
-            "base_source_model": "",
+        # -----------------------
+        # ここまでで「元テキスト」が確定
+        # -----------------------
+        summary = (
+            f"[ComposerAI 0.3] mode={mode}, "
+            f"source_model={base_model}, dev_force_model={dev_force_model or '-'}"
+        )
+
+        result: Dict[str, Any] = {
+            "status": "ok",
+            "text": base_text,
+            "source_model": base_model,
+            "mode": mode,
+            "summary": summary,
+            # Refiner まわり
+            "base_text": base_text,
+            "base_source_model": base_model,
             "dev_force_model": dev_force_model,
             "is_modified": False,
-            "refiner_model": None,
+            "refiner_model": self.refine_model if self.llm_manager else None,
             "refiner_used": False,
-            "refiner_status": "skipped",
+            "refiner_status": "skipped" if self.llm_manager is None else "pending",
             "refiner_error": "",
         }
 
+        # 必要なら Refiner を噛ませる
+        return self._maybe_refine(result, llm_meta)
+
     # -----------------------
-    # Judge / models からベース案を決める
+    # dev_force_model の処理
     # -----------------------
-    def _select_base(
-        self,
+    @staticmethod
+    def _select_base_text_dev_force(
+        *,
+        models: Dict[str, Any],
+        dev_force_model: str,
+    ) -> tuple[str, str, str]:
+        """
+        dev_force_model が有効なら、それをベースとして採用する。
+        """
+        if not dev_force_model:
+            return "", "", ""
+
+        info = models.get(dev_force_model)
+        if not isinstance(info, Dict):
+            return "", "", ""
+
+        if info.get("status") != "ok":
+            return "", "", ""
+
+        text = str(info.get("text") or "").strip()
+        if not text:
+            return "", "", ""
+
+        return dev_force_model, text, "dev_force"
+
+    # -----------------------
+    # JudgeAI からの選択
+    # -----------------------
+    @staticmethod
+    def _select_base_text_from_judge(
+        *,
         models: Dict[str, Any],
         judge: Dict[str, Any],
     ) -> tuple[str, str, str]:
-        """
-        まず JudgeAI3 の結果を尊重し、ダメなら models からフォールバックする。
-        戻り値: (source_model, text, mode)
-        """
         judge_status = str(judge.get("status", ""))
-        chosen_model = str(judge.get("chosen_model") or "").strip()
+        chosen_model = str(judge.get("chosen_model") or "")
         chosen_text = str(judge.get("chosen_text") or "")
 
-        if judge_status == "ok" and chosen_model:
-            info = models.get(chosen_model) or {}
-            model_text = str(info.get("text") or "").strip()
-            text = model_text or chosen_text
-            if text.strip():
-                return chosen_model, text, "judge_choice"
+        if judge_status == "ok" and chosen_model and chosen_text.strip():
+            return chosen_model, chosen_text, "judge_choice"
 
-        fb_model, fb_text = self._fallback_from_models(models)
-        if fb_model and fb_text.strip():
-            return fb_model, fb_text, "fallback_from_models"
+        # Judge がダメでも、chosen_model が models 側に居れば拾ってみる
+        if chosen_model and isinstance(models.get(chosen_model), Dict):
+            info = models[chosen_model]
+            if info.get("status") == "ok":
+                text = str(info.get("text") or "").strip()
+                if text:
+                    return chosen_model, text, "judge_model_fallback"
 
-        return "", "", "no_text"
+        return "", "", ""
 
     # -----------------------
     # モデルからのフォールバック
     # -----------------------
     @staticmethod
     def _fallback_from_models(models: Dict[str, Any]) -> tuple[str, str]:
+        """
+        models から、もっとも無難なテキストを 1 つ選ぶ。
+
+        いまは「status=ok かつ text が空でない最初のモデル」を返す。
+        必要であれば優先度順に見るよう拡張可能。
+        """
         if not isinstance(models, dict):
             return "", ""
 
-        preferred_order = ["gpt51", "grok", "gemini"]
+        # 優先順位（好み）
+        preferred_order = ["gpt51", "gpt4o", "hermes", "grok", "gemini"]
 
+        # 優先モデルからチェック
         for name in preferred_order:
             info = models.get(name)
             if not isinstance(info, dict):
@@ -172,6 +205,7 @@ class ComposerAI:
             if text:
                 return name, text
 
+        # どれでも良いので最初の ok を返す
         for name, info in models.items():
             if not isinstance(info, dict):
                 continue
@@ -184,7 +218,7 @@ class ComposerAI:
         return "", ""
 
     # -----------------------
-    # （任意）refinement 本体
+    # （任意）refinement
     # -----------------------
     def _maybe_refine(
         self,
@@ -192,106 +226,128 @@ class ComposerAI:
         llm_meta: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        base["text"] をもとに、refine_model で最終仕上げを行う。
-
-        - llm_manager が None の場合は何もしない
-        - 何らかの理由で refine に失敗したら、元テキストのまま返す
+        将来的に gpt-5.1 などで最終テキストを整形したい場合に備えたフック。
+        いまは llm_manager が無ければそのまま返す。
         """
         if self.llm_manager is None:
-            base["refiner_model"] = None
+            # refinement 未使用
             base["refiner_used"] = False
             base["refiner_status"] = "skipped"
             base["refiner_error"] = ""
             return base
 
-        ref_model = self.refine_model or "gpt51"
-        original_text = str(base.get("text") or "")
-        if not original_text.strip():
-            base["refiner_model"] = ref_model
-            base["refiner_used"] = False
-            base["refiner_status"] = "skipped"
-            base["refiner_error"] = "empty_base_text"
-            return base
-
-        style_hint = str(llm_meta.get("composer_style_hint") or "").strip()
-        emotion = llm_meta.get("emotion") or {}
-        mode = emotion.get("mode", "normal")
-
-        emo_desc = (
-            f"現在の感情モードは「{mode}」です。"
-            f"好意={emotion.get('affection', 0.0):.2f}, "
-            f"性的な高ぶり={emotion.get('arousal', 0.0):.2f}, "
-            f"緊張={emotion.get('tension', 0.0):.2f}, "
-            f"悲しみ={emotion.get('sadness', 0.0):.2f}, "
-            f"ワクワク={emotion.get('excitement', 0.0):.2f} です。"
-        )
-
-        system_parts = [
-            "あなたは『フローリア』としてロールプレイする日本語話者のライティングアシスタントです。",
-            "与えられたテキストを、フローリアの一人称・口調を保ったまま、読みやすく自然な日本語に整えてください。",
-            "情報を削り過ぎないようにしつつ、冗長な部分があればさりげなく整理してください。",
-            "見出しや箇条書き、装飾記号は使わず、純粋な文章だけで返答してください。",
-        ]
-        if style_hint:
-            system_parts.append(
-                "以下のスタイル指示も厳守してください:\n" + style_hint
-            )
-        system_parts.append("数値や内部パラメータの説明は一切出力しないでください。")
-        system_parts.append(emo_desc)
-
-        system_prompt = "\n\n".join(system_parts)
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    "次のテキストを、上記のルールに従って丁寧に整えてください。\n\n"
-                    "【入力テキスト】\n"
-                    f"{original_text}\n\n"
-                    "【出力フォーマット】\n"
-                    "・フローリアとしての一人称・口調のまま\n"
-                    "・自然な日本語の文章のみ\n"
-                    "・不要な説明やメタなコメントは付けないこと"
-                ),
-            },
-        ]
-
+        # 実際に Refiner を起動
         try:
-            # ★ LLMManager の実装に合わせてここだけ調整してね
-            result = self.llm_manager.chat(
-                model_name=ref_model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=900,
+            refined = self._call_refiner(
+                text=str(base.get("text") or ""),
+                llm_meta=llm_meta,
             )
-            if isinstance(result, tuple):
-                refined_text, usage = result
-            else:
-                refined_text = str(result)
-                usage = {}
-
-            refined_text = str(refined_text or "").strip()
-
-            base["refiner_model"] = ref_model
-            base["refiner_used"] = True
-            base["refiner_status"] = "ok"
-            base["refiner_error"] = ""
-
-            if not refined_text:
-                base["refiner_status"] = "ok_empty"
-                return base
-
-            if refined_text != original_text:
-                base["text"] = refined_text
-                base["is_modified"] = True
-
-            base["refiner_usage"] = usage
-            return base
-
         except Exception as e:
-            base["refiner_model"] = ref_model
             base["refiner_used"] = False
             base["refiner_status"] = "error"
             base["refiner_error"] = str(e)
             return base
+
+        if not refined or refined.strip() == str(base.get("base_text", "")).strip():
+            # 変更なし
+            base["refiner_used"] = False
+            base["refiner_status"] = "ok_empty"
+            base["refiner_error"] = ""
+            base["is_modified"] = False
+            return base
+
+        # テキストが書き換わった
+        base["text"] = refined
+        base["refiner_used"] = True
+        base["refiner_status"] = "ok"
+        base["refiner_error"] = ""
+        base["is_modified"] = True
+        return base
+
+    # -----------------------
+    # 実際の Refiner 呼び出し
+    # -----------------------
+    def _call_refiner(self, text: str, llm_meta: Dict[str, Any]) -> str:
+        """
+        llm_manager を使って、最終テキストを「軽く整形」する。
+
+        - style_hint が llm_meta にあれば、それも踏まえて整える。
+        - LLMManager の実装に応じて chat / chat_completion のどちらかを叩く。
+        """
+        if not self.llm_manager:
+            raise RuntimeError("llm_manager is None")
+
+        style_hint = str(llm_meta.get("style_hint") or "")
+
+        system_prompt = (
+            "あなたは日本語の文章スタイリストです。"
+            "与えられたテキストを、意味や内容を変えずに、読みやすく自然な文体に整えてください。"
+            "文章量（長さ）は大きく変えないでください。"
+        )
+
+        if style_hint:
+            system_prompt += (
+                "\n\n以下は、望ましい文体のメモです。文体のみを参考にし、"
+                "内容や設定を改変しないでください：\n"
+                f"{style_hint}"
+            )
+
+        user_msg = (
+            "次のテキストを、意味を変えずに、文体だけ整えてください。\n"
+            "出力はテキスト本文のみを返し、解説や前置きは書かないでください。\n\n"
+            "----- テキストここから -----\n"
+            f"{text}\n"
+            "----- テキストここまで -----"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ]
+
+        mgr = self.llm_manager
+
+        # LLMManager の実装に応じて呼び分け
+        response: Any
+        if hasattr(mgr, "chat"):  # 互換性用（もし chat があれば）
+            response = mgr.chat(
+                model=self.refine_model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=900,
+            )
+        elif hasattr(mgr, "chat_completion"):
+            response = mgr.chat_completion(
+                model=self.refine_model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=900,
+            )
+        else:
+            raise RuntimeError(
+                "LLMManager に 'chat' / 'chat_completion' のどちらも実装されていません。"
+            )
+
+        # 返り値の形をある程度ゆるく扱う
+        refined_text: Optional[str] = None
+
+        if isinstance(response, str):
+            refined_text = response
+        elif isinstance(response, tuple):
+            # (text, usage) 形式を想定
+            refined_text = str(response[0])
+        elif isinstance(response, dict):
+            refined_text = (
+                response.get("text")
+                or response.get("content")
+            )
+            if refined_text is None and "choices" in response:
+                try:
+                    refined_text = response["choices"][0]["message"]["content"]
+                except Exception:
+                    refined_text = None
+
+        if not refined_text:
+            raise RuntimeError("Refiner response has no text content")
+
+        return str(refined_text).strip()
