@@ -10,7 +10,6 @@ from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from actors.emotion_ai import EmotionAI, EmotionResult
-from actors.mixer_ai import MixerAI  # ★ 追加
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -21,12 +20,10 @@ class AnswerTalker:
 
     - ModelsAI2:  複数モデルから回答収集（gpt51 / grok / gemini / hermes / ...）
     - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
-    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成
+    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成（＋将来Refine）
     - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
                   ＋ 長期感情（LongTermEmotion）の更新と judge_mode 決定
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
-    - MixerAI:    EmotionAI / SceneEmotion / EmotionControl(UI) を統合し、
-                  ModelsAI2 に渡す emotion_override を構築する
 
     仕様:
       Persona と conversation_log から組み立てた messages を入力として、
@@ -65,6 +62,17 @@ class AnswerTalker:
         llm_meta.setdefault("memory_update", {})
         llm_meta.setdefault("emotion_long_term", {})
 
+        # ★ Persona 由来のスタイルヒントを llm_meta に載せておく
+        #    Refiner や将来のライティング系で使うための導線だけ確保
+        if "composer_style_hint" not in llm_meta:
+            hint = ""
+            if hasattr(self.persona, "get_composer_style_hint"):
+                try:
+                    hint = str(self.persona.get_composer_style_hint())
+                except Exception:
+                    hint = ""
+            llm_meta["composer_style_hint"] = hint
+
         # ----- ★ 新しい会談開始時は強制 normal にリセットする -----
         round_no_raw = st.session_state.get("round_number", 0)
         try:
@@ -97,9 +105,6 @@ class AnswerTalker:
             model_name="gpt51",
         )
 
-        # MixerAI（短期感情 / シーン / UI を統合）
-        self.mixer_ai = MixerAI(self.emotion_ai)
-
         # JudgeAI3（初期モードは llm_meta / session_state / emotion のいずれか）
         initial_mode = (
             st.session_state.get("judge_mode")
@@ -110,12 +115,69 @@ class AnswerTalker:
         self.judge_ai = JudgeAI3(mode=str(initial_mode))
 
         # Composer / Memory
-        self.composer_ai = ComposerAI()
+        # ★ ここで llm_manager を渡しておくことで Refiner を有効にできる
+        self.composer_ai = ComposerAI(
+            llm_manager=self.llm_manager,
+            refine_model="gpt51",
+        )
         self.memory_ai = MemoryAI(
             llm_manager=self.llm_manager,
             persona_id=persona_id,
             model_name=memory_model,
         )
+
+    # ---------------------------------------
+    # emotion_override 構築ヘルパ
+    # ---------------------------------------
+    def _build_emotion_override_for_models(self) -> Optional[Dict[str, Any]]:
+        """
+        ModelsAI2.collect() に渡す emotion_override を構築する。
+
+        emotion_override_mode:
+          - "auto"        : EmotionAI の短期感情をそのまま渡す
+          - "manual_full" : 手動パネルの値で完全上書き（EmotionAI は無視）
+        """
+
+        mode = st.session_state.get("emotion_override_mode", "auto")
+        manual = st.session_state.get("emotion_override_manual")
+
+        # ---------------------------
+        # 1) 手動完全上書きモード
+        # ---------------------------
+        if mode == "manual_full":
+            if isinstance(manual, dict):
+                return {
+                    "mode": manual.get("mode", "normal"),
+                    "affection": float(manual.get("affection", 0.0)),
+                    "arousal": float(manual.get("arousal", 0.0)),
+                    "tension": float(manual.get("tension", 0.0)),
+                    "anger": float(manual.get("anger", 0.0)),
+                    "sadness": float(manual.get("sadness", 0.0)),
+                    "excitement": float(manual.get("excitement", 0.0)),
+                }
+            return None
+
+        # ---------------------------
+        # 2) 通常（auto）モード
+        # ---------------------------
+        if not hasattr(self, "emotion_ai") or self.emotion_ai is None:
+            return None
+
+        short: Optional[EmotionResult] = getattr(
+            self.emotion_ai, "last_short_result", None
+        )
+        if short is None:
+            return None
+
+        return {
+            "mode": short.mode or "normal",
+            "affection": float(short.affection),
+            "arousal": float(short.arousal),
+            "tension": float(short.tension),
+            "anger": float(short.anger),
+            "sadness": float(short.sadness),
+            "excitement": float(short.excitement),
+        }
 
     # ---------------------------------------
     # ModelsAI 呼び出し
@@ -183,23 +245,9 @@ class AnswerTalker:
             self.llm_meta["memory_context"] = ""
 
         # ======================================================
-        # 1.5) MixerAI で emotion_override を構築
+        # 1.5) emotion_override を構築（auto / manual_full）
         # ======================================================
-        emotion_override: Optional[Dict[str, Any]] = None
-        try:
-            if hasattr(self, "mixer_ai") and self.mixer_ai is not None:
-                # ★ 現時点では scene_emotion は未使用なので None 固定。
-                #    将来シーンシステムができたらここに渡す。
-                emotion_override = self.mixer_ai.build_for_models(
-                    scene_emotion=None,
-                )
-                # デバッグ／検証用に llm_meta にも保存しておく
-                self.llm_meta["emotion_override_for_models"] = emotion_override
-            else:
-                self.llm_meta["emotion_override_error"] = "MixerAI not initialized"
-        except Exception as e:
-            self.llm_meta["emotion_override_error"] = str(e)
-            emotion_override = None
+        emotion_override = self._build_emotion_override_for_models()
 
         # ======================================================
         # 2) ModelsAI.collect
@@ -225,11 +273,6 @@ class AnswerTalker:
             }
         self.llm_meta["judge"] = judge_result
 
-        # ======================================================
-        # ★ 3.5) Composer 用の dev_force_model を設定（開発用：Gemini 強制）
-        # ======================================================
-        self.llm_meta["dev_force_model"] = "gemini"
-        
         # ======================================================
         # 4) ComposerAI
         # ======================================================
