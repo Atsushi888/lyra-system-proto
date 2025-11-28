@@ -1,4 +1,3 @@
-# actors/models_ai2.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -12,8 +11,9 @@ class ModelsAI2:
     新マルチLLM集約クラス（LLMAI ベース）。
 
     - AnswerTalker から messages / mode_current / emotion_override を受け取る
-    - emotion_override がある場合、system メッセージとして感情状態を注入する
-    - LLMAIRegistry に登録された AI達を一巡させて結果を集約する
+    - emotion_override がある場合、EmotionStyle から生成した system メッセージを
+      既存のペルソナ system の直後に挿入して LLM に渡す
+    - LLMAIRegistry に登録された AI 達を一巡させて結果を集約する
     """
 
     def __init__(
@@ -25,43 +25,43 @@ class ModelsAI2:
         self.registry: LLMAIRegistry = registry or LLMAIRegistry.create_default()
 
     # ------------------------------------------------------
-    # emotion_override を system メッセージに変換して注入
+    # EmotionStyle を system メッセージとして注入
     # ------------------------------------------------------
     def _inject_emotion_into_messages(
         self,
         base_messages: List[Dict[str, str]],
-        emotion_override: Optional[Dict[str, Any]],
-        mode_key: str,
+        emotion_style: Optional[EmotionStyle],
     ) -> List[Dict[str, str]]:
-        if not emotion_override:
+        """
+        EmotionStyle から生成した system プロンプトを、既存の system メッセージ
+        （ペルソナ定義）の直後に挿入する。
+
+        base_messages:
+            Persona.build_messages() などで組み立てられた元の messages。
+        """
+        if emotion_style is None:
             return base_messages
 
-        # 値取得（安全のため float() で落とす）
-        mode = str(emotion_override.get("mode", mode_key))
-        aff = float(emotion_override.get("affection", 0.0))
-        aro = float(emotion_override.get("arousal", 0.0))
-        ten = float(emotion_override.get("tension", 0.0))
-        ang = float(emotion_override.get("anger", 0.0))
-        sad = float(emotion_override.get("sadness", 0.0))
-        exc = float(emotion_override.get("excitement", 0.0))
+        emo_system_msg = {
+            "role": "system",
+            "content": emotion_style.build_system_prompt(),
+        }
 
-        # system メッセージとして注入
-        emo_text = (
-            "【感情オーバーライド適用】\n"
-            "現在のキャラクターの感情状態を反映して返答してください。\n"
-            f"- モード: {mode}\n"
-            f"- 好意 / 親しみ: {aff:.2f}\n"
-            f"- 興奮度（性的 / 情動）: {aro:.2f}\n"
-            f"- 緊張・不安: {ten:.2f}\n"
-            f"- 怒り: {ang:.2f}\n"
-            f"- 悲しみ: {sad:.2f}\n"
-            f"- 期待・ワクワク: {exc:.2f}\n"
-            "\n"
-            "返答の内容・語気・比喩・話題選択などに、これらの感情値を反映してください。"
-        )
+        new_messages: List[Dict[str, str]] = []
+        inserted = False
 
-        injected = [{"role": "system", "content": emo_text}] + list(base_messages)
-        return injected
+        for msg in base_messages:
+            new_messages.append(msg)
+            # 最初の system メッセージの直後に挿入
+            if (not inserted) and msg.get("role") == "system":
+                new_messages.append(emo_system_msg)
+                inserted = True
+
+        # 万一 system が一つも無かった場合は、先頭に挿入
+        if not inserted:
+            new_messages.insert(0, emo_system_msg)
+
+        return new_messages
 
     # ------------------------------------------------------
     # メイン処理
@@ -91,12 +91,10 @@ class ModelsAI2:
             except Exception:
                 emotion_style = None
 
-        # ★★★ ここが今回の一番重要ポイント ★★★
-        # messages に感情オーバーライド system メッセージを注入
+        # ★ EmotionStyle を system prompt として統合
         messages_injected = self._inject_emotion_into_messages(
             base_messages=messages,
-            emotion_override=emotion_override,
-            mode_key=mode_key,
+            emotion_style=emotion_style,
         )
 
         # ------------------------------------------------------
@@ -120,6 +118,7 @@ class ModelsAI2:
             if getattr(ai, "max_tokens", None) is not None:
                 call_kwargs["max_tokens"] = int(ai.max_tokens)
 
+            # 互換のため EmotionStyle もそのまま渡す（サブクラス側が使えばさらに強く効く）
             if emotion_style is not None:
                 call_kwargs["emotion_style"] = emotion_style
 
