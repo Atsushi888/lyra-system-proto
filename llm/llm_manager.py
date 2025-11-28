@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 
 from llm.llm_router import LLMRouter
 
@@ -24,8 +24,19 @@ class LLMModelConfig:
 
 
 class LLMManager:
+    """
+    Lyra-System 用 LLM 管理クラス。
+
+    - AnswerTalker や EmotionAI などからは従来どおり call_model() を使う
+    - ComposerAI / Refiner からは chat_completion() を使う
+      （内部的には call_model() に委譲するだけ）
+    """
+
     _POOL: Dict[str, "LLMManager"] = {}
 
+    # ===========================================================
+    # シングルトン取得
+    # ===========================================================
     @classmethod
     def get_or_create(cls, persona_id: str = "default") -> "LLMManager":
         if persona_id in cls._POOL:
@@ -43,6 +54,9 @@ class LLMManager:
         cls._POOL[persona_id] = manager
         return manager
 
+    # ===========================================================
+    # 初期化
+    # ===========================================================
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
         self._models: Dict[str, LLMModelConfig] = {}
@@ -163,7 +177,7 @@ class LLMManager:
         )
 
     # ===========================================================
-    # 実際の呼び出し
+    # 実際の呼び出し（従来インターフェース）
     # ===========================================================
     def call_model(
         self,
@@ -171,6 +185,12 @@ class LLMManager:
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Any:
+        """
+        従来の AnswerTalker などから使われている呼び出し口。
+
+        LLMRouter 上の各 call_xxx() に委譲し、その戻り値をそのまま返す。
+        （多くの場合 (text, usage_dict) のタプルになっているはず）
+        """
         cfg = self._models.get(model_name)
         if cfg is None:
             raise ValueError(f"Unknown model: {model_name}")
@@ -191,6 +211,42 @@ class LLMManager:
         call_params.update(kwargs)
 
         return fn(messages=messages, **call_params)
+
+    # ===========================================================
+    # Refiner / Composer 用の chat_completion ラッパ
+    # ===========================================================
+    def chat_completion(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        **kwargs: Any,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        ComposerAI の Refiner 用のシンプルなラッパ。
+
+        内部的には call_model() を呼び出し、
+        戻り値を (text, usage_dict) の形に正規化して返す。
+        """
+        result = self.call_model(model, messages, **kwargs)
+
+        # LLMRouter 側が従来どおり (text, usage) を返しているケース
+        if isinstance(result, tuple) and len(result) >= 2:
+            text, usage = result[0], result[1] or {}
+            return str(text or ""), dict(usage)
+
+        # もし dict 形式で返ってきた場合にも一応対応しておく
+        if isinstance(result, dict):
+            text = str(result.get("text", "") or "")
+            usage = result.get("usage") or {}
+            if not isinstance(usage, dict):
+                usage = {}
+            return text, dict(usage)
+
+        # それ以外の型の場合は、とりあえず文字列化したものだけ返す
+        return str(result), {}
+
+    # OpenAI 互換の名前を期待しているコード向けエイリアス
+    chat = chat_completion
 
     # ===========================================================
     # 情報取得
