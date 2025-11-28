@@ -15,6 +15,7 @@ from views.council_view import CouncilView
 from views.llm_manager_view import create_llm_manager_view
 from views.answertalker_view import create_answertalker_view
 from views.emotion_control_view import create_emotion_control_view
+from views.persona_editor_view import create_persona_editor_view  # ★ 追加
 
 
 class View(Protocol):
@@ -35,6 +36,7 @@ class ModeSwitcher:
         "COUNCIL":       "🗣 会談システム（β）",
         "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",
         "EMOTION":       "💓 感情オーバーライド",
+        "PERSONA":       "🖋️ キャラ設定（Persona）",  # ★ 追加
     }
 
     def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
@@ -75,8 +77,13 @@ class ModeSwitcher:
             },
             "EMOTION": {
                 "label": self.LABELS["EMOTION"],
-                "view": create_emotion_control_view,  # ← 追加された感情パネル
+                "view": create_emotion_control_view,  # 感情パネル
                 "min_role": Role.ADMIN,              # USER でも良い。好みで
+            },
+            "PERSONA": {
+                "label": self.LABELS["PERSONA"],
+                "view": create_persona_editor_view,   # ★ PersonaEditor 用ファクトリ
+                "min_role": Role.ADMIN,
             },
         }
 
