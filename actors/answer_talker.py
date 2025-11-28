@@ -13,6 +13,9 @@ from actors.emotion_ai import EmotionAI, EmotionResult
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
+# ★ 追加：emotion_override 構築ヘルパを components 側からインポート
+from components.emotion_control import build_emotion_override_for_models
+
 
 class AnswerTalker:
     """
@@ -118,51 +121,10 @@ class AnswerTalker:
         """
         ModelsAI2.collect() に渡す emotion_override を構築する。
 
-        emotion_override_mode:
-          - "auto"        : EmotionAI の短期感情をそのまま渡す
-          - "manual_full" : 手動パネルの値で完全上書き（EmotionAI は無視）
+        実際のロジックは components.emotion_control.build_emotion_override_for_models()
+        に委譲し、AnswerTalker 側は EmotionAI インスタンスを渡すだけにする。
         """
-
-        mode = st.session_state.get("emotion_override_mode", "auto")
-        manual = st.session_state.get("emotion_override_manual")
-
-        # ---------------------------
-        # 1) 手動完全上書きモード
-        # ---------------------------
-        if mode == "manual_full":
-            if isinstance(manual, dict):
-                return {
-                    "mode": manual.get("mode", "normal"),
-                    "affection": float(manual.get("affection", 0.0)),
-                    "arousal": float(manual.get("arousal", 0.0)),
-                    "tension": float(manual.get("tension", 0.0)),
-                    "anger": float(manual.get("anger", 0.0)),
-                    "sadness": float(manual.get("sadness", 0.0)),
-                    "excitement": float(manual.get("excitement", 0.0)),
-                }
-            return None
-
-        # ---------------------------
-        # 2) 通常（auto）モード
-        # ---------------------------
-        if not hasattr(self, "emotion_ai") or self.emotion_ai is None:
-            return None
-
-        short: Optional[EmotionResult] = getattr(
-            self.emotion_ai, "last_short_result", None
-        )
-        if short is None:
-            return None
-
-        return {
-            "mode": short.mode or "normal",
-            "affection": float(short.affection),
-            "arousal": float(short.arousal),
-            "tension": float(short.tension),
-            "anger": float(short.anger),
-            "sadness": float(short.sadness),
-            "excitement": float(short.excitement),
-        }
+        return build_emotion_override_for_models(self.emotion_ai)
 
     # ---------------------------------------
     # ModelsAI 呼び出し
