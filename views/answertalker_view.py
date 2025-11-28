@@ -1,5 +1,3 @@
-# views/answertalker_view.py
-
 from __future__ import annotations
 
 from typing import Any, Dict, List, Protocol
@@ -21,7 +19,7 @@ class View(Protocol):
 
 class AnswerTalkerView:
     """
-    AnswerTalker / ModelsAI / JudgeAI2 / ComposerAI / MemoryAI の
+    AnswerTalker / ModelsAI / JudgeAI3 / ComposerAI / MemoryAI の
     デバッグ・閲覧用ビュー。
     """
 
@@ -74,7 +72,7 @@ class AnswerTalkerView:
                         st.code(text[:1000])  # 長すぎると困るので頭だけ表示
 
         # ---- judge ----
-        st.subheader("JudgeAI2 の判定結果（llm_meta['judge']）")
+        st.subheader("JudgeAI3 の判定結果（llm_meta['judge']）")
         judge = llm_meta.get("judge", {})
         if not judge:
             st.info("judge 情報はまだありません。")
@@ -126,7 +124,7 @@ class AnswerTalkerView:
                         st.markdown("---")
                 else:
                     st.write("candidates の形式が想定外です:", type(raw_candidates))
-    
+
         # ---- composer ----
         st.subheader("ComposerAI の最終結果（llm_meta['composer']）")
         comp = llm_meta.get("composer", {})
@@ -136,6 +134,32 @@ class AnswerTalkerView:
             st.write(f"- status: `{comp.get('status', 'unknown')}`")
             st.write(f"- source_model: `{comp.get('source_model', '')}`")
             st.write(f"- mode: `{comp.get('mode', '')}`")
+
+            # dev_force_model が設定されている場合はここで見えるようにする
+            dev_force = llm_meta.get("dev_force_model")
+            if dev_force:
+                st.write(f"- dev_force_model: `{dev_force}`")
+
+            # 追加されたデバッグ情報
+            base_source_model = comp.get("base_source_model", "")
+            base_text = (comp.get("base_text") or "").strip()
+            is_modified = bool(comp.get("is_modified", False))
+            refiner_model = comp.get("refiner_model")
+            refiner_used = comp.get("refiner_used", False)
+            refiner_status = comp.get("refiner_status", "skipped")
+            refiner_error = comp.get("refiner_error", "")
+
+            cols_comp = st.columns(3)
+            with cols_comp[0]:
+                st.write(f"base_source_model: `{base_source_model}`")
+                st.write(f"is_modified: `{is_modified}`")
+            with cols_comp[1]:
+                st.write(f"refiner_model: `{refiner_model}`")
+                st.write(f"refiner_used: `{refiner_used}`")
+            with cols_comp[2]:
+                st.write(f"refiner_status: `{refiner_status}`")
+                if refiner_error:
+                    st.write(f"refiner_error: `{refiner_error}`")
 
             summary = comp.get("summary")
             if summary:
@@ -147,6 +171,17 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
+            # 元テキスト（refine 前）
+            if base_text:
+                with st.expander("元テキスト（base_text）", expanded=False):
+                    st.text_area(
+                        "composer_base_text",
+                        value=base_text,
+                        height=260,
+                        label_visibility="collapsed",
+                    )
+
+            # 最終テキスト
             text = (comp.get("text") or "").strip()
             if text:
                 with st.expander("最終返答テキスト（composer.text）", expanded=True):
@@ -170,21 +205,21 @@ class AnswerTalkerView:
             st.write(f"llm_meta['judge_mode_next']: `{next_mode_meta}`")
         with cols_mode[2]:
             st.write(f"session_state['judge_mode']: `{session_mode}`")
-        
+
         # ---- EmotionAI ----
         st.subheader("EmotionAI の解析結果（llm_meta['emotion']）")
-        
+
         emo = llm_meta.get("emotion") or {}
         emo_err = llm_meta.get("emotion_error")
-        
+
         if emo_err:
             st.error(f"EmotionAI error: {emo_err}")
-        
+
         if not emo:
             st.info("Emotion 情報はまだありません。")
         else:
             st.markdown(f"- 推定 judge_mode: `{emo.get('mode', 'normal')}`")
-        
+
             cols = st.columns(3)
             with cols[0]:
                 st.write(f"affection: {emo.get('affection', 0.0):.2f}")
@@ -195,7 +230,7 @@ class AnswerTalkerView:
             with cols[2]:
                 st.write(f"sadness:   {emo.get('sadness', 0.0):.2f}")
                 st.write(f"excitement:{emo.get('excitement', 0.0):.2f}")
-        
+
             # EmotionAI が実際に LLM に投げた生テキスト（デバッグ）
             with st.expander("raw_text（EmotionAI の LLM 出力）", expanded=False):
                 st.code(emo.get("raw_text", ""), language="json")
