@@ -10,6 +10,7 @@ from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from actors.emotion_ai import EmotionAI, EmotionResult
+from actors.persona_ai import PersonaAI  # ★ 追加
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -20,15 +21,10 @@ class AnswerTalker:
 
     - ModelsAI2:  複数モデルから回答収集（gpt51 / grok / gemini / hermes / ...）
     - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
-    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成（＋将来Refine）
+    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成（＋Refiner）
     - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
                   ＋ 長期感情（LongTermEmotion）の更新と judge_mode 決定
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
-
-    仕様:
-      Persona と conversation_log から組み立てた messages を入力として、
-      Models → Judge → Composer → Emotion(short) → Memory → Emotion(long)
-      を回し、最終的な返答テキストを返す。
     """
 
     def __init__(
@@ -39,6 +35,9 @@ class AnswerTalker:
     ) -> None:
         self.persona = persona
         persona_id = getattr(self.persona, "char_id", "default")
+
+        # ★ PersonaAI（JSON ベースの人格情報管理）
+        self.persona_ai = PersonaAI(persona_id=persona_id)
 
         # LLMManager を全体共有
         self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
@@ -62,8 +61,7 @@ class AnswerTalker:
         llm_meta.setdefault("memory_update", {})
         llm_meta.setdefault("emotion_long_term", {})
 
-        # ★ Persona 由来のスタイルヒントを llm_meta に載せておく
-        #    Refiner や将来のライティング系で使うための導線だけ確保
+        # ★ Persona 由来のデフォルトスタイルヒント（従来の persona クラスから）
         if "composer_style_hint" not in llm_meta:
             hint = ""
             if hasattr(self.persona, "get_composer_style_hint"):
@@ -220,6 +218,26 @@ class AnswerTalker:
             return ""
 
         # ======================================================
+        # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta に「丸ごと」反映
+        # ======================================================
+        try:
+            # 必ず最新 JSON を読み直す
+            persona_all = self.persona_ai.get_all(reload=True)
+
+            # Persona 情報そのものを llm_meta に格納
+            self.llm_meta["persona"] = persona_all
+
+            # style_hint は JSON 側を優先し、無ければ従来の composer_style_hint を継承
+            style_hint = (
+                persona_all.get("style_hint")
+                or self.llm_meta.get("composer_style_hint", "")
+            )
+            self.llm_meta["style_hint"] = style_hint
+
+        except Exception as e:
+            self.llm_meta["persona_error"] = str(e)
+
+        # ======================================================
         # 0) 「このターンで使う judge_mode」を決定
         # ======================================================
         mode_current = (
@@ -277,7 +295,7 @@ class AnswerTalker:
         # ★ 3.5) Composer 用の dev_force_model を設定（開発用：Gemini 強制）
         # ======================================================
         self.llm_meta["dev_force_model"] = "gemini"
-        
+
         # ======================================================
         # 4) ComposerAI
         # ======================================================
