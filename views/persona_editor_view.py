@@ -1,4 +1,3 @@
-# views/persona_editor_view.py
 from __future__ import annotations
 
 from typing import Protocol
@@ -18,7 +17,7 @@ class PersonaEditorView:
     ModeSwitcher から呼び出される前提。
     """
 
-    TITLE = "🖋️ キャラ設定編集（Persona）"
+    TITLE = "🧬 Persona JSON エディタ（β）"
 
     def __init__(self) -> None:
         self.editor = PersonaEditor()
