@@ -1,38 +1,34 @@
 # actors/answer_talker.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, MutableMapping
+from typing import Any, Dict, List, Optional
 
 from actors.models_ai2 import ModelsAI2
 from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from actors.emotion_ai import EmotionAI, EmotionResult
+from actors.persona_ai import PersonaAI  # ★ JSON ベース人格管理
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
 
 class AnswerTalker:
     """
-    AI回答パイプラインの司令塔クラス（Streamlit 非依存版）。
+    AI回答パイプラインの司令塔クラス。
 
     - ModelsAI2:  複数モデルから回答収集（gpt51 / grok / gemini / hermes / ...）
     - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
-    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成（＋任意 Refine）
+    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成（＋Refiner）
     - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
                   ＋ 長期感情（LongTermEmotion）の更新と judge_mode 決定
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
 
-    仕様:
-      Persona と conversation_log から組み立てた messages を入力として、
-      Models → Judge → Composer → Emotion(short) → Memory → Emotion(long)
-      を回し、最終的な返答テキストを返す。
-
-    Notes
-    -----
-    - Streamlit から使う場合は state に st.session_state を渡してください。
-      例: AnswerTalker(persona, state=st.session_state)
-    - 純 Python 環境から使う場合は state を省略すると内部 dict を使用します。
+    ★ 重要:
+      - Streamlit には依存しない。
+      - state 引数に「外部状態(dict 互換)」を渡すことで、
+        セッション情報を外側と共有できる（例: st.session_state）。
+      - state を渡さなければ内部 dict を自前で保持して動作する。
     """
 
     def __init__(
@@ -40,11 +36,16 @@ class AnswerTalker:
         persona: Any,
         llm_manager: Optional[LLMManager] = None,
         memory_model: str = "gpt4o",
-        state: Optional[MutableMapping[str, Any]] = None,
+        state: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.persona = persona
-        self.state: MutableMapping[str, Any] = state if state is not None else {}
         persona_id = getattr(self.persona, "char_id", "default")
+
+        # ★ 外部セッション状態（なければ内部 dict）
+        self.state: Dict[str, Any] = state if state is not None else {}
+
+        # ★ PersonaAI（JSON ベースの人格情報管理）
+        self.persona_ai = PersonaAI(persona_id=persona_id)
 
         # LLMManager を全体共有
         self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
@@ -68,8 +69,7 @@ class AnswerTalker:
         llm_meta.setdefault("memory_update", {})
         llm_meta.setdefault("emotion_long_term", {})
 
-        # ★ Persona 由来のスタイルヒントを llm_meta に載せておく
-        #    Refiner や将来のライティング系で使うための導線
+        # ★ Persona 由来のデフォルトスタイルヒント（従来の persona クラスから）
         if "composer_style_hint" not in llm_meta:
             hint = ""
             if hasattr(self.persona, "get_composer_style_hint"):
@@ -226,6 +226,26 @@ class AnswerTalker:
             return ""
 
         # ======================================================
+        # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta に「丸ごと」反映
+        # ======================================================
+        try:
+            # 必ず最新 JSON を読み直す
+            persona_all = self.persona_ai.get_all(reload=True)
+
+            # Persona 情報そのものを llm_meta に格納
+            self.llm_meta["persona"] = persona_all
+
+            # style_hint は JSON 側を優先し、無ければ従来の composer_style_hint を継承
+            style_hint = (
+                persona_all.get("style_hint")
+                or self.llm_meta.get("composer_style_hint", "")
+            )
+            self.llm_meta["style_hint"] = style_hint
+
+        except Exception as e:
+            self.llm_meta["persona_error"] = str(e)
+
+        # ======================================================
         # 0) 「このターンで使う judge_mode」を決定
         # ======================================================
         mode_current = (
@@ -353,7 +373,7 @@ class AnswerTalker:
 
             lt_state = self.emotion_ai.update_long_term(
                 memory_records=records,
-                current_round=int(self.state.get("round_number", 0)),
+                current_round=round_val,
                 alpha=0.3,
             )
 
