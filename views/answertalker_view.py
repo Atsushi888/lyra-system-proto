@@ -1,7 +1,7 @@
 # views/answertalker_view.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Protocol
+from typing import Any, Dict, Protocol
 
 import os
 import json
@@ -20,7 +20,7 @@ class View(Protocol):
 
 class AnswerTalkerView:
     """
-    AnswerTalker / ModelsAI / JudgeAI3 / ComposerAI / MemoryAI の
+    AnswerTalker / ModelsAI2 / JudgeAI3 / ComposerAI / MemoryAI の
     デバッグ・閲覧用ビュー。
     """
 
@@ -30,7 +30,14 @@ class AnswerTalkerView:
         # Actor と AnswerTalker を初期化
         persona = Persona()
         self.actor = Actor("floria", persona)
-        self.answer_talker = AnswerTalker(persona)
+
+        # ★ ここが重要：Streamlit 側の state を AnswerTalker に明示的に渡す
+        #   - これにより、AnswerTalker 内部とビューの両方で
+        #     st.session_state["llm_meta"] などを共有できる。
+        self.answer_talker = AnswerTalker(
+            persona,
+            state=st.session_state,  # ← ここを追加
+        )
 
     def render(self) -> None:
         st.header(self.TITLE)
@@ -66,6 +73,7 @@ class AnswerTalkerView:
                     if error:
                         st.error(f"error: {error}")
 
+                    # 実際のテキストも頭だけ確認できるように
                     if text:
                         st.markdown("**preview:**")
                         st.code(text[:1000])
@@ -94,9 +102,11 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
+            # ▼ 候補モデル＋スコア一覧
             raw_candidates = judge.get("candidates") or []
             with st.expander("候補モデル一覧（candidates / scores）", expanded=False):
                 if isinstance(raw_candidates, dict):
+                    # もし dict 形式: {model_name: {score, text, ...}}
                     for name, info in raw_candidates.items():
                         score = info.get("score", "-")
                         preview = (info.get("text") or "")[:800]
@@ -104,6 +114,7 @@ class AnswerTalkerView:
                         st.write(preview)
                         st.markdown("---")
                 elif isinstance(raw_candidates, list):
+                    # もし list 形式: [{"name":..., "score":..., "text":...}, ...]
                     for i, cand in enumerate(raw_candidates, start=1):
                         name = cand.get("name", f"cand-{i}")
                         score = cand.get("score", "-")
@@ -181,13 +192,17 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
-        # ---- Composer 用スタイルヒント（persona 由来） ----
-        style_hint = llm_meta.get("composer_style_hint") or ""
+        # ---- Composer 用スタイルヒント（persona / PersonaAI 由来） ----
+        style_hint = (
+            llm_meta.get("style_hint")
+            or llm_meta.get("composer_style_hint")
+            or ""
+        )
         if style_hint:
-            st.subheader("Composer 用スタイルヒント（persona 由来）")
-            with st.expander("composer_style_hint", expanded=False):
+            st.subheader("Composer 用スタイルヒント（persona / PersonaAI 由来）")
+            with st.expander("style_hint", expanded=False):
                 st.text_area(
-                    "composer_style_hint",
+                    "style_hint",
                     value=style_hint,
                     height=260,
                     label_visibility="collapsed",
@@ -232,6 +247,7 @@ class AnswerTalkerView:
                 st.write(f"sadness:   {emo.get('sadness', 0.0):.2f}")
                 st.write(f"excitement:{emo.get('excitement', 0.0):.2f}")
 
+            # EmotionAI が実際に LLM に投げた生テキスト（デバッグ）
             with st.expander("raw_text（EmotionAI の LLM 出力）", expanded=False):
                 st.code(emo.get("raw_text", ""), language="json")
 
@@ -240,6 +256,7 @@ class AnswerTalkerView:
         memory_ctx = llm_meta.get("memory_context") or ""
         mem_update = llm_meta.get("memory_update") or {}
 
+        # AnswerTalker が抱えている MemoryAI インスタンスを取得
         memory_ai = getattr(self.answer_talker, "memory_ai", None)
 
         if memory_ai is None:
@@ -252,6 +269,7 @@ class AnswerTalkerView:
             st.write(f"- max_records: `{max_records}`")
             st.write(f"- storage_file: `{storage_file}`")
 
+            # メモリ一覧（MemoryAI.get_all_records）
             try:
                 records = memory_ai.get_all_records()
             except Exception as e:
@@ -283,6 +301,7 @@ class AnswerTalkerView:
                             st.write("\n**source_assistant:**")
                             st.text(r.source_assistant)
 
+            # ▼ 実ファイルの診断（JSON が本当に作られているか）
             st.markdown("---")
             st.markdown("### MemoryAI ファイル診断（JSON）")
 
