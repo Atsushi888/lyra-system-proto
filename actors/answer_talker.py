@@ -327,7 +327,7 @@ class AnswerTalker:
         # ======================================================
         # ★ 3.5) Composer 用の dev_force_model を設定（開発用：Gemini 強制）
         # ======================================================
-        self.llm_meta["dev_force_model"] = "gemini"
+        # self.llm_meta["dev_force_model"] = "gemini"
 
         # ======================================================
         # 4) ComposerAI
