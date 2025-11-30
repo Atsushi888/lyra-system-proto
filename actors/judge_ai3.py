@@ -1,261 +1,228 @@
 # actors/judge_ai3.py
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-
-
-@dataclass
-class JudgeCandidate:
-    name: str
-    text: str
-    status: str
-    length: int
-    base_score: float
-    length_score: float
-    total_score: float
+import random
 
 
 class JudgeAI3:
     """
-    複数モデルの回答候補から「どれを採用するか」を決める審査クラス（第3世代）。
+    複数 LLM の回答候補（models）から、
+    「どのモデルのテキストを採用するか」を決める審判クラス。
 
-    方針:
-      - ModelsAI2 が集めた llm_meta["models"] を入力として評価する
-      - プレイヤーの発話長 (user_text の文字数) を参考に
-          - ユーザー文が短い → やや長めの回答を好む
-          - ユーザー文が長い → やや短めの回答を好む
-        という「長さの嗜好」を導入する
-      - 将来的に emotion_mode などもスコア式に足せるよう、内部は加点方式で設計
+    v0.3x の方針:
+      - models: { model_name: {"status": "ok", "text": "...", ...}, ... }
+      - 「好みの長さ」に近いテキストを高評価
+      - たまに「超短い / 超長い」気分屋モードでターゲット長を極端に振る
+      - 将来的に内容評価ロジックを足していけるように、スコア算出はメソッド分離
 
-    期待される models 構造:
-      models = {
-          "gpt51": {"status": "ok", "text": "...", ...},
-          "grok":  {"status": "ok", "text": "...", ...},
-          ...
-      }
-
-    run() 戻り値の例:
+    run() の戻り値:
       {
-          "status": "ok",
-          "mode": "normal",
-          "chosen_model": "gpt51",
-          "chosen_text": "・・・",
-          "reason": "...",
-          "candidates": [
-              {
-                  "name": "gpt51",
-                  "score": 0.83,
-                  "length": 240,
-                  "length_score": 0.9,
-                  "base_score": 0.8,
-                  "details": { ... },
-              },
-              ...
-          ],
+        "status": "ok" | "error",
+        "error": str,
+        "chosen_model": str,
+        "chosen_text": str,
+        "reason": str,
+        "candidates": [
+          {
+            "name": str,
+            "score": float,
+            "length": int,
+            "text": str,
+            "status": str,
+            "details": {
+              "target_length": int,
+              "length_score": float,
+            },
+          },
+          ...
+        ],
       }
     """
 
     def __init__(self, mode: str = "normal") -> None:
-        self.mode = mode  # "normal" / "erotic" / "debate" など
+        self.mode = (mode or "normal").lower()
 
-    # --------------------------------------------------
-    # 外部 API
-    # --------------------------------------------------
     def set_mode(self, mode: str) -> None:
-        """外部から Judge モードを差し替えるための簡易 setter。"""
-        self.mode = mode or "normal"
+        self.mode = (mode or "normal").lower()
 
+    # ==========================================================
+    # メインエントリ
+    # ==========================================================
     def run(
         self,
         models: Dict[str, Any],
-        *,
         user_text: str = "",
     ) -> Dict[str, Any]:
         """
-        models: llm_meta["models"]
-        user_text: このターンのプレイヤー発話。長さスコア算出の材料に使う。
+        models: ModelsAI2.collect() の結果（llm_meta["models"]）を想定。
+        user_text: プレイヤーの直近発話（任意）。渡されなければ長さ150相当で計算。
         """
-        # 候補生成
-        candidates = self._collect_candidates(models, user_text=user_text)
-
-        if not candidates:
+        if not isinstance(models, dict) or not models:
             return {
                 "status": "error",
-                "mode": self.mode,
+                "error": "no_models",
                 "chosen_model": "",
                 "chosen_text": "",
-                "reason": "[JudgeAI3] no valid candidates",
+                "reason": "models is empty or not a dict",
                 "candidates": [],
             }
-
-        # スコア最大の候補を選択
-        best = max(
-            candidates,
-            key=lambda c: (c.total_score, c.base_score, c.length),
-        )
-
-        # デバッグ用に候補一覧を dict 化
-        cand_list: List[Dict[str, Any]] = []
-        for c in candidates:
-            cand_list.append(
-                {
-                    "name": c.name,
-                    "score": round(c.total_score, 4),
-                    "length": c.length,
-                    "length_score": round(c.length_score, 4),
-                    "base_score": round(c.base_score, 4),
-                    "details": {
-                        "status": c.status,
-                        "length": c.length,
-                        "length_score": c.length_score,
-                        "base_score": c.base_score,
-                        "total_score": c.total_score,
-                    },
-                }
-            )
-
-        reason = self._build_reason(best, user_text=user_text)
-
-        return {
-            "status": "ok",
-            "mode": self.mode,
-            "chosen_model": best.name,
-            "chosen_text": best.text,
-            "reason": reason,
-            "candidates": cand_list,
-        }
-
-    # --------------------------------------------------
-    # 内部実装
-    # --------------------------------------------------
-    def _collect_candidates(
-        self,
-        models: Dict[str, Any],
-        *,
-        user_text: str,
-    ) -> List[JudgeCandidate]:
-        """
-        models dict から評価対象となる候補を集め、スコアリングして返す。
-        """
-        if not isinstance(models, dict):
-            return []
 
         user_len = len(user_text or "")
         target_len = self._calc_preferred_length(user_len=user_len)
 
-        # モデルごとの「基本優先度」（tie-breaker 用）
-        # 必要に応じて調整可
-        base_priority_order = ["gpt51", "gpt4o", "grok", "gemini", "hermes"]
-        base_priority_map = {
-            name: (len(base_priority_order) - idx) / float(len(base_priority_order))
-            for idx, name in enumerate(base_priority_order)
-        }
-
-        candidates: List[JudgeCandidate] = []
+        candidates: List[Dict[str, Any]] = []
 
         for name, info in models.items():
             if not isinstance(info, dict):
                 continue
 
             status = str(info.get("status") or "unknown")
-            if status != "ok":
-                continue
-
-            text = str(info.get("text") or "").strip()
-            if not text:
-                continue
-
+            text = (info.get("text") or "").strip()
             length = len(text)
 
-            # ---- 1) ベーススコア（今はほぼモデル優先度のみ）----
-            base_score = base_priority_map.get(name, 0.5)
-
-            # ---- 2) 長さの嗜好スコア ----
-            length_score = self._length_preference_score(
-                answer_len=length,
-                target_len=target_len,
-            )
-
-            # ---- 3) 総合スコア ----
-            #   - length_score をやや重めに扱う
-            total_score = (base_score * 0.4) + (length_score * 0.6)
+            if not text or status != "ok":
+                score = -1.0
+                length_score = 0.0
+            else:
+                length_score = self._score_length(length=length, target_length=target_len)
+                # 将来ここに「内容スコア」などを加算していく
+                score = length_score
 
             candidates.append(
-                JudgeCandidate(
-                    name=name,
-                    text=text,
-                    status=status,
-                    length=length,
-                    base_score=base_score,
-                    length_score=length_score,
-                    total_score=total_score,
-                )
+                {
+                    "name": name,
+                    "score": float(score),
+                    "length": length,
+                    "text": text,
+                    "status": status,
+                    "details": {
+                        "target_length": target_len,
+                        "length_score": float(length_score),
+                    },
+                }
             )
 
-        return candidates
+        if not candidates:
+            return {
+                "status": "error",
+                "error": "no_candidates_built",
+                "chosen_model": "",
+                "chosen_text": "",
+                "reason": "no candidates could be constructed from models",
+                "candidates": [],
+            }
 
-    # --------------------------------------------------
-    # 長さまわりのロジック
-    # --------------------------------------------------
+        best = max(candidates, key=lambda c: c["score"])
+
+        if best["score"] < 0:
+            return {
+                "status": "error",
+                "error": "no_usable_candidate",
+                "chosen_model": "",
+                "chosen_text": "",
+                "reason": "all candidates had non-positive scores",
+                "candidates": candidates,
+            }
+
+        chosen_model = best["name"]
+        chosen_text = best["text"]
+        chosen_len = best["length"]
+
+        reason = (
+            f"preferred_length={target_len}, "
+            f"user_length={user_len}, "
+            f"chosen_model={chosen_model}, "
+            f"chosen_length={chosen_len}"
+        )
+
+        return {
+            "status": "ok",
+            "error": "",
+            "chosen_model": chosen_model,
+            "chosen_text": chosen_text,
+            "reason": reason,
+            "candidates": candidates,
+        }
+
+    # ==========================================================
+    # ターゲット長計算（★ 気分屋モード付き）
+    # ==========================================================
     def _calc_preferred_length(self, *, user_len: int) -> int:
         """
-        プレイヤー発話長から「好ましい回答長の目安」を計算する。
+        プレイヤーの発話長さから、このターンで「好み」とする回答長を決める。
 
-        イメージ:
-          - user_len が短い (例: 0〜50)  →  だいたい 260 前後のやや長めを好む
-          - user_len が長い (例: 300 以上) → だいたい 120 前後のやや短めを好む
-
-        線形補間でシンプルに決めているだけなので、必要に応じて調整可。
+        - 通常は「ユーザー文が短いときは長め」「長いときは短め」
+        - ただし 10% の確率で「超短い / 超長い」極端モードに振れる
         """
-        # ユーザー文の長さを 0〜1 に正規化（300 文字以上は 1 扱い）
+
+        # user_len が 0 のときは「中庸な長さ」とみなす
+        if user_len <= 0:
+            user_len = 150
+
+        # 0〜1 に正規化（300字以上は1扱い）
         u = max(0.0, min(1.0, user_len / 300.0))
 
-        # u=0 のときのターゲット（ユーザーが短文）→ 長め
-        target_long = 260  # 好みで調整可
+        # =========================
+        # 🎲 たまに極端モード
+        # =========================
+        r = random.random()
 
-        # u=1 のときのターゲット（ユーザーが長文）→ 短め
-        target_short = 120
+        # 1/20 ≒ 0.05 で「超短い」モード
+        if r < 0.05:
+            # 40〜80文字くらいの超ショート（ツン期・ギロチントーク用）
+            target = random.randint(40, 80)
+            return target
 
-        target = int(round(target_long * (1.0 - u) + target_short * u))
-        return max(60, target)  # あまりに短くならないように下限を設定
+        # 次の 1/20 で「超長い」モード（合計 1/10 で極端になる）
+        if r < 0.10:
+            # 260〜420文字くらいのロングモード（饒舌・語りたい気分）
+            target = random.randint(260, 420)
+            return target
 
-    def _length_preference_score(self, *, answer_len: int, target_len: int) -> float:
+        # =========================
+        # それ以外は通常モード
+        # =========================
+
+        # 中心となるターゲット長
+        # - ユーザー文が短いとき: 長め（target_long）
+        # - ユーザー文が長いとき: 短め（target_short）
+        target_long = 260   # u ≒ 0.0 のとき
+        target_short = 120  # u ≒ 1.0 のとき
+
+        base_target = int(round(target_long * (1.0 - u) + target_short * u))
+
+        # ゆらぎレンジ
+        # - ユーザー文が短いほどゆらぎを大きく
+        # - 長いほどキッチリ目に
+        max_noise = int(40 * (1.0 - u) + 10 * u)
+        noise = random.randint(-max_noise, max_noise)
+
+        target = base_target + noise
+
+        # 下限を確保
+        return max(60, target)
+
+    # ==========================================================
+    # 長さスコア（0.0〜1.0）
+    # ==========================================================
+    @staticmethod
+    def _score_length(*, length: int, target_length: int) -> float:
         """
-        「回答長がターゲット長にどれくらい近いか」を 0.0〜1.0 でスコアリングする。
+        回答の文字数が「ターゲット長」にどれだけ近いかを 0.0〜1.0 で返す。
 
-        diff_ratio = |answer_len - target_len| / target_len
-        をもとに、diff_ratio が 0 のとき 1.0、1.0 のとき 0.0 になるような
-        緩やかなスコアにしている。
+        diff が target と同じくらい離れていれば 0、
+        ぴったりなら 1、というシンプルな線形スコア。
         """
-        if target_len <= 0:
-            return 0.5
+        if length <= 0 or target_length <= 0:
+            return 0.0
 
-        diff = abs(answer_len - target_len)
-        diff_ratio = diff / float(target_len)
+        diff = abs(length - target_length)
+        rel = diff / float(target_length)
 
-        # 差が 0 → 1.0, 差が target_len → 0.0
-        raw = 1.0 - diff_ratio
-        # 多少ゆるめにしておく（必要なら係数を調整）
-        score = max(0.0, min(1.0, raw))
+        score = 1.0 - rel  # diff == target_length → 0.0
+        if score < 0.0:
+            score = 0.0
+        if score > 1.0:
+            score = 1.0
         return score
-
-    # --------------------------------------------------
-    # 説明テキスト生成
-    # --------------------------------------------------
-    def _build_reason(self, best: JudgeCandidate, *, user_text: str) -> str:
-        """
-        選択理由の要約を作る（デバッグ＆説明用）。
-        """
-        user_len = len(user_text or "")
-        target_len = self._calc_preferred_length(user_len=user_len)
-
-        return (
-            f"[JudgeAI3] mode={self.mode}, "
-            f"user_len={user_len}, "
-            f"target_len≈{target_len}, "
-            f"chosen={best.name} "
-            f"(len={best.length}, base_score={best.base_score:.3f}, "
-            f"length_score={best.length_score:.3f}, "
-            f"total={best.total_score:.3f})"
-        )
