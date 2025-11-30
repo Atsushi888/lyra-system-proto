@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+import os  # ★ LYRA_DEBUG 判定用
 
 from actors.models_ai2 import ModelsAI2
 from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from actors.emotion_ai import EmotionAI, EmotionResult
-from actors.persona_ai import PersonaAI  # ★ JSON ベース人格管理
+from actors.persona_ai import PersonaAI  # JSON ベース人格管理
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -25,10 +26,14 @@ class AnswerTalker:
     - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
 
     ★ 重要:
-      - Streamlit には依存しない。
+      - Streamlit には直接依存しない（import はしない）。
       - state 引数に「外部状態(dict 互換)」を渡すことで、
         セッション情報を外側と共有できる（例: st.session_state）。
-      - state を渡さなければ内部 dict を自前で保持して動作する。
+      - state が渡されない場合、
+          - 環境変数 LYRA_DEBUG が真相当（"1","true","yes" 等）で、
+          - streamlit が import 可能なとき、
+        自動的に st.session_state を使う。
+      - それ以外は内部 dict を自前で保持して動作する。
     """
 
     def __init__(
@@ -41,8 +46,28 @@ class AnswerTalker:
         self.persona = persona
         persona_id = getattr(self.persona, "char_id", "default")
 
-        # ★ 外部セッション状態（なければ内部 dict）
-        self.state: Dict[str, Any] = state if state is not None else {}
+        # ======================================================
+        # state 決定ロジック
+        # ======================================================
+        if state is not None:
+            # 1) 呼び出し側から明示的に渡された state を最優先
+            self.state: Dict[str, Any] = state
+        else:
+            # 2) LYRA_DEBUG が有効なら、可能なら streamlit.session_state を利用
+            debug_flag = os.getenv("LYRA_DEBUG", "").strip().lower()
+            use_debug_state = debug_flag in ("1", "true", "yes", "on")
+
+            if use_debug_state:
+                try:
+                    import streamlit as st  # type: ignore
+                    # st.session_state は Mapping っぽいので dict として扱う
+                    self.state = st.session_state  # type: ignore[assignment]
+                except Exception:
+                    # streamlit が使えない環境なら静かにフォールバック
+                    self.state = {}
+            else:
+                # 3) 通常運用: 内部 dict で完結
+                self.state = {}
 
         # ★ PersonaAI（JSON ベースの人格情報管理）
         self.persona_ai = PersonaAI(persona_id=persona_id)
