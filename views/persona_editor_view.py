@@ -17,7 +17,7 @@ class PersonaEditorView:
     ModeSwitcher から呼び出される前提。
     """
 
-    TITLE = "🧬 Persona JSON エディタ（β）"
+    TITLE = "🖋️ キャラ設定（Persona JSON エディタ）"
 
     def __init__(self) -> None:
         self.editor = PersonaEditor()
