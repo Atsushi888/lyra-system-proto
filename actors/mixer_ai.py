@@ -2,39 +2,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, MutableMapping
 
-try:
-    import streamlit as st  # EmotionControl の値を読むため
-    _HAS_ST = True
-except Exception:
-    st = None  # type: ignore
-    _HAS_ST = False
+from actors.emotion_ai import EmotionResult
+from actors.scene_ai import SceneAI
 
-from actors.emotion_ai import EmotionAI, EmotionResult
-
-
-# ============================================
-# シーン固有の感情補正値
-# ============================================
 
 @dataclass
-class SceneEmotion:
+class EmotionVector:
     """
-    シーン固有の感情補正値。
-    すべて「-1.0〜+1.0」程度に収まるスケールを想定。
+    感情ベクトルをまとめて扱うための小さなヘルパ。
 
-    scene_id:
-        シーン識別用ID（"council_room", "sunset_hill" など）。
-        ログやデバッグ用で、数値計算には使わない。
-    mode:
-        推奨モード（"normal" / "erotic" など）。
-        空文字や "normal" なら特に上書きしない前提でもOK。
+    keys:
+      - affection
+      - arousal
+      - tension
+      - anger
+      - sadness
+      - excitement
     """
-
-    scene_id: str
-
-    mode: str = "normal"
     affection: float = 0.0
     arousal: float = 0.0
     tension: float = 0.0
@@ -42,206 +28,187 @@ class SceneEmotion:
     sadness: float = 0.0
     excitement: float = 0.0
 
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "EmotionVector":
+        if not isinstance(data, dict):
+            return cls()
+        def f(key: str) -> float:
+            v = data.get(key, 0.0)
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+        return cls(
+            affection=f("affection"),
+            arousal=f("arousal"),
+            tension=f("tension"),
+            anger=f("anger"),
+            sadness=f("sadness"),
+            excitement=f("excitement"),
+        )
 
-# ============================================
-# MixerAI 本体
-# ============================================
+    @classmethod
+    def from_emotion_result(cls, res: Optional[EmotionResult]) -> "EmotionVector":
+        if res is None:
+            return cls()
+        return cls(
+            affection=float(res.affection),
+            arousal=float(res.arousal),
+            tension=float(res.tension),
+            anger=float(res.anger),
+            sadness=float(res.sadness),
+            excitement=float(res.excitement),
+        )
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "affection": self.affection,
+            "arousal": self.arousal,
+            "tension": self.tension,
+            "anger": self.anger,
+            "sadness": self.sadness,
+            "excitement": self.excitement,
+        }
+
+    def add_inplace(self, other: "EmotionVector") -> None:
+        self.affection += other.affection
+        self.arousal   += other.arousal
+        self.tension   += other.tension
+        self.anger     += other.anger
+        self.sadness   += other.sadness
+        self.excitement+= other.excitement
+
 
 class MixerAI:
     """
-    フローリアの最終感情ベクトルを決定するミキサー。
+    EmotionAI / ユーザー手動入力 / SceneAI の感情値を統合するクラス。
 
-    入力:
-      - EmotionAI.last_short_result（短期感情）
-      - SceneEmotion（シーン固有の補正）
-      - EmotionControl（UI）の手動オーバーライド
-
-    出力:
-      - ModelsAI2.collect() にそのまま渡せる emotion_override dict:
-
-        {
-          "mode": str,
-          "affection": float,
-          "arousal": float,
-          "tension": float,
-          "anger": float,
-          "sadness": float,
-          "excitement": float,
-        }
+    役割:
+      - 「どのソースから感情を持ってくるか」を決める
+      - SceneAI からシーン固有のボーナス／ペナルティを取得する
+      - 上記をミックスして、ModelsAI2 に渡す emotion_override を生成する
     """
 
-    def __init__(
+    def __init__(self, state: Optional[MutableMapping[str, Any]] = None) -> None:
+        # NOTE: state は必須ではないが、あると SceneAI / EmotionControl と連携しやすい
+        self.state = state
+
+    # ----------------------------------------------------------
+    # SceneAI からのボーナス取得
+    # ----------------------------------------------------------
+    def get_scene_emotion_bonus(
         self,
-        emotion_ai: EmotionAI,
-        *,
-        use_streamlit_ui: bool = True,
-        weight_short: float = 1.0,
-        weight_scene: float = 1.0,
-        weight_ui: float = 1.0,
-    ) -> None:
-        self.emotion_ai = emotion_ai
-        self.use_streamlit_ui = use_streamlit_ui
-
-        # 各ソースの重み（必要に応じて外から調整する）
-        self.weight_short = float(weight_short)
-        self.weight_scene = float(weight_scene)
-        self.weight_ui = float(weight_ui)
-
-    # ----------------------------------------
-    # 補助: UI override 読み込み
-    # ----------------------------------------
-    def _load_ui_override(self) -> Optional[Dict[str, Any]]:
+        state: Optional[MutableMapping[str, Any]] = None,
+    ) -> EmotionVector:
         """
-        EmotionControl が st.session_state に保存している
-        手動感情値を読み取る。
+        SceneAI から「現在シーンに由来する感情ボーナス」を取得して EmotionVector で返す。
+        SceneAI 側では、例えば以下のような情報を返す想定:
 
-        戻り値:
-          - None  : 何も指定なし（auto モードなど）
-          - dict  : {"mode": ..., "affection": ..., ...}
+        {
+          "scene_id": "town",
+          "label": "街",
+          "emotion_bonus": {
+              "affection": +0.2,
+              "tension":  -0.1,
+              ...
+          }
+        }
         """
-        if (not self.use_streamlit_ui) or (not _HAS_ST):
-            return None
-
-        mode = st.session_state.get("emotion_override_mode", "auto")
-        manual = st.session_state.get("emotion_override_manual")
-
-        # manual_full のときだけ MixerAI が UI 値を利用する
-        if mode != "manual_full":
-            return None
-
-        if not isinstance(manual, dict):
-            return None
+        st = state or self.state
+        if st is None:
+            return EmotionVector()
 
         try:
-            return {
-                "mode": manual.get("mode", "normal"),
-                "affection": float(manual.get("affection", 0.0)),
-                "arousal": float(manual.get("arousal", 0.0)),
-                "tension": float(manual.get("tension", 0.0)),
-                "anger": float(manual.get("anger", 0.0)),
-                "sadness": float(manual.get("sadness", 0.0)),
-                "excitement": float(manual.get("excitement", 0.0)),
-            }
+            scene_ai = SceneAI(state=st)
+            info = scene_ai.get_current_scene_info()
         except Exception:
-            # 数値化に失敗したら無視
-            return None
+            return EmotionVector()
 
-    # ----------------------------------------
-    # 補助: EmotionAI の短期感情
-    # ----------------------------------------
-    def _get_short_emotion(self) -> Optional[EmotionResult]:
-        """
-        EmotionAI が最後に解析した短期感情を返す。
-        （なければ None）
-        """
-        short: Optional[EmotionResult] = getattr(
-            self.emotion_ai, "last_short_result", None
-        )
-        return short
+        if not isinstance(info, dict):
+            return EmotionVector()
 
-    # ----------------------------------------
-    # 補助: スカラー合成
-    # ----------------------------------------
-    @staticmethod
-    def _clamp(v: float, lo: float = -1.0, hi: float = 1.0) -> float:
-        return max(lo, min(hi, v))
+        raw_bonus = info.get("emotion_bonus") or {}
+        return EmotionVector.from_dict(raw_bonus)
 
-    def _mix_scalar(
-        self,
-        base: float,
-        scene: float,
-        ui: float,
-    ) -> float:
-        """
-        1軸ぶんの合成。
-        今は単純な線形結合 + クリップ。
-        必要に応じて非線形カーブに差し替えてもよい。
-        """
-        val = (
-            base * self.weight_short
-            + scene * self.weight_scene
-            + ui * self.weight_ui
-        )
-        return self._clamp(val)
-
-    # ----------------------------------------
-    # 公開API: ModelsAI2向け emotion_override を構築
-    # ----------------------------------------
-    def build_for_models(
+    # ----------------------------------------------------------
+    # ModelsAI2 用 emotion_override の構築
+    # ----------------------------------------------------------
+    def build_emotion_override_for_models(
         self,
         *,
-        scene_emotion: Optional[SceneEmotion] = None,
+        state: Optional[MutableMapping[str, Any]] = None,
+        emotion_ai: Any = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        ModelsAI2.collect() に渡す emotion_override dict を構築する。
+        ModelsAI2.collect() に渡す emotion_override を構築する。
 
-        scene_emotion:
-          シーン固有の感情補正。未指定なら None。
+        ソース:
+          - EmotionAI の短期感情（emotion_ai.last_short_result）
+          - ユーザー手動入力（state["emotion_override_manual"]）
+          - SceneAI からのボーナス（get_scene_emotion_bonus）
+
+        重み付けルール（v1.1 プロトタイプ）:
+          - EmotionAI（base）は 1.0 倍
+          - Scene ボーナスはそのまま加算（微調整想定）
+          - manual_full の場合:
+              手動ベクトルをベースとし、そこに Scene ボーナスだけ足す
         """
 
-        short = self._get_short_emotion()
-        ui = self._load_ui_override()
-
-        if short is None and scene_emotion is None and ui is None:
-            # 何も情報がなければ override なし
+        st = state or self.state
+        if st is None:
             return None
 
-        # ---- mode の決定優先順位: UI > Scene > short > "normal" ----
-        mode = "normal"
-        if ui and ui.get("mode"):
-            mode = str(ui["mode"])
-        elif scene_emotion and scene_emotion.mode:
-            mode = scene_emotion.mode
-        elif short and getattr(short, "mode", None):
-            mode = short.mode  # type: ignore[assignment]
+        # 1) base: EmotionAI の短期感情
+        short = getattr(emotion_ai, "last_short_result", None)
+        base_vec = EmotionVector.from_emotion_result(short)
+        base_mode = getattr(short, "mode", "normal") if short is not None else "normal"
 
-        # ---- 各ソースから値を取得（存在しないものは 0 扱い） ----
-        def val_from_short(attr: str) -> float:
-            return float(getattr(short, attr)) if short is not None else 0.0
+        # 2) user: EmotionControl パネルからの手動入力
+        override_mode = st.get("emotion_override_mode", "auto")
+        manual_raw = st.get("emotion_override_manual")
+        manual_vec = EmotionVector.from_dict(manual_raw) if isinstance(manual_raw, dict) else None
 
-        def val_from_scene(attr: str) -> float:
-            return float(getattr(scene_emotion, attr)) if scene_emotion is not None else 0.0
+        # 3) scene: SceneAI からのボーナス／ペナルティ
+        scene_vec = self.get_scene_emotion_bonus(st)
 
-        def val_from_ui(attr: str) -> float:
-            return float(ui.get(attr, 0.0)) if ui is not None else 0.0
+        # 4) 合成
+        if override_mode == "manual_full" and manual_vec is not None:
+            # 手動値をベースに、Scene のボーナスだけ足す
+            mixed = EmotionVector(
+                affection=manual_vec.affection,
+                arousal=manual_vec.arousal,
+                tension=manual_vec.tension,
+                anger=manual_vec.anger,
+                sadness=manual_vec.sadness,
+                excitement=manual_vec.excitement,
+            )
+            mode_str = "manual_full"
+        else:
+            # 通常は EmotionAI の結果をベースに Scene ボーナスを加算
+            mixed = EmotionVector(
+                affection=base_vec.affection,
+                arousal=base_vec.arousal,
+                tension=base_vec.tension,
+                anger=base_vec.anger,
+                sadness=base_vec.sadness,
+                excitement=base_vec.excitement,
+            )
+            mode_str = base_mode
 
-        affection = self._mix_scalar(
-            val_from_short("affection"),
-            val_from_scene("affection"),
-            val_from_ui("affection"),
-        )
-        arousal = self._mix_scalar(
-            val_from_short("arousal"),
-            val_from_scene("arousal"),
-            val_from_ui("arousal"),
-        )
-        tension = self._mix_scalar(
-            val_from_short("tension"),
-            val_from_scene("tension"),
-            val_from_ui("tension"),
-        )
-        anger = self._mix_scalar(
-            val_from_short("anger"),
-            val_from_scene("anger"),
-            val_from_ui("anger"),
-        )
-        sadness = self._mix_scalar(
-            val_from_short("sadness"),
-            val_from_scene("sadness"),
-            val_from_ui("sadness"),
-        )
-        excitement = self._mix_scalar(
-            val_from_short("excitement"),
-            val_from_scene("excitement"),
-            val_from_ui("excitement"),
-        )
+        # Scene ボーナスを加算
+        mixed.add_inplace(scene_vec)
 
-        return {
-            "mode": mode,
-            "affection": affection,
-            "arousal": arousal,
-            "tension": tension,
-            "anger": anger,
-            "sadness": sadness,
-            "excitement": excitement,
+        # 何も変化がない（すべて 0）なら None を返してもよいが、
+        # ModelsAI2 側で「mode だけでも欲しい」場合があるので常に返す。
+        result = {
+            "mode": mode_str,
+            **mixed.to_dict(),
         }
+
+        # デバッグ用に state にも落としておくと便利
+        try:
+            st["emotion_mixed_for_models"] = result
+        except Exception:
+            pass
+
+        return result
