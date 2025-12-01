@@ -1,8 +1,7 @@
 # actors/answer_talker.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, MutableMapping
-import os
+from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
@@ -12,8 +11,8 @@ from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from actors.emotion_ai import EmotionAI, EmotionResult
 from actors.persona_ai import PersonaAI
-from actors.mixer_ai import MixerAI  # ★ MixerAI のみ参照（SceneAI は Mixer 側に隠蔽）
-
+from actors.scene_ai import SceneAI
+from actors.mixer_ai import MixerAI
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -22,13 +21,15 @@ class AnswerTalker:
     """
     AI回答パイプラインの司令塔クラス。
 
-    - ModelsAI2:  複数モデルから回答収集
-    - JudgeAI3:   採用モデルの決定
-    - ComposerAI: 最終返答テキストの整形（＋Refiner）
-    - EmotionAI:  短期・長期感情の推定と judge_mode 決定
-    - MemoryAI:   長期記憶の管理
-    - PersonaAI:  JSON ベースの人格情報管理
-    - MixerAI:    EmotionAI / 手動入力 / SceneAI の感情値ミックス
+    - ModelsAI2:  複数モデルから回答収集（gpt51 / grok / gemini / hermes / ...）
+    - JudgeAI3:   どのモデルの回答を採用するかを決定（モード切替対応）
+    - ComposerAI: 採用候補をもとに最終的な返答テキストを生成（＋Refiner）
+    - EmotionAI:  Composer の最終返答＋記憶コンテキストから感情値を推定
+                  ＋ 長期感情（LongTermEmotion）の更新と judge_mode 決定
+    - MemoryAI:   1ターンごとの会話から長期記憶を抽出・保存
+    - PersonaAI:  JSON ベースの人格情報管理（style_hint など）
+    - SceneAI:    現在のシーン情報（scene_current, emotion_bonus など）
+    - MixerAI:    EmotionAI / SceneAI / 手動パネルから emotion_override を構築
     """
 
     def __init__(
@@ -36,43 +37,37 @@ class AnswerTalker:
         persona: Any,
         llm_manager: Optional[LLMManager] = None,
         memory_model: str = "gpt4o",
-        state: Optional[MutableMapping[str, Any]] = None,
     ) -> None:
         self.persona = persona
         persona_id = getattr(self.persona, "char_id", "default")
 
-        # -----------------------------
-        # 状態管理（Streamlit / 外部）
-        # -----------------------------
-        debug_flag = os.getenv("LYRA_DEBUG", "0")
-        if debug_flag == "1" or state is None:
-            self.state: MutableMapping[str, Any] = st.session_state
-        else:
-            self.state = state
-
-        # PersonaAI
+        # PersonaAI（JSON ベースの人格情報管理）
         self.persona_ai = PersonaAI(persona_id=persona_id)
 
-        # LLMManager
+        # LLMManager を全体共有
         self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
+
+        # 登録されているモデルメタ情報
         self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
 
-        # llm_meta 初期化
-        llm_meta = self.state.get("llm_meta")
+        # llm_meta の初期化／復元
+        llm_meta = st.session_state.get("llm_meta")
         if not isinstance(llm_meta, dict):
             llm_meta = {}
 
+        # 必要キーのデフォルトを埋める
         llm_meta.setdefault("models", {})
         llm_meta.setdefault("judge", {})
-        llm_meta.setdefault("judge_mode", "normal")
+        llm_meta.setdefault("judge_mode", "normal")  # このターンで実際に使ったモード
         llm_meta.setdefault("judge_mode_next", llm_meta.get("judge_mode", "normal"))
         llm_meta.setdefault("composer", {})
         llm_meta.setdefault("emotion", {})
         llm_meta.setdefault("memory_context", "")
         llm_meta.setdefault("memory_update", {})
         llm_meta.setdefault("emotion_long_term", {})
+        llm_meta.setdefault("scene", {})
 
-        # persona 由来の style_hint（旧 Persona クラス）
+        # Persona 由来のデフォルトスタイルヒント（旧 Persona クラスから）
         if "composer_style_hint" not in llm_meta:
             hint = ""
             if hasattr(self.persona, "get_composer_style_hint"):
@@ -82,8 +77,8 @@ class AnswerTalker:
                     hint = ""
             llm_meta["composer_style_hint"] = hint
 
-        # 新規会談開始時は judge_mode を normal にリセット
-        round_no_raw = self.state.get("round_number", 0)
+        # ----- 新しい会談開始時は強制 normal にリセットする -----
+        round_no_raw = st.session_state.get("round_number", 0)
         try:
             round_no = int(round_no_raw)
         except Exception:
@@ -92,34 +87,43 @@ class AnswerTalker:
         if round_no <= 1:
             llm_meta["judge_mode"] = "normal"
             llm_meta["judge_mode_next"] = "normal"
-            self.state["judge_mode"] = "normal"
+            st.session_state["judge_mode"] = "normal"
         else:
-            if "judge_mode" in self.state:
-                llm_meta["judge_mode"] = self.state["judge_mode"]
+            if "judge_mode" in st.session_state:
+                llm_meta["judge_mode"] = st.session_state["judge_mode"]
             else:
-                self.state["judge_mode"] = llm_meta.get("judge_mode", "normal")
+                st.session_state["judge_mode"] = llm_meta.get("judge_mode", "normal")
 
         self.llm_meta: Dict[str, Any] = llm_meta
-        self.state["llm_meta"] = self.llm_meta
+        st.session_state["llm_meta"] = self.llm_meta
 
-        # サブコンポーネント
+        # Multi-LLM 集計（新バージョン）
         self.models_ai = ModelsAI2(llm_manager=self.llm_manager)
 
+        # EmotionAI（感情解析＋長期感情管理）
         self.emotion_ai = EmotionAI(
             llm_manager=self.llm_manager,
             model_name="gpt51",
         )
 
-        self.mixer_ai = MixerAI(state=self.state)  # ★ MixerAI に state を渡す
+        # SceneAI / MixerAI
+        self.scene_ai = SceneAI(state=st.session_state)
+        self.mixer_ai = MixerAI(
+            emotion_ai=self.emotion_ai,
+            scene_ai=self.scene_ai,
+            state=st.session_state,
+        )
 
+        # JudgeAI3（初期モードは llm_meta / session_state / emotion のいずれか）
         initial_mode = (
-            self.state.get("judge_mode")
+            st.session_state.get("judge_mode")
             or self.llm_meta.get("judge_mode")
             or self.llm_meta.get("emotion", {}).get("mode")
             or "normal"
         )
         self.judge_ai = JudgeAI3(mode=str(initial_mode))
 
+        # Composer / Memory
         self.composer_ai = ComposerAI(
             llm_manager=self.llm_manager,
             refine_model="gpt51",
@@ -139,6 +143,10 @@ class AnswerTalker:
         mode_current: str = "normal",
         emotion_override: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """
+        Persona.build_messages() で組み立てた messages を受け取り、
+        ModelsAI2.collect() を実行して llm_meta["models"] を更新する。
+        """
         if not messages:
             return
 
@@ -148,7 +156,7 @@ class AnswerTalker:
             emotion_override=emotion_override,
         )
         self.llm_meta["models"] = results
-        self.state["llm_meta"] = self.llm_meta
+        st.session_state["llm_meta"] = self.llm_meta
 
     # ---------------------------------------
     # メインパイプライン
@@ -163,7 +171,9 @@ class AnswerTalker:
         if not messages:
             return ""
 
-        # 0.5) PersonaAI → llm_meta へ反映
+        # ======================================================
+        # 0.5) PersonaAI / SceneAI の最新情報を llm_meta に反映
+        # ======================================================
         try:
             persona_all = self.persona_ai.get_all(reload=True)
             self.llm_meta["persona"] = persona_all
@@ -173,22 +183,32 @@ class AnswerTalker:
                 or self.llm_meta.get("composer_style_hint", "")
             )
             self.llm_meta["style_hint"] = style_hint
-
         except Exception as e:
             self.llm_meta["persona_error"] = str(e)
 
-        # 0) このターンの judge_mode 決定
+        try:
+            scene_info = self.scene_ai.get_scene_info()
+            self.llm_meta["scene"] = scene_info
+        except Exception as e:
+            self.llm_meta["scene_error"] = str(e)
+
+        # ======================================================
+        # 0) 「このターンで使う judge_mode」を決定
+        # ======================================================
         mode_current = (
             judge_mode
             or self.llm_meta.get("judge_mode")
-            or self.state.get("judge_mode")
+            or st.session_state.get("judge_mode")
             or "normal"
         )
+
         self.judge_ai.set_mode(mode_current)
         self.llm_meta["judge_mode"] = mode_current
-        self.state["judge_mode"] = mode_current
+        st.session_state["judge_mode"] = mode_current
 
+        # ======================================================
         # 1) MemoryAI.build_memory_context
+        # ======================================================
         try:
             mem_ctx = self.memory_ai.build_memory_context(user_query=user_text or "")
             self.llm_meta["memory_context"] = mem_ctx
@@ -197,21 +217,28 @@ class AnswerTalker:
             self.llm_meta["memory_context_error"] = str(e)
             self.llm_meta["memory_context"] = ""
 
-        # 1.5) emotion_override（★ MixerAI に丸投げ）
-        emotion_override = self.mixer_ai.build_emotion_override_for_models(
-            state=self.state,
-            emotion_ai=self.emotion_ai,
-        )
-        self.llm_meta["emotion_override_for_models"] = emotion_override
+        # ======================================================
+        # 1.5) MixerAI で emotion_override を構築
+        # ======================================================
+        try:
+            emotion_override = self.mixer_ai.build_emotion_override_for_models()
+            self.llm_meta["emotion_override_for_models"] = emotion_override
+        except Exception as e:
+            emotion_override = None
+            self.llm_meta["emotion_override_error"] = str(e)
 
+        # ======================================================
         # 2) ModelsAI.collect
+        # ======================================================
         self.run_models(
             messages,
             mode_current=mode_current,
             emotion_override=emotion_override,
         )
 
+        # ======================================================
         # 3) JudgeAI3
+        # ======================================================
         try:
             judge_result = self.judge_ai.run(self.llm_meta.get("models", {}))
         except Exception as e:
@@ -224,10 +251,14 @@ class AnswerTalker:
             }
         self.llm_meta["judge"] = judge_result
 
-        # 3.5) Composer 用 dev_force_model（開発中は Gemini 強制）
+        # ======================================================
+        # 3.5) Composer 用 dev_force_model（開発用：Gemini 強制）
+        # ======================================================
         self.llm_meta["dev_force_model"] = "gemini"
 
+        # ======================================================
         # 4) ComposerAI
+        # ======================================================
         try:
             composed = self.composer_ai.compose(self.llm_meta)
         except Exception as e:
@@ -241,28 +272,35 @@ class AnswerTalker:
             }
         self.llm_meta["composer"] = composed
 
+        # ======================================================
         # 5) EmotionAI.analyze + decide_judge_mode
+        # ======================================================
         try:
             emotion_res: EmotionResult = self.emotion_ai.analyze(
                 composer=composed,
                 memory_context=self.llm_meta.get("memory_context", ""),
                 user_text=user_text or "",
             )
+            # EmotionAI 内部に last_short_result として保持されることを期待
             self.llm_meta["emotion"] = emotion_res.to_dict()
 
             next_mode = self.emotion_ai.decide_judge_mode(emotion_res)
             self.llm_meta["judge_mode_next"] = next_mode
-            self.state["judge_mode"] = next_mode
+            st.session_state["judge_mode"] = next_mode
 
         except Exception as e:
             self.llm_meta["emotion_error"] = str(e)
 
+        # ======================================================
         # 6) 最終返答テキスト
+        # ======================================================
         final_text = composed.get("text") or judge_result.get("chosen_text") or ""
 
+        # ======================================================
         # 7) MemoryAI.update_from_turn
+        # ======================================================
         try:
-            round_val = int(self.state.get("round_number", 0))
+            round_val = int(st.session_state.get("round_number", 0))
             mem_update = self.memory_ai.update_from_turn(
                 messages=messages,
                 final_reply=final_text,
@@ -276,7 +314,9 @@ class AnswerTalker:
             }
         self.llm_meta["memory_update"] = mem_update
 
+        # ======================================================
         # 7.5) EmotionAI.update_long_term
+        # ======================================================
         try:
             if hasattr(self.memory_ai, "get_all_records"):
                 records = self.memory_ai.get_all_records()
@@ -288,12 +328,15 @@ class AnswerTalker:
                 current_round=round_val,
                 alpha=0.3,
             )
+
             if hasattr(lt_state, "to_dict"):
                 self.llm_meta["emotion_long_term"] = lt_state.to_dict()
         except Exception as e:
             self.llm_meta["emotion_long_term_error"] = str(e)
 
+        # ======================================================
         # 8) 保存
-        self.state["llm_meta"] = self.llm_meta
+        # ======================================================
+        st.session_state["llm_meta"] = self.llm_meta
 
         return final_text
