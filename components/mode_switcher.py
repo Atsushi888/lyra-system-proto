@@ -1,7 +1,7 @@
 # components/mode_switcher.py
 from __future__ import annotations
 
-from typing import Dict, Protocol, Any, Callable
+from typing import Dict, Protocol, Any
 
 import streamlit as st
 
@@ -15,7 +15,8 @@ from views.council_view import CouncilView
 from views.llm_manager_view import create_llm_manager_view
 from views.answertalker_view import create_answertalker_view
 from views.emotion_control_view import create_emotion_control_view
-from views.persona_editor_view import create_persona_editor_view  # ★ 追加
+from views.persona_editor_view import create_persona_editor_view
+from views.scene_changer_view import create_scene_changer_view  # ★ 追加
 
 
 class View(Protocol):
@@ -36,7 +37,8 @@ class ModeSwitcher:
         "COUNCIL":       "🗣 会談システム（β）",
         "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",
         "EMOTION":       "💓 感情オーバーライド",
-        "PERSONA":       "🖋️ キャラ設定（Persona）",  # ★ 追加
+        "PERSONA":       "🖋️ キャラ設定（Persona）",
+        "SCENE":         "🚶‍♀️ シーン移動",          # ★ 追加
     }
 
     def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
@@ -72,17 +74,22 @@ class ModeSwitcher:
             },
             "ANSWERTALKER": {
                 "label": self.LABELS["ANSWERTALKER"],
-                "view": create_answertalker_view,   # AnswerTalker 用ファクトリ
+                "view": create_answertalker_view,
                 "min_role": Role.ADMIN,
             },
             "EMOTION": {
                 "label": self.LABELS["EMOTION"],
-                "view": create_emotion_control_view,  # 感情パネル
-                "min_role": Role.ADMIN,              # USER でも良い。好みで
+                "view": create_emotion_control_view,
+                "min_role": Role.ADMIN,
             },
             "PERSONA": {
                 "label": self.LABELS["PERSONA"],
-                "view": create_persona_editor_view,   # ★ PersonaEditor 用ファクトリ
+                "view": create_persona_editor_view,
+                "min_role": Role.ADMIN,
+            },
+            "SCENE": {
+                "label": self.LABELS["SCENE"],
+                "view": create_scene_changer_view,   # ★ SceneChanger 用ファクトリ
                 "min_role": Role.ADMIN,
             },
         }
@@ -133,7 +140,6 @@ class ModeSwitcher:
 
         st.subheader(self.routes[cur]["label"])
 
-        # view は「インスタンス」か「ビュー生成関数」のどちらでもOK
         view_or_factory: Any = self.routes[cur]["view"]
 
         if callable(view_or_factory):
