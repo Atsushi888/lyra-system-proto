@@ -1,0 +1,12 @@
+{
+  "scene_id": "ice_cave",
+  "label": "封印の氷窟",
+  "emotion_bonus": {
+    "affection": -0.10,
+    "arousal": -0.10,
+    "tension": 0.25,
+    "anger": 0.05,
+    "sadness": 0.10,
+    "excitement": 0.00
+  }
+}
