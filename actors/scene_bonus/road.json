@@ -1,0 +1,12 @@
+{
+  "scene_id": "road",
+  "label": "街道筋",
+  "emotion_bonus": {
+    "affection": 0.00,
+    "arousal": 0.00,
+    "tension": 0.10,
+    "anger": 0.00,
+    "sadness": 0.00,
+    "excitement": 0.10
+  }
+}
