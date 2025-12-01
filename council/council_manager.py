@@ -1,4 +1,4 @@
-# council_manager.py
+# council/council_manager.py
 
 from __future__ import annotations
 from typing import Optional, List, Dict, Any
@@ -7,6 +7,7 @@ import streamlit as st
 
 from actors.actor import Actor
 from personas.persona_floria_ja import Persona
+from actors.narrator_ai import NarratorAI
 
 
 def get_or_create_council_actor() -> Actor:
@@ -28,7 +29,7 @@ def get_or_create_council_actor() -> Actor:
 class CouncilManager:
     """
     会談システムのロジック ＋ 画面描画（β）。
-    - conversation_log: 会話の生ログ（プレイヤー/フローリア両方）
+    - conversation_log: 会話の生ログ（プレイヤー/フローリア/ナレーター）
     - round は「発言の総数」として len(conversation_log) から毎回計算する
     """
 
@@ -48,7 +49,15 @@ class CouncilManager:
             "mode": "ongoing",
             "participants": ["player", "floria"],
             "last_speaker": None,
+            # Round0 ナレーションを出したかどうか
+            "round0_done": False,
+            # スペシャル関連
+            "special_available": False,
+            "special_id": None,
         }
+
+        # NarratorAI（救済＋Round0用）
+        self.narrator = NarratorAI()
 
     # ===== 内部ヘルパ =====
     def _append_log(self, role: str, content: str) -> None:
@@ -63,6 +72,9 @@ class CouncilManager:
         self.conversation_log.clear()
         self.state["mode"] = "ongoing"
         self.state["last_speaker"] = None
+        self.state["round0_done"] = False
+        self.state["special_available"] = False
+        self.state["special_id"] = None
 
     def get_log(self) -> List[Dict[str, str]]:
         """会談ログのコピーを返す（表示用）。"""
@@ -82,6 +94,7 @@ class CouncilManager:
             "mode": self.state.get("mode", "ongoing"),
             "participants": self.state.get("participants", ["player", "floria"]),
             "last_speaker": self.state.get("last_speaker"),
+            "special_available": self.state.get("special_available", False),
         }
 
     def proceed(self, user_text: str) -> str:
@@ -103,6 +116,34 @@ class CouncilManager:
 
         return reply
 
+    # ===== 救済アクション処理 =====
+    def proceed_rescue(self, kind: str) -> Optional[str]:
+        """
+        救済ボタンからの行動を処理する。
+        kind: "wait" | "look_person" | "scan_area" | "special"
+        戻り値: フローリアの返答テキスト（あれば）
+        """
+        if kind == "wait":
+            choice = self.narrator.make_wait_choice()
+
+        elif kind == "look_person":
+            # 当面はフローリア固定
+            choice = self.narrator.make_look_person_choice(actor_name="フローリア")
+
+        elif kind == "scan_area":
+            choice = self.narrator.make_scan_area_choice(location_name="この場")
+
+        elif kind == "special":
+            special_id = self.state.get("special_id") or "unknown_special"
+            _, choice = self.narrator.make_special_title_and_choice(special_id)
+
+        else:
+            return None
+
+        player_text = choice.speak_text
+        reply = self.proceed(player_text)
+        return reply
+
     # ===== 画面描画（旧 CouncilView.render 相当） =====
     def render(self) -> None:
         # --- 二度押し防止フラグ初期化 ---
@@ -110,7 +151,17 @@ class CouncilManager:
             # False: 待機中 / True: 送信処理中
             st.session_state["council_sending"] = False
 
+        if "council_pending_action" not in st.session_state:
+            # None: 保留アクションなし / 文字列: "wait" など
+            st.session_state["council_pending_action"] = None
+
         sending: bool = st.session_state["council_sending"]
+
+        # --- Round0 ナレーション（まだ何も発言がない場合に1回だけ） ---
+        if not self.conversation_log and not self.state.get("round0_done", False):
+            line = self.narrator.generate_round0_opening()
+            self._append_log("narrator", line.text)
+            self.state["round0_done"] = True
 
         log = self.get_log()
         status = self.get_status()
@@ -138,6 +189,8 @@ class CouncilManager:
                     name = "プレイヤー"
                 elif role == "floria":
                     name = "フローリア"
+                elif role == "narrator":
+                    name = "ナレーション"
                 else:
                     name = role or "？"
 
@@ -157,6 +210,7 @@ class CouncilManager:
             last = status.get("last_speaker")
             if last:
                 st.write(f"最後の話者: {last}")
+            st.write(f"スペシャル選択可: {status.get('special_available')}")
 
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
@@ -171,33 +225,115 @@ class CouncilManager:
             placeholder="ここにフローリアへの発言を書いてください。",
         )
 
-        send_col, _ = st.columns([1, 3])
+        # 送信＋救済ボタン
+        send_col, wait_col, look_col, scan_col, special_col = st.columns([1, 1, 1, 1, 1])
+
+        # ---- 通常送信ボタン ----
         with send_col:
-            # sending=True の間はボタンを無効化して連打を防止
             send_clicked = st.button(
                 "送信",
                 key="council_send",
                 disabled=sending,
             )
 
-            if send_clicked:
-                cleaned = (user_text or "").strip()
-                if not cleaned:
-                    st.warning("発言を入力してください。")
+        # ---- 救済ボタン ----
+        with wait_col:
+            wait_clicked = st.button(
+                "何もしない",
+                key="council_wait",
+                disabled=sending,
+            )
+        with look_col:
+            look_clicked = st.button(
+                "相手の様子を伺う",
+                key="council_look",
+                disabled=sending,
+            )
+        with scan_col:
+            scan_clicked = st.button(
+                "周りの様子を見る",
+                key="council_scan",
+                disabled=sending,
+            )
+        with special_col:
+            special_clicked = st.button(
+                "スペシャル",
+                key="council_special",
+                disabled=sending,
+            )
+
+        # ---- 通常送信処理 ----
+        if send_clicked:
+            cleaned = (user_text or "").strip()
+            if not cleaned:
+                st.warning("発言を入力してください。")
+            else:
+                # 二重ガード：理論上 disabled なので入らないはずだが保険
+                if st.session_state["council_sending"]:
+                    st.info("いま処理中です。少し待ってから再度お試しください。")
                 else:
-                    # 二重ガード：理論上 disabled なので入らないはずだが保険
-                    if st.session_state["council_sending"]:
-                        st.info("いま処理中です。少し待ってから再度お試しください。")
-                    else:
-                        # ★ 送信処理中フラグを立てる
-                        st.session_state["council_sending"] = True
+                    st.session_state["council_sending"] = True
 
-                        # フローリア思考中スピナー
-                        with st.spinner("フローリアは少し考えています…"):
-                            self.proceed(cleaned)
+                    # フローリア思考中スピナー
+                    with st.spinner("フローリアは少し考えています…"):
+                        self.proceed(cleaned)
 
-                        # 処理完了 → フラグを戻す
-                        st.session_state["council_sending"] = False
+                    st.session_state["council_sending"] = False
+                    st.rerun()
 
-                        # 入力欄は、ラウンドが進んで key が変わることで自動的に空になる
-                        st.rerun()
+        # ---- 救済ボタン → pending_action へ ----
+        if wait_clicked:
+            st.session_state["council_pending_action"] = "wait"
+            st.rerun()
+
+        if look_clicked:
+            st.session_state["council_pending_action"] = "look_person"
+            st.rerun()
+
+        if scan_clicked:
+            st.session_state["council_pending_action"] = "scan_area"
+            st.rerun()
+
+        if special_clicked:
+            if not self.state.get("special_available", False):
+                st.info("ここでスペシャルは選択できません。")
+            else:
+                st.session_state["council_pending_action"] = "special"
+                st.rerun()
+
+        # ---- 救済アクションの確認ウインドウ ----
+        pending = st.session_state.get("council_pending_action")
+        if pending:
+            if pending == "wait":
+                msg = "このターンは何も行動せず、様子を見ます。よろしいですか？"
+            elif pending == "look_person":
+                msg = "隣にいる相手の様子をうかがいます。よろしいですか？"
+            elif pending == "scan_area":
+                msg = "周囲の様子を見回します。よろしいですか？"
+            elif pending == "special":
+                special_id = self.state.get("special_id") or "unknown_special"
+                title, _ = self.narrator.make_special_title_and_choice(special_id)
+                msg = f"スペシャルアクション「{title}」を実行します。よろしいですか？"
+            else:
+                msg = "この行動を実行します。よろしいですか？"
+
+            st.markdown("---")
+            st.warning(msg)
+
+            col_ok, col_cancel = st.columns(2)
+            with col_ok:
+                ok_clicked = st.button("実行する", key="council_rescue_ok")
+            with col_cancel:
+                cancel_clicked = st.button("キャンセル", key="council_rescue_cancel")
+
+            if ok_clicked:
+                st.session_state["council_sending"] = True
+                with st.spinner("フローリアは少し考えています…"):
+                    self.proceed_rescue(pending)
+                st.session_state["council_sending"] = False
+                st.session_state["council_pending_action"] = None
+                st.rerun()
+
+            if cancel_clicked:
+                st.session_state["council_pending_action"] = None
+                st.rerun()
