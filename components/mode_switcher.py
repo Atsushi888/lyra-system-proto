@@ -89,7 +89,7 @@ class ModeSwitcher:
             },
             "SCENE": {
                 "label": self.LABELS["SCENE"],
-                "view": create_scene_changer_view,   # ★ SceneChanger 用ファクトリ
+                "view": create_scene_changer_view,   # ★ シーン移動ビュー
                 "min_role": Role.ADMIN,
             },
         }
@@ -140,6 +140,7 @@ class ModeSwitcher:
 
         st.subheader(self.routes[cur]["label"])
 
+        # view は「インスタンス」か「ビュー生成関数」のどちらでもOK
         view_or_factory: Any = self.routes[cur]["view"]
 
         if callable(view_or_factory):
