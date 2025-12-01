@@ -16,7 +16,7 @@ from views.llm_manager_view import create_llm_manager_view
 from views.answertalker_view import create_answertalker_view
 from views.emotion_control_view import create_emotion_control_view
 from views.persona_editor_view import create_persona_editor_view
-from views.scene_changer_view import create_scene_changer_view  # ★ 追加
+from views.scene_changer_view import create_scene_changer_view   # ★ 追加
 
 
 class View(Protocol):
@@ -24,11 +24,6 @@ class View(Protocol):
 
 
 class ModeSwitcher:
-    """
-    表示切替のみ担当（認証ロジックは持たない）。
-    routes は __init__ 内で内蔵生成。
-    """
-
     LABELS: Dict[str, str] = {
         "PLAY":          "🎮 ゲームモード",
         "USER":          "🎛️ ユーザー設定（LLM）",
@@ -38,23 +33,22 @@ class ModeSwitcher:
         "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",
         "EMOTION":       "💓 感情オーバーライド",
         "PERSONA":       "🖋️ キャラ設定（Persona）",
-        "SCENE":         "🚶‍♀️ シーン移動",          # ★ 追加
+        "SCENE":         "🚶‍♀️ シーン移動",           # ★ 追加
     }
 
     def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
         self.default_key = default_key
         self.session_key = session_key
 
-        # 内蔵ルーティング
         self.routes: Dict[str, Dict[str, Any]] = {
             "PLAY": {
                 "label": self.LABELS["PLAY"],
-                "view": GameView(),              # インスタンス
+                "view": GameView(),
                 "min_role": Role.USER,
             },
             "USER": {
                 "label": self.LABELS["USER"],
-                "view": create_llm_manager_view,  # ファクトリ
+                "view": create_llm_manager_view,
                 "min_role": Role.USER,
             },
             "BACKSTAGE": {
@@ -89,16 +83,14 @@ class ModeSwitcher:
             },
             "SCENE": {
                 "label": self.LABELS["SCENE"],
-                "view": create_scene_changer_view,   # ★ シーン移動ビュー
+                "view": create_scene_changer_view,
                 "min_role": Role.ADMIN,
             },
         }
 
-        # セッション初期化
         if self.session_key not in st.session_state:
             st.session_state[self.session_key] = self.default_key
 
-    # ------------------------------------------------------------------
     @property
     def current(self) -> str:
         cur = st.session_state.get(self.session_key, self.default_key)
@@ -107,11 +99,9 @@ class ModeSwitcher:
             st.session_state[self.session_key] = cur
         return cur
 
-    # ------------------------------------------------------------------
     def render(self, user_role: Role) -> None:
         st.sidebar.markdown("## 画面切替")
 
-        # 現在のロールでアクセス可能な画面一覧
         visible_keys = [
             k for k, cfg in self.routes.items()
             if user_role >= cfg.get("min_role", Role.USER)
@@ -122,7 +112,6 @@ class ModeSwitcher:
             cur = visible_keys[0]
             st.session_state[self.session_key] = cur
 
-        # ボタン並び
         for key in visible_keys:
             label = self.routes[key]["label"]
             disabled = (key == cur)
@@ -140,9 +129,7 @@ class ModeSwitcher:
 
         st.subheader(self.routes[cur]["label"])
 
-        # view は「インスタンス」か「ビュー生成関数」のどちらでもOK
         view_or_factory: Any = self.routes[cur]["view"]
-
         if callable(view_or_factory):
             view: View = view_or_factory()
         else:
