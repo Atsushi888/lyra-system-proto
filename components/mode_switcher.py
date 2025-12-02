@@ -18,6 +18,7 @@ from views.emotion_control_view import create_emotion_control_view
 from views.persona_editor_view import create_persona_editor_view
 from views.scene_changer_view import create_scene_changer_view
 from views.narrator_manager_view import create_narrator_manager_view
+from views.scene_manager_view import SceneManagerView   # ★ 追加
 
 
 class View(Protocol):
@@ -36,6 +37,7 @@ class ModeSwitcher:
         "PERSONA":       "🖋️ キャラ設定（Persona）",
         "SCENE":         "🚶‍♀️ シーン移動",
         "NARRATOR":      "📝 Narrator Debug",
+        "SCENEMGR":      "🌏 Scene Emotion Manager",   # ★ 追加
     }
 
     def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
@@ -91,6 +93,11 @@ class ModeSwitcher:
             "NARRATOR": {
                 "label": self.LABELS["NARRATOR"],
                 "view": create_narrator_manager_view,
+                "min_role": Role.ADMIN,
+            },
+            "SCENEMGR": {   # ★ 追加ルート
+                "label": self.LABELS["SCENEMGR"],
+                "view": SceneManagerView(),
                 "min_role": Role.ADMIN,
             },
         }
