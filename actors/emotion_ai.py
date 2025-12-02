@@ -23,9 +23,9 @@ class EmotionResult:
     affection: float = 0.0      # 好意・親しみ
     arousal: float = 0.0        # 性的な高ぶり
     tension: float = 0.0        # 緊張・不安
-    anger: float = 0.0
-    sadness: float = 0.0
-    excitement: float = 0.0
+    anger: float = 0.0          # 怒り
+    sadness: float = 0.0        # 悲しみ
+    excitement: float = 0.0     # 期待・ワクワク
     raw_text: str = ""          # LLM の生返答（JSONそのもの or エラー）
 
     def to_dict(self) -> Dict[str, Any]:
