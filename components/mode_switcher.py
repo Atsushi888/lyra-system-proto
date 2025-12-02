@@ -17,6 +17,7 @@ from views.answertalker_view import create_answertalker_view
 from views.emotion_control_view import create_emotion_control_view
 from views.persona_editor_view import create_persona_editor_view
 from views.scene_changer_view import create_scene_changer_view   # ★ 追加
+from views.narrator_manager_view import create_narrator_manager_view  # ★ 追加
 
 
 class View(Protocol):
@@ -34,6 +35,7 @@ class ModeSwitcher:
         "EMOTION":       "💓 感情オーバーライド",
         "PERSONA":       "🖋️ キャラ設定（Persona）",
         "SCENE":         "🚶‍♀️ シーン移動",           # ★ 追加
+        "NARRATOR":      "📝 Narrator Debug",         # ★ 追加
     }
 
     def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
@@ -84,6 +86,11 @@ class ModeSwitcher:
             "SCENE": {
                 "label": self.LABELS["SCENE"],
                 "view": create_scene_changer_view,
+                "min_role": Role.ADMIN,
+            },
+            "NARRATOR": {
+                "label": self.LABELS["NARRATOR"],
+                "view": create_narrator_manager_view,
                 "min_role": Role.ADMIN,
             },
         }
