@@ -1,3 +1,4 @@
+# actors/scene/scene_manager.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ class SceneManager:
     }
     """
 
+    # JSON 保存先
     path: str = "actors/scene/scene_bonus/scene_emotion_map.json"
 
     # 感情次元（UI はこのリストに従ってスライダーを出す）
@@ -113,41 +115,69 @@ class SceneManager:
             "通学路": {
                 "slots": {
                     "morning": {
-                        "emotions": {"affection": 0.10, "arousal": -0.10, "tension": -0.10}
+                        "emotions": {
+                            "affection": 0.10,
+                            "arousal": -0.10,
+                            "tension": -0.10,
+                        }
                     },
                     "after_school": {
-                        "emotions": {"affection": 0.25, "arousal": 0.20, "tension": 0.10}
+                        "emotions": {
+                            "affection": 0.25,
+                            "arousal": 0.20,
+                            "tension": 0.10,
+                        }
                     },
                 }
             },
             "学食": {
                 "slots": {
                     "lunch": {
-                        "emotions": {"affection": 0.20, "arousal": -0.20, "tension": -0.10}
+                        "emotions": {
+                            "affection": 0.20,
+                            "arousal": -0.20,
+                            "tension": -0.10,
+                        }
                     }
                 }
             },
             "駅前": {
                 "slots": {
                     "after_school": {
-                        "emotions": {"affection": 0.15, "arousal": 0.00, "tension": 0.00}
+                        "emotions": {
+                            "affection": 0.15,
+                            "arousal": 0.00,
+                            "tension": 0.00,
+                        }
                     },
                     "night": {
-                        "emotions": {"affection": 0.18, "arousal": 0.10, "tension": 0.05}
+                        "emotions": {
+                            "affection": 0.18,
+                            "arousal": 0.10,
+                            "tension": 0.05,
+                        }
                     },
                 }
             },
             "プレイヤーの部屋": {
                 "slots": {
                     "night": {
-                        "emotions": {"affection": 0.25, "arousal": 0.10, "tension": -0.10}
+                        "emotions": {
+                            "affection": 0.25,
+                            "arousal": 0.10,
+                            "tension": -0.10,
+                        }
                     }
                 }
             },
             "プール": {
                 "slots": {
                     "after_school": {
-                        "emotions": {"affection": 0.30, "arousal": 0.20, "tension": 0.10}
+                        "emotions": {
+                            "affection": 0.30,
+                            "arousal": 0.20,
+                            "tension": 0.10,
+                        }
                     }
                 }
             },
@@ -222,30 +252,7 @@ class SceneManager:
         if not self.time_slots or not self.locations:
             self._init_default()
 
-        # ---- 感情ディメンション編集 ----
-        st.markdown("### 🎭 感情ディメンション")
-
-        st.write("現在の次元:", ", ".join(self.dimensions))
-
-        with st.expander("➕ 感情ディメンションを追加", expanded=False):
-            new_dim = st.text_input(
-                "新しい感情名（例: comfort / loneliness）",
-                key="dim_new_name",
-            )
-            if st.button("ディメンション追加", key="dim_add_btn"):
-                name = new_dim.strip()
-                if name:
-                    if name in self.dimensions:
-                        st.warning(f"感情次元『{name}』は既に存在します。")
-                    else:
-                        self.dimensions.append(name)
-                        self._ensure_dimension_exists_everywhere(name)
-                        st.success(f"感情次元『{name}』を追加しました。")
-                        st.rerun()
-
-        st.markdown("---")
-
-        # ---- 時間帯スロット編集 ----
+        # ---- 時間帯スロット編集（先に出す） ----
         st.markdown("### ⏱ 時間帯スロット設定")
 
         for name in list(self.time_slots.keys()):
@@ -280,8 +287,33 @@ class SceneManager:
 
         st.markdown("---")
 
+        # ---- 感情ディメンション（時間帯の後ろ） ----
+        st.markdown("### 🎭 感情ディメンション")
+
+        st.write("現在の次元:", ", ".join(self.dimensions))
+
+        with st.expander("➕ 感情ディメンションを追加", expanded=False):
+            new_dim = st.text_input(
+                "新しい感情名（例: comfort / loneliness）",
+                key="dim_new_name",
+            )
+            if st.button("ディメンション追加", key="dim_add_btn"):
+                name = new_dim.strip()
+                if name:
+                    if name in self.dimensions:
+                        st.warning(f"感情次元『{name}』は既に存在します。")
+                    else:
+                        self.dimensions.append(name)
+                        self._ensure_dimension_exists_everywhere(name)
+                        st.success(f"感情次元『{name}』を追加しました。")
+                        st.rerun()
+
+        st.markdown("---")
+
         # ---- ロケーション別 一日スケジュール ----
         st.markdown("### 🏙 ロケーション別・一日スケジュール")
+
+        max_per_row = 3  # スライダー 3 本ごとに改行
 
         for loc_name in list(self.locations.keys()):
             loc = self.locations.setdefault(loc_name, {"slots": {}})
@@ -295,19 +327,22 @@ class SceneManager:
                     label = f"{slot_name} ({ts_spec.get('start')}–{ts_spec.get('end')})"
                     st.markdown(f"**{label}**")
 
-                    # 感情次元ごとのスライダー
-                    cols = st.columns(len(self.dimensions))
-                    for i, dim in enumerate(self.dimensions):
-                        with cols[i]:
-                            default_val = float(emo_vec.get(dim, 0.0))
-                            emo_vec[dim] = st.slider(
-                                f"{loc_name}/{slot_name}/{dim}",
-                                -1.0,
-                                1.0,
-                                default_val,
-                                0.05,
-                                key=f"loc_{loc_name}_{slot_name}_{dim}",
-                            )
+                    # 感情ディメンションを max_per_row ごとに折り返す
+                    dims = list(self.dimensions)
+                    for i in range(0, len(dims), max_per_row):
+                        chunk = dims[i : i + max_per_row]
+                        cols = st.columns(len(chunk))
+                        for dim, col in zip(chunk, cols):
+                            with col:
+                                default_val = float(emo_vec.get(dim, 0.0))
+                                emo_vec[dim] = st.slider(
+                                    f"{loc_name}/{slot_name}/{dim}",
+                                    -1.0,
+                                    1.0,
+                                    default_val,
+                                    0.05,
+                                    key=f"loc_{loc_name}_{slot_name}_{dim}",
+                                )
 
                 st.markdown("---")
 
