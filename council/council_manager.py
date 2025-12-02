@@ -1,7 +1,7 @@
 # council/council_manager.py
 
 from __future__ import annotations
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 
 import streamlit as st
 
@@ -14,7 +14,6 @@ from actors.narrator.narrator_manager import NarratorManager
 def get_or_create_council_actor() -> Actor:
     """
     会談システム用の Actor を1つだけ生成・再利用する。
-    LLMRouter はもう利用しない。AnswerTalker の内部で LLMManager を利用するため。
     """
     actor_key = "council_actor"
 
@@ -41,11 +40,9 @@ class CouncilManager:
         # いまはフローリア AI だけ
         self.actors: Dict[str, Actor] = {
             "floria": Actor("フローリア", Persona())
-            # もし session_state 共有にしたいなら:
-            # "floria": get_or_create_council_actor()
         }
 
-        # 状態（round は持たず、都度計算）
+        # 状態
         self.state: Dict[str, Any] = {
             "mode": "ongoing",
             "participants": ["player", "floria"],
@@ -107,6 +104,10 @@ class CouncilManager:
         self.state["special_available"] = False
         self.state["special_id"] = None
 
+        # バッファ類もクリア
+        st.session_state.pop("council_rescue_buffer", None)
+        st.session_state.pop("council_pending_action", None)
+
         # ★ リセット直後に Round0 を再構成
         self._ensure_round0_initialized()
 
@@ -149,15 +150,11 @@ class CouncilManager:
         return reply
 
     # ===== 救済アクション処理 =====
-    def proceed_rescue(self, kind: str, input_key: str) -> None:
+    def build_rescue_text(self, kind: str) -> str:
         """
-        救済ボタンからの行動を処理する。
-        kind: "wait" | "look_person" | "scan_area" | "special"
-
-        ★ ここではログに追加せず、
-        「プレイヤー用ナレーション」を text_area の値としてセットするだけ。
-        実際の会話進行（プレイヤー行＋フローリア行）は、
-        通常の『送信』ボタンで行う。
+        救済ボタンからの行動を処理し、
+        プレイヤー用ナレーション（地の文）だけを返す。
+        ログにはまだ追加しない。
         """
 
         world_state = {
@@ -194,23 +191,17 @@ class CouncilManager:
                 floria_state=floria_state,
             )
         else:
-            return
+            return ""
 
-        player_text = choice.speak_text or ""
-
-        # ★ 入力欄の内容だけ書き換える（ログはまだ増やさない）
-        st.session_state[input_key] = player_text
+        return choice.speak_text or ""
 
     # ===== 画面描画 =====
     def render(self) -> None:
-        # --- 二度押し防止フラグ初期化 ---
+        # --- フラグ初期化 ---
         if "council_sending" not in st.session_state:
             st.session_state["council_sending"] = False
-
         if "council_pending_action" not in st.session_state:
             st.session_state["council_pending_action"] = None
-
-        # 救済アクションの二重実行防止フラグ
         if "council_rescue_running" not in st.session_state:
             st.session_state["council_rescue_running"] = False
 
@@ -269,6 +260,15 @@ class CouncilManager:
 
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
+
+        # ★ ここで rescue_buffer を反映（text_area を作る前）
+        buffer = st.session_state.get("council_rescue_buffer")
+        if isinstance(buffer, dict):
+            if buffer.get("round") == round_no:
+                # このラウンド用のバッファなら入力欄に反映
+                st.session_state[input_key] = buffer.get("text", "")
+                # 一度使ったら破棄
+                st.session_state["council_rescue_buffer"] = None
 
         user_text = st.text_area(
             "あなたの発言：",
@@ -389,7 +389,12 @@ class CouncilManager:
                 else:
                     st.session_state["council_rescue_running"] = True
                     with st.spinner("ナレーション案を考えています…"):
-                        self.proceed_rescue(pending, input_key=input_key)
+                        text = self.build_rescue_text(pending)
+                    # ★ ここでは text_area は触らず、バッファに保存して rerun
+                    st.session_state["council_rescue_buffer"] = {
+                        "round": round_no,
+                        "text": text,
+                    }
                     st.session_state["council_rescue_running"] = False
                     st.session_state["council_pending_action"] = None
                     st.rerun()
