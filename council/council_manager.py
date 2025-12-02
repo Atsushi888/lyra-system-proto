@@ -1,5 +1,4 @@
 # council/council_manager.py
-
 from __future__ import annotations
 from typing import Optional, List, Dict, Any
 
@@ -8,6 +7,7 @@ import streamlit as st
 from actors.actor import Actor
 from personas.persona_floria_ja import Persona
 from actors.narrator_ai import NarratorAI
+from actors.narrator.narrator_manager import NarratorManager
 
 
 def get_or_create_council_actor() -> Actor:
@@ -56,8 +56,13 @@ class CouncilManager:
             "special_id": None,
         }
 
-        # NarratorAI（救済＋Round0用）
-        self.narrator = NarratorAI()
+        # NarratorManager を session_state 共有
+        if "narrator_manager" not in st.session_state:
+            st.session_state["narrator_manager"] = NarratorManager(state=st.session_state)
+        self.narrator_manager: NarratorManager = st.session_state["narrator_manager"]
+
+        # NarratorAI
+        self.narrator = NarratorAI(manager=self.narrator_manager)
 
     # ===== 内部ヘルパ =====
     def _append_log(self, role: str, content: str) -> None:
@@ -77,7 +82,7 @@ class CouncilManager:
         self.state["special_id"] = None
 
     def get_log(self) -> List[Dict[str, str]]:
-        """会談ログのコピーを返す（表示用）。"""
+        """会話ログのコピーを返す（表示用）。"""
         return list(self.conversation_log)
 
     def get_status(self) -> Dict[str, Any]:
@@ -123,20 +128,42 @@ class CouncilManager:
         kind: "wait" | "look_person" | "scan_area" | "special"
         戻り値: フローリアの返答テキスト（あれば）
         """
+
+        # ★ いったん world_state / floria_state は固定のダミー
+        #    後で SceneAI などと接続して差し替える
+        world_state = {
+            "location_name": "石畳の路地裏",
+            "time_of_day": "night",
+            "weather": "clear",
+        }
+        floria_state = {
+            "mood": "slightly_nervous",
+        }
+
         if kind == "wait":
-            choice = self.narrator.make_wait_choice()
+            choice = self.narrator.make_wait_choice(world_state, floria_state)
 
         elif kind == "look_person":
-            # 当面はフローリア固定
-            choice = self.narrator.make_look_person_choice(actor_name="フローリア")
+            choice = self.narrator.make_look_person_choice(
+                actor_name="フローリア",
+                world_state=world_state,
+                floria_state=floria_state,
+            )
 
         elif kind == "scan_area":
-            choice = self.narrator.make_scan_area_choice(location_name="この場")
+            choice = self.narrator.make_scan_area_choice(
+                location_name=world_state["location_name"],
+                world_state=world_state,
+                floria_state=floria_state,
+            )
 
         elif kind == "special":
             special_id = self.state.get("special_id") or "unknown_special"
-            _, choice = self.narrator.make_special_title_and_choice(special_id)
-
+            _, choice = self.narrator.make_special_title_and_choice(
+                special_id,
+                world_state=world_state,
+                floria_state=floria_state,
+            )
         else:
             return None
 
@@ -148,18 +175,28 @@ class CouncilManager:
     def render(self) -> None:
         # --- 二度押し防止フラグ初期化 ---
         if "council_sending" not in st.session_state:
-            # False: 待機中 / True: 送信処理中
             st.session_state["council_sending"] = False
 
         if "council_pending_action" not in st.session_state:
-            # None: 保留アクションなし / 文字列: "wait" など
             st.session_state["council_pending_action"] = None
 
         sending: bool = st.session_state["council_sending"]
 
         # --- Round0 ナレーション（まだ何も発言がない場合に1回だけ） ---
         if not self.conversation_log and not self.state.get("round0_done", False):
-            line = self.narrator.generate_round0_opening()
+            world_state = {
+                "location_name": "石畳の路地裏",
+                "time_of_day": "night",
+                "weather": "clear",
+            }
+            player_profile: Dict[str, Any] = {}
+            floria_state = {"mood": "slightly_nervous"}
+
+            line = self.narrator.generate_round0_opening(
+                world_state=world_state,
+                player_profile=player_profile,
+                floria_state=floria_state,
+            )
             self._append_log("narrator", line.text)
             self.state["round0_done"] = True
 
@@ -195,7 +232,6 @@ class CouncilManager:
                     name = role or "？"
 
                 st.markdown(f"**[{idx}] {name}**")
-                # <br> を有効にするため unsafe_allow_html=True
                 st.markdown(text, unsafe_allow_html=True)
                 st.markdown("---")
 
@@ -215,7 +251,6 @@ class CouncilManager:
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
 
-        # ★ ラウンドごとに key を変えることで、送信後に自動で空になるようにする
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
 
@@ -268,13 +303,11 @@ class CouncilManager:
             if not cleaned:
                 st.warning("発言を入力してください。")
             else:
-                # 二重ガード：理論上 disabled なので入らないはずだが保険
                 if st.session_state["council_sending"]:
                     st.info("いま処理中です。少し待ってから再度お試しください。")
                 else:
                     st.session_state["council_sending"] = True
 
-                    # フローリア思考中スピナー
                     with st.spinner("フローリアは少し考えています…"):
                         self.proceed(cleaned)
 
@@ -312,7 +345,15 @@ class CouncilManager:
                 msg = "周囲の様子を見回します。よろしいですか？"
             elif pending == "special":
                 special_id = self.state.get("special_id") or "unknown_special"
-                title, _ = self.narrator.make_special_title_and_choice(special_id)
+                title, _ = self.narrator.make_special_title_and_choice(
+                    special_id,
+                    world_state={
+                        "location_name": "石畳の路地裏",
+                        "time_of_day": "night",
+                        "weather": "clear",
+                    },
+                    floria_state={"mood": "slightly_nervous"},
+                )
                 msg = f"スペシャルアクション「{title}」を実行します。よろしいですか？"
             else:
                 msg = "この行動を実行します。よろしいですか？"
