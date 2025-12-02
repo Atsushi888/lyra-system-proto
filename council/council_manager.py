@@ -50,9 +50,7 @@ class CouncilManager:
             "mode": "ongoing",
             "participants": ["player", "floria"],
             "last_speaker": None,
-            # Round0 ナレーションを出したかどうか（将来用だが一応持っておく）
             "round0_done": False,
-            # スペシャル関連
             "special_available": False,
             "special_id": None,
         }
@@ -121,12 +119,11 @@ class CouncilManager:
         サイドバー表示用のステータス。
         round は「これからプレイヤーが行う発言の番号」として計算する。
         """
-        # すでに終わった発言数 + 1 = 次の自分の発言番号
         round_ = len(self.conversation_log) + 1
 
         return {
             "round": round_,
-            "speaker": "player",  # いまは常にプレイヤーのターン開始とみなす
+            "speaker": "player",
             "mode": self.state.get("mode", "ongoing"),
             "participants": self.state.get("participants", ["player", "floria"]),
             "last_speaker": self.state.get("last_speaker"),
@@ -141,7 +138,6 @@ class CouncilManager:
         - 返事もログに追加
         を行う。
         """
-        # プレイヤー発言
         self._append_log("player", user_text)
 
         reply = ""
@@ -153,15 +149,17 @@ class CouncilManager:
         return reply
 
     # ===== 救済アクション処理 =====
-    def proceed_rescue(self, kind: str) -> Optional[str]:
+    def proceed_rescue(self, kind: str, input_key: str) -> None:
         """
         救済ボタンからの行動を処理する。
         kind: "wait" | "look_person" | "scan_area" | "special"
-        戻り値: フローリアの返答テキスト（あれば）
+
+        ★ ここではログに追加せず、
+        「プレイヤー用ナレーション」を text_area の値としてセットするだけ。
+        実際の会話進行（プレイヤー行＋フローリア行）は、
+        通常の『送信』ボタンで行う。
         """
 
-        # ★ いったん world_state / floria_state は固定のダミー
-        #    後で SceneAI などと接続して差し替える
         world_state = {
             "location_name": "石畳の路地裏",
             "time_of_day": "night",
@@ -196,13 +194,14 @@ class CouncilManager:
                 floria_state=floria_state,
             )
         else:
-            return None
+            return
 
-        player_text = choice.speak_text
-        reply = self.proceed(player_text)
-        return reply
+        player_text = choice.speak_text or ""
 
-    # ===== 画面描画（旧 CouncilView.render 相当） =====
+        # ★ 入力欄の内容だけ書き換える（ログはまだ増やさない）
+        st.session_state[input_key] = player_text
+
+    # ===== 画面描画 =====
     def render(self) -> None:
         # --- 二度押し防止フラグ初期化 ---
         if "council_sending" not in st.session_state:
@@ -211,7 +210,7 @@ class CouncilManager:
         if "council_pending_action" not in st.session_state:
             st.session_state["council_pending_action"] = None
 
-        # ★ 救済アクションの二重実行防止フラグ
+        # 救済アクションの二重実行防止フラグ
         if "council_rescue_running" not in st.session_state:
             st.session_state["council_rescue_running"] = False
 
@@ -389,10 +388,8 @@ class CouncilManager:
                     st.info("救済アクションを処理中です。少し待ってください。")
                 else:
                     st.session_state["council_rescue_running"] = True
-                    st.session_state["council_sending"] = True
-                    with st.spinner("フローリアは少し考えています…"):
-                        self.proceed_rescue(pending)
-                    st.session_state["council_sending"] = False
+                    with st.spinner("ナレーション案を考えています…"):
+                        self.proceed_rescue(pending, input_key=input_key)
                     st.session_state["council_rescue_running"] = False
                     st.session_state["council_pending_action"] = None
                     st.rerun()
