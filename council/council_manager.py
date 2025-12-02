@@ -1,4 +1,5 @@
 # council/council_manager.py
+
 from __future__ import annotations
 from typing import Optional, List, Dict, Any
 
@@ -49,7 +50,7 @@ class CouncilManager:
             "mode": "ongoing",
             "participants": ["player", "floria"],
             "last_speaker": None,
-            # Round0 ナレーションを出したかどうか
+            # Round0 ナレーションを出したかどうか（将来用だが一応持っておく）
             "round0_done": False,
             # スペシャル関連
             "special_available": False,
@@ -64,12 +65,39 @@ class CouncilManager:
         # NarratorAI
         self.narrator = NarratorAI(manager=self.narrator_manager)
 
+        # ★ 初期化時に Round0 を 1 回だけ差し込む
+        self._ensure_round0_initialized()
+
     # ===== 内部ヘルパ =====
     def _append_log(self, role: str, content: str) -> None:
         """ログに 1 発言を追加。改行は <br> に変換して保存。"""
         safe = (content or "").replace("\n", "<br>")
         self.conversation_log.append({"role": role, "content": safe})
         self.state["last_speaker"] = role
+
+    def _ensure_round0_initialized(self) -> None:
+        """
+        会談開始時に Round0 ナレーションを 1 回だけ差し込む。
+        conversation_log が空のときのみ生成する。
+        """
+        if self.conversation_log:
+            return
+
+        world_state = {
+            "location_name": "石畳の路地裏",
+            "time_of_day": "night",
+            "weather": "clear",
+        }
+        player_profile: Dict[str, Any] = {}
+        floria_state = {"mood": "slightly_nervous"}
+
+        line = self.narrator.generate_round0_opening(
+            world_state=world_state,
+            player_profile=player_profile,
+            floria_state=floria_state,
+        )
+        self._append_log("narrator", line.text)
+        self.state["round0_done"] = True
 
     # ===== ロジック側 公開 API =====
     def reset(self) -> None:
@@ -80,6 +108,9 @@ class CouncilManager:
         self.state["round0_done"] = False
         self.state["special_available"] = False
         self.state["special_id"] = None
+
+        # ★ リセット直後に Round0 を再構成
+        self._ensure_round0_initialized()
 
     def get_log(self) -> List[Dict[str, str]]:
         """会話ログのコピーを返す（表示用）。"""
@@ -180,25 +211,11 @@ class CouncilManager:
         if "council_pending_action" not in st.session_state:
             st.session_state["council_pending_action"] = None
 
+        # ★ 救済アクションの二重実行防止フラグ
+        if "council_rescue_running" not in st.session_state:
+            st.session_state["council_rescue_running"] = False
+
         sending: bool = st.session_state["council_sending"]
-
-        # --- Round0 ナレーション（まだ何も発言がない場合に1回だけ） ---
-        if not self.conversation_log and not self.state.get("round0_done", False):
-            world_state = {
-                "location_name": "石畳の路地裏",
-                "time_of_day": "night",
-                "weather": "clear",
-            }
-            player_profile: Dict[str, Any] = {}
-            floria_state = {"mood": "slightly_nervous"}
-
-            line = self.narrator.generate_round0_opening(
-                world_state=world_state,
-                player_profile=player_profile,
-                floria_state=floria_state,
-            )
-            self._append_log("narrator", line.text)
-            self.state["round0_done"] = True
 
         log = self.get_log()
         status = self.get_status()
@@ -368,12 +385,17 @@ class CouncilManager:
                 cancel_clicked = st.button("キャンセル", key="council_rescue_cancel")
 
             if ok_clicked:
-                st.session_state["council_sending"] = True
-                with st.spinner("フローリアは少し考えています…"):
-                    self.proceed_rescue(pending)
-                st.session_state["council_sending"] = False
-                st.session_state["council_pending_action"] = None
-                st.rerun()
+                if st.session_state["council_rescue_running"]:
+                    st.info("救済アクションを処理中です。少し待ってください。")
+                else:
+                    st.session_state["council_rescue_running"] = True
+                    st.session_state["council_sending"] = True
+                    with st.spinner("フローリアは少し考えています…"):
+                        self.proceed_rescue(pending)
+                    st.session_state["council_sending"] = False
+                    st.session_state["council_rescue_running"] = False
+                    st.session_state["council_pending_action"] = None
+                    st.rerun()
 
             if cancel_clicked:
                 st.session_state["council_pending_action"] = None
