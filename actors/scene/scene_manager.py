@@ -263,4 +263,85 @@ class SceneManager:
                 spec["end"] = st.text_input(
                     f"{name} / end (HH:MM)",
                     value=spec.get("end", "23:59"),
-                    key=f
+                    key=f"ts_{name}_end",
+                )
+
+        with st.expander("➕ 時間帯スロット追加", expanded=False):
+            new_name = st.text_input("新しい時間帯名（例: evening）", key="ts_new_name")
+            if st.button("時間帯を追加", key="ts_add_btn"):
+                name = new_name.strip()
+                if name:
+                    if name in self.time_slots:
+                        st.warning(f"時間帯『{name}』は既に存在します。")
+                    else:
+                        self.time_slots[name] = {"start": "00:00", "end": "23:59"}
+                        st.success(f"時間帯『{name}』を追加しました。")
+                        st.rerun()
+
+        st.markdown("---")
+
+        # ---- ロケーション別 一日スケジュール ----
+        st.markdown("### 🏙 ロケーション別・一日スケジュール")
+
+        for loc_name in list(self.locations.keys()):
+            loc = self.locations.setdefault(loc_name, {"slots": {}})
+            slots = loc.setdefault("slots", {})
+
+            with st.expander(f"📍 {loc_name}", expanded=True):
+                for slot_name, ts_spec in self.time_slots.items():
+                    emo = slots.setdefault(slot_name, {"emotions": {}})
+                    emo_vec = emo.setdefault("emotions", emo.get("emotions", {}))
+
+                    label = f"{slot_name} ({ts_spec.get('start')}–{ts_spec.get('end')})"
+                    st.markdown(f"**{label}**")
+
+                    # 感情次元ごとのスライダー
+                    cols = st.columns(len(self.dimensions))
+                    for i, dim in enumerate(self.dimensions):
+                        with cols[i]:
+                            default_val = float(emo_vec.get(dim, 0.0))
+                            emo_vec[dim] = st.slider(
+                                f"{loc_name}/{slot_name}/{dim}",
+                                -1.0,
+                                1.0,
+                                default_val,
+                                0.05,
+                                key=f"loc_{loc_name}_{slot_name}_{dim}",
+                            )
+
+                st.markdown("---")
+
+        with st.expander("➕ 場所を追加", expanded=False):
+            new_loc = st.text_input("新しい場所名（例: 屋上）", key="loc_new_name")
+            if st.button("場所を追加", key="loc_add_btn"):
+                name = new_loc.strip()
+                if name:
+                    if name in self.locations:
+                        st.warning(f"場所『{name}』は既に存在します。")
+                    else:
+                        # 全スロットに 0.0 で初期化する
+                        slots: Dict[str, Any] = {}
+                        for slot_name in self.time_slots.keys():
+                            slots[slot_name] = {
+                                "emotions": {
+                                    dim: 0.0 for dim in self.dimensions
+                                }
+                            }
+                        self.locations[name] = {"slots": slots}
+                        st.success(f"場所『{name}』を追加しました。")
+                        st.rerun()
+
+        # ---- 保存 ----
+        if st.button("💾 保存", type="primary", key="scene_save_btn"):
+            self.save()
+            st.success("Scene 情報を保存しました。")
+
+        # ---- デバッグプレビュー ----
+        with st.expander("🧪 JSON preview", expanded=False):
+            st.json(
+                {
+                    "dimensions": self.dimensions,
+                    "time_slots": self.time_slots,
+                    "locations": self.locations,
+                }
+            )
