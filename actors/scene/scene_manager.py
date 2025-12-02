@@ -10,6 +10,27 @@ import os
 import streamlit as st
 
 
+# デフォルトで持つ感情ディメンション
+DEFAULT_DIMENSIONS: List[str] = [
+    "affection",   # 好意
+    "arousal",     # 興奮（性的/情動）
+    "tension",     # 緊張
+    "anger",       # 怒り
+    "sadness",     # 悲しみ
+    "excitement",  # 期待・ワクワク
+]
+
+# 日本語ラベル
+DIM_JA_LABELS: Dict[str, str] = {
+    "affection":  "affection（好意）",
+    "arousal":    "arousal（興奮・性的/情動）",
+    "tension":    "tension（緊張）",
+    "anger":      "anger（怒り）",
+    "sadness":    "sadness（悲しみ）",
+    "excitement": "excitement（期待・ワクワク）",
+}
+
+
 @dataclass
 class SceneManager:
     """
@@ -20,7 +41,7 @@ class SceneManager:
       "meta": {
         "version": "2.0-slot",
         "updated_at": "...",
-        "dimensions": ["affection", "arousal", "tension"]
+        "dimensions": ["affection", "arousal", ...]
       },
       "time_slots": {
         "morning": { "start": "07:00", "end": "09:00" },
@@ -43,7 +64,7 @@ class SceneManager:
 
     # 感情次元（UI はこのリストに従ってスライダーを出す）
     dimensions: List[str] = field(
-        default_factory=lambda: ["affection", "arousal", "tension"]
+        default_factory=lambda: list(DEFAULT_DIMENSIONS)
     )
 
     # "morning" → {"start": "07:00", "end": "09:00"}
@@ -74,12 +95,27 @@ class SceneManager:
             self._init_default()
             return
 
-        self.dimensions = meta.get("dimensions", self.dimensions)
+        loaded_dims = meta.get("dimensions") or []
+        # 既存ファイルに足りないデフォルト次元があれば足す
+        dims: List[str] = []
+        for d in loaded_dims:
+            if d not in dims:
+                dims.append(d)
+        for d in DEFAULT_DIMENSIONS:
+            if d not in dims:
+                dims.append(d)
+        self.dimensions = dims
+
         self.time_slots = data.get("time_slots", {})
         self.locations = data.get("locations", {})
 
         if not self.time_slots or not self.locations:
             self._init_default()
+            return
+
+        # 新しく追加されたディメンションを全ロケーションへ 0.0 で埋める
+        for d in self.dimensions:
+            self._ensure_dimension_exists_everywhere(d)
 
     def save(self) -> None:
         """現在の Scene 情報を JSON に保存。"""
@@ -102,7 +138,7 @@ class SceneManager:
 
     def _init_default(self) -> None:
         """通学路・学食などを前提にしたデフォルトセット。"""
-        self.dimensions = ["affection", "arousal", "tension"]
+        self.dimensions = list(DEFAULT_DIMENSIONS)
 
         self.time_slots = {
             "morning":      {"start": "07:00", "end": "09:00"},
@@ -111,73 +147,81 @@ class SceneManager:
             "night":        {"start": "20:00", "end": "23:30"},
         }
 
+        # 6軸そろえたゼロベクトル
+        base_zeros = {dim: 0.0 for dim in self.dimensions}
+
+        def vec(**kwargs: float) -> Dict[str, float]:
+            v = base_zeros.copy()
+            v.update(kwargs)
+            return v
+
         self.locations = {
             "通学路": {
                 "slots": {
                     "morning": {
-                        "emotions": {
-                            "affection": 0.10,
-                            "arousal": -0.10,
-                            "tension": -0.10,
-                        }
+                        "emotions": vec(
+                            affection=0.10,
+                            arousal=-0.10,
+                            tension=-0.10,
+                        )
                     },
                     "after_school": {
-                        "emotions": {
-                            "affection": 0.25,
-                            "arousal": 0.20,
-                            "tension": 0.10,
-                        }
+                        "emotions": vec(
+                            affection=0.25,
+                            arousal=0.20,
+                            tension=0.10,
+                        )
                     },
                 }
             },
             "学食": {
                 "slots": {
                     "lunch": {
-                        "emotions": {
-                            "affection": 0.20,
-                            "arousal": -0.20,
-                            "tension": -0.10,
-                        }
+                        "emotions": vec(
+                            affection=0.20,
+                            arousal=-0.20,
+                            tension=-0.10,
+                        )
                     }
                 }
             },
             "駅前": {
                 "slots": {
                     "after_school": {
-                        "emotions": {
-                            "affection": 0.15,
-                            "arousal": 0.00,
-                            "tension": 0.00,
-                        }
+                        "emotions": vec(
+                            affection=0.15,
+                            arousal=0.00,
+                            tension=0.00,
+                        )
                     },
                     "night": {
-                        "emotions": {
-                            "affection": 0.18,
-                            "arousal": 0.10,
-                            "tension": 0.05,
-                        }
+                        "emotions": vec(
+                            affection=0.18,
+                            arousal=0.10,
+                            tension=0.05,
+                        )
                     },
                 }
             },
             "プレイヤーの部屋": {
                 "slots": {
                     "night": {
-                        "emotions": {
-                            "affection": 0.25,
-                            "arousal": 0.10,
-                            "tension": -0.10,
-                        }
+                        "emotions": vec(
+                            affection=0.25,
+                            arousal=0.10,
+                            tension=-0.10,
+                        )
                     }
                 }
             },
             "プール": {
                 "slots": {
                     "after_school": {
-                        "emotions": {
-                            "affection": 0.30,
-                            "arousal": 0.20,
-                            "tension": 0.10,
-                        }
+                        "emotions": vec(
+                            affection=0.30,
+                            arousal=0.20,
+                            tension=0.10,
+                        )
                     }
                 }
             },
@@ -243,6 +287,10 @@ class SceneManager:
                 emo = slot.setdefault("emotions", {})
                 emo.setdefault(dim, 0.0)
 
+    def _dim_label(self, dim: str) -> str:
+        """UI 表示用ラベル（日本語訳つき）。"""
+        return DIM_JA_LABELS.get(dim, dim)
+
     # ====== Streamlit UI ======
     def render(self) -> None:
         """SceneManager エディタ UI。"""
@@ -290,7 +338,9 @@ class SceneManager:
         # ---- 感情ディメンション（時間帯の後ろ） ----
         st.markdown("### 🎭 感情ディメンション")
 
-        st.write("現在の次元:", ", ".join(self.dimensions))
+        # 日本語ラベル付きで表示
+        disp_dims = [self._dim_label(d) for d in self.dimensions]
+        st.write("現在の次元:", ", ".join(disp_dims))
 
         with st.expander("➕ 感情ディメンションを追加", expanded=False):
             new_dim = st.text_input(
@@ -342,6 +392,7 @@ class SceneManager:
                                     default_val,
                                     0.05,
                                     key=f"loc_{loc_name}_{slot_name}_{dim}",
+                                    help=self._dim_label(dim),
                                 )
 
                 st.markdown("---")
