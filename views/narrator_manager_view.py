@@ -90,7 +90,9 @@ class NarratorManagerView:
                 text = (info.get("text") or "").strip()
                 st.markdown(f"- **{model_name}**")
                 if text:
-                    st.markdown(f"    - text: {text[:200]}{'...' if len(text) > 200 else ''}")
+                    st.markdown(
+                        f"    - text: {text[:200]}{'...' if len(text) > 200 else ''}"
+                    )
 
         with st.expander("⚖ Judge result", expanded=False):
             chosen = log.judge_result.get("chosen_model", "")
@@ -99,6 +101,18 @@ class NarratorManagerView:
             if chosen_text:
                 st.markdown("**chosen_text:**")
                 st.markdown(chosen_text)
+
+            # ★ 追加：候補モデルとスコア・理由を一覧表示
+            candidates = log.judge_result.get("candidates") or []
+            if candidates:
+                st.markdown("**candidates:**")
+                for c in candidates:
+                    m = c.get("model", "?")
+                    score = c.get("score", "?")
+                    reason = c.get("reason", "")
+                    st.markdown(f"- `{m}` (score={score})")
+                    if reason:
+                        st.markdown(f"    - {reason}")
 
         with st.expander("🧾 Final text (used by NarratorAI)", expanded=True):
             st.markdown(log.final_text or "（空）")
