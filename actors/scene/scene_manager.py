@@ -34,6 +34,28 @@ DIM_JA_LABELS: Dict[str, str] = {
 class SceneManager:
     """
     場所ごとに「一日の時間帯スロット」と「感情補正ベクトル」を持つマネージャ。
+
+    JSON構造（v2.0-slot の例）:
+    {
+      "meta": {
+        "version": "2.0-slot",
+        "updated_at": "...",
+        "dimensions": ["affection", "arousal", ...]
+      },
+      "time_slots": {
+        "morning": { "start": "07:00", "end": "09:00" },
+        ...
+      },
+      "locations": {
+        "通学路": {
+          "slots": {
+            "morning": { "emotions": { "affection": 0.1, ... } },
+            ...
+          }
+        },
+        ...
+      }
+    }
     """
 
     # JSON 保存先
@@ -67,7 +89,7 @@ class SceneManager:
         meta = data.get("meta", {})
         version = meta.get("version", "")
 
-        # v2 以外は互換を考えず初期化してしまう
+        # v2 以外は互換を考えず初期化してしまう（初期段階なので割り切り）
         if version != "2.0-slot":
             self._init_default()
             return
@@ -231,6 +253,10 @@ class SceneManager:
     ) -> Dict[str, float]:
         """
         指定された場所 + 時刻/スロットに対応する感情ベクトルを返す。
+
+        - slot_name を明示指定 → そのスロットの emotions
+        - time_str="HH:MM" が渡された場合 → time_slots から該当スロットを探索
+        - 見つからない場合は 0 ベクトル（全次元 0.0）
         """
         # スロット確定
         if slot_name is None and time_str:
@@ -343,6 +369,15 @@ class SceneManager:
                 st.session_state["scene_time_slot"] = slot_name
             if time_str_clean is not None:
                 st.session_state["scene_time_str"] = time_str_clean
+
+            # ★ world_state が変わったら CouncilManager をリセットさせる
+            world_key = f"{selected_loc}|{slot_name or ''}|{time_str_clean or ''}"
+            prev_key = st.session_state.get("scene_world_state_key")
+            if world_key != prev_key:
+                st.session_state["scene_world_state_key"] = world_key
+                # 会談マネージャを作り直させる（Round0 を新しい場所で生成させる）
+                if "council_manager" in st.session_state:
+                    st.session_state.pop("council_manager")
 
             # 結果表示
             with st.expander("現在の world_state → scene_emotion", expanded=True):
