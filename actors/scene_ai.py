@@ -46,9 +46,8 @@ class SceneAI:
     def get_world_state(self) -> Dict[str, Any]:
         """
         現在の world_state を返す。
-        とりあえず簡易版：
-        - scene_location: 場所名（通学路 / 学食 / 駅前 / プレイヤーの部屋 / プール）
-        - scene_time_slot: "morning" / "lunch" / "after_school" / "night"
+        - scene_location: 場所名
+        - scene_time_slot: "morning" / "lunch" / ...
         - scene_time_str: "HH:MM" 形式の任意の文字列（なければ None）
         """
         location = self.state.get("scene_location", "通学路")
@@ -88,8 +87,17 @@ class SceneAI:
             slot_name=slot_name,
         )
 
+    # MixerAI から直接呼びやすいショートカット
+    def get_emotion_bonus(self) -> Dict[str, float]:
+        """
+        現在の world_state に対応する感情補正ベクトルを返す。
+        （MixerAI 用の薄いラッパ）
+        """
+        ws = self.get_world_state()
+        return self.get_scene_emotion(ws)
+
     # -----------------------------
-    # MixerAI 向けの簡易 API
+    # MixerAI 向けの簡易 API（オプション）
     # -----------------------------
     def build_emotion_override_payload(self) -> Dict[str, Any]:
         """
