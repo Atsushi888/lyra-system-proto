@@ -1,4 +1,3 @@
-# views/scene_manager_view.py
 from __future__ import annotations
 
 import streamlit as st
