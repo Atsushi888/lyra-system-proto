@@ -1,4 +1,3 @@
-# actors/scene_ai.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Mapping
@@ -90,7 +89,7 @@ class SceneAI:
         )
 
     # -----------------------------
-    # MixerAI 向けの簡易 API（オプション）
+    # MixerAI 向けの簡易 API
     # -----------------------------
     def build_emotion_override_payload(self) -> Dict[str, Any]:
         """
