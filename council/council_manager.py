@@ -1,3 +1,5 @@
+# council/council_manager.py
+
 from __future__ import annotations
 from typing import List, Dict, Any
 
@@ -7,6 +9,7 @@ from actors.actor import Actor
 from personas.persona_floria_ja import Persona
 from actors.narrator_ai import NarratorAI
 from actors.narrator.narrator_manager import NarratorManager
+from actors.scene_ai import SceneAI
 
 
 def get_or_create_council_actor() -> Actor:
@@ -27,20 +30,15 @@ def get_or_create_council_actor() -> Actor:
 class CouncilManager:
     """
     会談システムのロジック ＋ 画面描画（β）。
-    - conversation_log: 会話の生ログ（プレイヤー/フローリア/ナレーター）
-    - round は「発言の総数」として len(conversation_log) から毎回計算する
     """
 
     def __init__(self) -> None:
-        # 会話ログ：List[{"role": "...", "content": "..."}]
         self.conversation_log: List[Dict[str, str]] = []
 
-        # いまはフローリア AI だけ
         self.actors: Dict[str, Actor] = {
             "floria": Actor("フローリア", Persona())
         }
 
-        # 状態
         self.state: Dict[str, Any] = {
             "mode": "ongoing",
             "participants": ["player", "floria"],
@@ -50,54 +48,39 @@ class CouncilManager:
             "special_id": None,
         }
 
-        # NarratorManager を session_state 共有
         if "narrator_manager" not in st.session_state:
             st.session_state["narrator_manager"] = NarratorManager(state=st.session_state)
         self.narrator_manager: NarratorManager = st.session_state["narrator_manager"]
 
-        # NarratorAI
         self.narrator = NarratorAI(manager=self.narrator_manager)
 
-        # ★ 初期化時に Round0 を 1 回だけ差し込む
+        # Round0 を 1 回だけ差し込む
         self._ensure_round0_initialized()
-
-    # ===== world_state 取得ヘルパ =====
-    def _get_world_state_for_council(self) -> Dict[str, Any]:
-        """
-        SceneManager / SceneAI と共有している session_state から
-        現在の world_state を読み出す。
-        """
-        # SceneManager が書き込んだ値を尊重
-        location = st.session_state.get("scene_location")
-        time_slot = st.session_state.get("scene_time_slot")
-        time_str = st.session_state.get("scene_time_str")
-
-        # 何も設定されていない場合のフォールバック
-        if location is None:
-            location = "石畳の路地裏"
-
-        # time_of_day は基本 time_slot をそのまま渡す（morning / lunch など）
-        if time_slot is None:
-            # time_slot がなければ、とりあえず night 扱い
-            time_of_day = "night"
-        else:
-            time_of_day = str(time_slot)
-
-        world_state = {
-            "location_name": location,
-            "time_of_day": time_of_day,
-            "time_slot": time_slot,
-            "time_str": time_str,
-            "weather": "clear",
-        }
-        return world_state
 
     # ===== 内部ヘルパ =====
     def _append_log(self, role: str, content: str) -> None:
-        """ログに 1 発言を追加。改行は <br> に変換して保存。"""
         safe = (content or "").replace("\n", "<br>")
         self.conversation_log.append({"role": role, "content": safe})
         self.state["last_speaker"] = role
+
+    def _get_world_state_for_narrator(self) -> Dict[str, Any]:
+        """
+        SceneAI から world_state を取得し、
+        NarratorAI 用の world_state に変換する。
+        """
+        scene_ai = SceneAI(state=st.session_state)
+        ws = scene_ai.get_world_state()
+
+        location = ws.get("location", "通学路")
+        time_slot = ws.get("time_slot") or "night"
+        time_str = ws.get("time_str") or ""
+
+        return {
+            "location_name": location,
+            "time_of_day": time_slot,
+            "time_str": time_str,
+            "weather": "clear",
+        }
 
     def _ensure_round0_initialized(self) -> None:
         """
@@ -107,7 +90,7 @@ class CouncilManager:
         if self.conversation_log:
             return
 
-        world_state = self._get_world_state_for_council()
+        world_state = self._get_world_state_for_narrator()
         player_profile: Dict[str, Any] = {}
         floria_state = {"mood": "slightly_nervous"}
 
@@ -129,22 +112,15 @@ class CouncilManager:
         self.state["special_available"] = False
         self.state["special_id"] = None
 
-        # バッファ類もクリア
         st.session_state.pop("council_rescue_buffer", None)
         st.session_state.pop("council_pending_action", None)
 
-        # ★ リセット直後に Round0 を再構成
         self._ensure_round0_initialized()
 
     def get_log(self) -> List[Dict[str, str]]:
-        """会話ログのコピーを返す（表示用）。"""
         return list(self.conversation_log)
 
     def get_status(self) -> Dict[str, Any]:
-        """
-        サイドバー表示用のステータス。
-        round は「これからプレイヤーが行う発言の番号」として計算する。
-        """
         round_ = len(self.conversation_log) + 1
 
         return {
@@ -157,13 +133,6 @@ class CouncilManager:
         }
 
     def proceed(self, user_text: str) -> str:
-        """
-        プレイヤーの発言を受け取り、
-        - ログに追加
-        - フローリアに conversation_log 丸ごと渡して返事を生成
-        - 返事もログに追加
-        を行う。
-        """
         self._append_log("player", user_text)
 
         reply = ""
@@ -179,13 +148,9 @@ class CouncilManager:
         """
         救済ボタンからの行動を処理し、
         プレイヤー用ナレーション（地の文）だけを返す。
-        ログにはまだ追加しない。
         """
-
-        world_state = self._get_world_state_for_council()
-        floria_state = {
-            "mood": "slightly_nervous",
-        }
+        world_state = self._get_world_state_for_narrator()
+        floria_state = {"mood": "slightly_nervous"}
 
         if kind == "wait":
             choice = self.narrator.make_wait_choice(world_state, floria_state)
@@ -218,7 +183,11 @@ class CouncilManager:
 
     # ===== 画面描画 =====
     def render(self) -> None:
-        # --- フラグ初期化 ---
+        # world_state が変更されたら会話をリセットして Round0 から
+        if st.session_state.get("world_state_changed"):
+            self.reset()
+            st.session_state["world_state_changed"] = False
+
         if "council_sending" not in st.session_state:
             st.session_state["council_sending"] = False
         if "council_pending_action" not in st.session_state:
@@ -234,7 +203,6 @@ class CouncilManager:
         st.markdown("## 🗣️ 会談システム（Council Prototype）")
         st.caption("※ Actor ベースで AI と会話する会談システム（β）です。")
 
-        # 上部コントロール
         col_left, col_right = st.columns([3, 1])
         with col_right:
             if st.button("🔁 リセット", key="council_reset"):
@@ -263,7 +231,7 @@ class CouncilManager:
                 st.markdown(text, unsafe_allow_html=True)
                 st.markdown("---")
 
-        # ---- サイドバー：会談ステータス ----
+        # ---- サイドバー：会談ステータス ＋ world_state ----
         with st.sidebar.expander("📊 会談ステータス", expanded=True):
             st.write(f"ラウンド: {status.get('round')}")
             st.write(f"話者: {status.get('speaker')}")
@@ -276,12 +244,14 @@ class CouncilManager:
                 st.write(f"最後の話者: {last}")
             st.write(f"スペシャル選択可: {status.get('special_available')}")
 
-        # ★ world_state の可視化
-        ws = self._get_world_state_for_council()
-        with st.sidebar.expander("🌏 現在のワールド状態", expanded=True):
-            st.write(f"場所: {ws.get('location_name')}")
-            st.write(f"時間帯: {ws.get('time_of_day')}")
-            st.write(f"時刻文字列: {ws.get('time_str') or '（未指定）'}")
+            # world_state 表示
+            st.markdown("---")
+            scene_ai = SceneAI(state=st.session_state)
+            ws = scene_ai.get_world_state()
+            st.write("**現在の world_state**")
+            st.write(f"- 場所: {ws.get('location', '不明')}")
+            st.write(f"- 時間帯スロット: {ws.get('time_slot') or 'auto'}")
+            st.write(f"- 時刻: {ws.get('time_str') or '（未設定）'}")
 
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
@@ -289,7 +259,6 @@ class CouncilManager:
         round_no = int(status.get("round") or 1)
         input_key = f"council_user_input_r{round_no}"
 
-        # ★ ここで rescue_buffer を反映（text_area を作る前）
         buffer = st.session_state.get("council_rescue_buffer")
         if isinstance(buffer, dict):
             if buffer.get("round") == round_no:
@@ -302,10 +271,8 @@ class CouncilManager:
             placeholder="ここにフローリアへの発言を書いてください。",
         )
 
-        # 送信＋救済ボタン
         send_col, wait_col, look_col, scan_col, special_col = st.columns([1, 1, 1, 1, 1])
 
-        # ---- 通常送信ボタン ----
         with send_col:
             send_clicked = st.button(
                 "送信",
@@ -313,7 +280,6 @@ class CouncilManager:
                 disabled=sending,
             )
 
-        # ---- 救済ボタン ----
         with wait_col:
             wait_clicked = st.button(
                 "何もしない",
@@ -389,7 +355,7 @@ class CouncilManager:
                 special_id = self.state.get("special_id") or "unknown_special"
                 title, _ = self.narrator.make_special_title_and_choice(
                     special_id,
-                    world_state=self._get_world_state_for_council(),
+                    world_state=self._get_world_state_for_narrator(),
                     floria_state={"mood": "slightly_nervous"},
                 )
                 msg = f"スペシャルアクション「{title}」を実行します。よろしいですか？"
