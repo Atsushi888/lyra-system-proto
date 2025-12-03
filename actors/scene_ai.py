@@ -26,7 +26,6 @@ class SceneAI:
         elif env_debug == "1":
             self.state = st.session_state
         else:
-            # 現状は Streamlit 前提なので session_state を使う
             self.state = st.session_state
 
         # SceneManager をセッション内で 1個だけ確保
@@ -35,20 +34,17 @@ class SceneAI:
             mgr = SceneManager(
                 path="actors/scene/scene_bonus/scene_emotion_map.json"
             )
-            mgr.load()  # ← ここで JSON 読み込み
+            mgr.load()
             self.state[key] = mgr
 
         self.manager: SceneManager = self.state[key]
 
     # -----------------------------
-    # world_state の取得（ひな形）
+    # world_state の取得
     # -----------------------------
     def get_world_state(self) -> Dict[str, Any]:
         """
         現在の world_state を返す。
-        - scene_location: 場所名
-        - scene_time_slot: "morning" / "lunch" / ...
-        - scene_time_str: "HH:MM" 形式の任意の文字列（なければ None）
         """
         location = self.state.get("scene_location", "通学路")
         slot_name = self.state.get("scene_time_slot", None)   # ex: "morning"
@@ -67,13 +63,6 @@ class SceneAI:
         self,
         world_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, float]:
-        """
-        world_state をもとに SceneManager から感情補正ベクトルを取得する。
-
-        - time_slot があれば slot_name として優先
-        - なければ time_str から自動スロット判定
-        - それもなければ SceneManager 側のデフォルトスロット
-        """
         if world_state is None:
             world_state = self.get_world_state()
 
@@ -87,11 +76,10 @@ class SceneAI:
             slot_name=slot_name,
         )
 
-    # MixerAI から直接呼びやすいショートカット
+    # 旧 MixerAI 向けの互換メソッド
     def get_emotion_bonus(self) -> Dict[str, float]:
         """
-        現在の world_state に対応する感情補正ベクトルを返す。
-        （MixerAI 用の薄いラッパ）
+        互換用：SceneManager からのボーナスベクトル。
         """
         ws = self.get_world_state()
         return self.get_scene_emotion(ws)
@@ -100,10 +88,6 @@ class SceneAI:
     # MixerAI 向けの簡易 API（オプション）
     # -----------------------------
     def build_emotion_override_payload(self) -> Dict[str, Any]:
-        """
-        MixerAI などに渡しやすい形で、
-        world_state + scene_emotion をまとめた dict を返す。
-        """
         ws = self.get_world_state()
         emo = self.get_scene_emotion(ws)
 
