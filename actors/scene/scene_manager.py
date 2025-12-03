@@ -1,4 +1,3 @@
-# actors/scene/scene_manager.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -359,6 +358,20 @@ class SceneManager:
 
             time_str_clean: Optional[str] = time_str or None
 
+            # --- world_state 変更検知用：前回値を取得 ---
+            prev_loc = st.session_state.get("scene_prev_location")
+            prev_slot = st.session_state.get("scene_prev_time_slot")
+            prev_time_str = st.session_state.get("scene_prev_time_str")
+
+            changed = (
+                prev_loc is not None
+                and (
+                    prev_loc != selected_loc
+                    or prev_slot != slot_name
+                    or prev_time_str != time_str_clean
+                )
+            )
+
             # SceneManager から感情ベクトル取得
             emo_vec = self.get_for(
                 location=selected_loc,
@@ -372,6 +385,17 @@ class SceneManager:
                 st.session_state["scene_time_slot"] = slot_name
             if time_str_clean is not None:
                 st.session_state["scene_time_str"] = time_str_clean
+
+            # 前回値を更新
+            st.session_state["scene_prev_location"] = selected_loc
+            st.session_state["scene_prev_time_slot"] = slot_name
+            st.session_state["scene_prev_time_str"] = time_str_clean
+
+            # world_state が変わっていて、かつ CouncilManager が存在するならリセット
+            if changed and "council_manager" in st.session_state:
+                mgr = st.session_state.get("council_manager")
+                if hasattr(mgr, "reset"):
+                    mgr.reset()
 
             # 結果表示
             with st.expander("現在の world_state → scene_emotion", expanded=True):
@@ -474,7 +498,7 @@ class SceneManager:
                     # 感情ディメンションを max_per_row ごとに折り返す
                     dims = list(self.dimensions)
                     for i in range(0, len(dims), max_per_row):
-                        chunk = dims[i : i + max_per_row]
+                        chunk = dims[i: i + max_per_row]
                         cols = st.columns(len(chunk))
                         for dim, col in zip(chunk, cols):
                             with col:
