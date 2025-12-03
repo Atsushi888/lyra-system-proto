@@ -1,4 +1,3 @@
-# actors/mixer_ai.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -112,7 +111,7 @@ class MixerAI:
         )
 
         # SceneAI からボーナス（存在しないならゼロ扱い）
-        scene_bonus = self.scene_ai.get_emotion_bonus() or {}
+        scene_bonus = self.scene_ai.get_scene_emotion() or {}
         mixed.affection += float(scene_bonus.get("affection", 0.0))
         mixed.arousal += float(scene_bonus.get("arousal", 0.0))
         mixed.tension += float(scene_bonus.get("tension", 0.0))
@@ -120,5 +119,5 @@ class MixerAI:
         mixed.sadness += float(scene_bonus.get("sadness", 0.0))
         mixed.excitement += float(scene_bonus.get("excitement", 0.0))
 
-        # ここで必要ならクランプ（-3.0〜+3.0 など）を入れてもよい
+        # 必要ならクランプ（-3.0〜+3.0 など）を入れてもよい
         return mixed.to_dict()
