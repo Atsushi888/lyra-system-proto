@@ -1,5 +1,3 @@
-# council/council_manager.py
-
 from __future__ import annotations
 from typing import List, Dict, Any
 
@@ -122,6 +120,11 @@ class CouncilManager:
         """
         round_ = len(self.conversation_log) + 1
 
+        # world_state は SceneManager / SceneAI と共有
+        loc = st.session_state.get("scene_location", "通学路")
+        slot = st.session_state.get("scene_time_slot")
+        tstr = st.session_state.get("scene_time_str")
+
         return {
             "round": round_,
             "speaker": "player",
@@ -129,6 +132,9 @@ class CouncilManager:
             "participants": self.state.get("participants", ["player", "floria"]),
             "last_speaker": self.state.get("last_speaker"),
             "special_available": self.state.get("special_available", False),
+            "location": loc,
+            "time_slot": slot,
+            "time_str": tstr,
         }
 
     def proceed(self, user_text: str) -> str:
@@ -254,6 +260,15 @@ class CouncilManager:
             if last:
                 st.write(f"最後の話者: {last}")
             st.write(f"スペシャル選択可: {status.get('special_available')}")
+
+            st.markdown("---")
+            st.markdown("**🌏 現在のシーン**")
+            if status.get("location"):
+                st.write(f"場所: {status['location']}")
+            if status.get("time_slot"):
+                st.write(f"時間帯: {status['time_slot']}")
+            if status.get("time_str"):
+                st.write(f"時刻: {status['time_str']}")
 
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
