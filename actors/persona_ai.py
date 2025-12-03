@@ -1,10 +1,11 @@
-# actors/persona_ai.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict
 import json
 import os
+
+import streamlit as st
 
 
 @dataclass
@@ -27,6 +28,23 @@ class PersonaAI:
     @property
     def json_path(self) -> str:
         return os.path.join(self.base_dir, f"{self.persona_id}.json")
+
+    # ----------------------------------
+    # world_state ヘルパ
+    # ----------------------------------
+    def get_world_state(self) -> Dict[str, Any]:
+        """
+        現在の world_state を返すヘルパ。
+        Persona 情報に「今どこで何時か」を埋め込むために使う。
+        """
+        loc = st.session_state.get("scene_location", "通学路")
+        slot = st.session_state.get("scene_time_slot")
+        tstr = st.session_state.get("scene_time_str")
+        return {
+            "location": loc,
+            "time_slot": slot,
+            "time_str": tstr,
+        }
 
     # ----------------------------------
     # 1) JSON 読み込み
@@ -66,8 +84,10 @@ class PersonaAI:
         if reload or not self.data:
             self.load_from_json()
 
-        # 外側で勝手に書き換えられても困らないようにコピーして返す
-        return dict(self.data)
+        result = dict(self.data)
+        # world_state を一緒に埋め込む
+        result["world_state"] = self.get_world_state()
+        return result
 
     # ----------------------------------
     # 3) 将来用：LLM用 system_prompt を組み立てるフック
