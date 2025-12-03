@@ -68,6 +68,28 @@ class CouncilManager:
         self.conversation_log.append({"role": role, "content": safe})
         self.state["last_speaker"] = role
 
+    def _build_world_state(self) -> Dict[str, Any]:
+        """
+        SceneManager が書き込んだ session_state から world_state を構成する。
+        """
+        loc = st.session_state.get("scene_location", "石畳の路地裏")
+        slot = st.session_state.get("scene_time_slot")
+        time_str = st.session_state.get("scene_time_str")
+
+        # Narrator 用 time_of_day は、とりあえず slot 名をそのまま渡す
+        if isinstance(slot, str) and slot:
+            time_of_day = slot
+        else:
+            time_of_day = "night"
+
+        world_state = {
+            "location_name": loc,
+            "time_of_day": time_of_day,
+            "time_str": time_str,
+            "weather": "clear",
+        }
+        return world_state
+
     def _ensure_round0_initialized(self) -> None:
         """
         会談開始時に Round0 ナレーションを 1 回だけ差し込む。
@@ -76,11 +98,7 @@ class CouncilManager:
         if self.conversation_log:
             return
 
-        world_state = {
-            "location_name": "石畳の路地裏",
-            "time_of_day": "night",
-            "weather": "clear",
-        }
+        world_state = self._build_world_state()
         player_profile: Dict[str, Any] = {}
         floria_state = {"mood": "slightly_nervous"}
 
@@ -106,7 +124,7 @@ class CouncilManager:
         st.session_state.pop("council_rescue_buffer", None)
         st.session_state.pop("council_pending_action", None)
 
-        # ★ リセット直後に Round0 を再構成
+        # ★ リセット直後に Round0 を再構成（最新 world_state で）
         self._ensure_round0_initialized()
 
     def get_log(self) -> List[Dict[str, str]]:
@@ -120,10 +138,10 @@ class CouncilManager:
         """
         round_ = len(self.conversation_log) + 1
 
-        # world_state は SceneManager / SceneAI と共有
-        loc = st.session_state.get("scene_location", "通学路")
+        # SceneManager 側の world_state もここで拾っておく
+        loc = st.session_state.get("scene_location")
         slot = st.session_state.get("scene_time_slot")
-        tstr = st.session_state.get("scene_time_str")
+        time_str = st.session_state.get("scene_time_str")
 
         return {
             "round": round_,
@@ -134,7 +152,7 @@ class CouncilManager:
             "special_available": self.state.get("special_available", False),
             "location": loc,
             "time_slot": slot,
-            "time_str": tstr,
+            "time_str": time_str,
         }
 
     def proceed(self, user_text: str) -> str:
@@ -163,11 +181,7 @@ class CouncilManager:
         ログにはまだ追加しない。
         """
 
-        world_state = {
-            "location_name": "石畳の路地裏",
-            "time_of_day": "night",
-            "weather": "clear",
-        }
+        world_state = self._build_world_state()
         floria_state = {
             "mood": "slightly_nervous",
         }
@@ -261,14 +275,16 @@ class CouncilManager:
                 st.write(f"最後の話者: {last}")
             st.write(f"スペシャル選択可: {status.get('special_available')}")
 
-            st.markdown("---")
-            st.markdown("**🌏 現在のシーン**")
-            if status.get("location"):
-                st.write(f"場所: {status['location']}")
-            if status.get("time_slot"):
-                st.write(f"時間帯: {status['time_slot']}")
-            if status.get("time_str"):
-                st.write(f"時刻: {status['time_str']}")
+            # ★ world_state 情報も表示
+            loc = status.get("location")
+            if loc:
+                st.write(f"場所: {loc}")
+            slot = status.get("time_slot")
+            if slot:
+                st.write(f"時間帯スロット: {slot}")
+            time_str = status.get("time_str")
+            if time_str:
+                st.write(f"時刻: {time_str}")
 
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
@@ -378,11 +394,7 @@ class CouncilManager:
                 special_id = self.state.get("special_id") or "unknown_special"
                 title, _ = self.narrator.make_special_title_and_choice(
                     special_id,
-                    world_state={
-                        "location_name": "石畳の路地裏",
-                        "time_of_day": "night",
-                        "weather": "clear",
-                    },
+                    world_state=self._build_world_state(),
                     floria_state={"mood": "slightly_nervous"},
                 )
                 msg = f"スペシャルアクション「{title}」を実行します。よろしいですか？"
