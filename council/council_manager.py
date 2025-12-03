@@ -61,34 +61,43 @@ class CouncilManager:
         # ★ 初期化時に Round0 を 1 回だけ差し込む
         self._ensure_round0_initialized()
 
+    # ===== world_state 取得ヘルパ =====
+    def _get_world_state_for_council(self) -> Dict[str, Any]:
+        """
+        SceneManager / SceneAI と共有している session_state から
+        現在の world_state を読み出す。
+        """
+        # SceneManager が書き込んだ値を尊重
+        location = st.session_state.get("scene_location")
+        time_slot = st.session_state.get("scene_time_slot")
+        time_str = st.session_state.get("scene_time_str")
+
+        # 何も設定されていない場合のフォールバック
+        if location is None:
+            location = "石畳の路地裏"
+
+        # time_of_day は基本 time_slot をそのまま渡す（morning / lunch など）
+        if time_slot is None:
+            # time_slot がなければ、とりあえず night 扱い
+            time_of_day = "night"
+        else:
+            time_of_day = str(time_slot)
+
+        world_state = {
+            "location_name": location,
+            "time_of_day": time_of_day,
+            "time_slot": time_slot,
+            "time_str": time_str,
+            "weather": "clear",
+        }
+        return world_state
+
     # ===== 内部ヘルパ =====
     def _append_log(self, role: str, content: str) -> None:
         """ログに 1 発言を追加。改行は <br> に変換して保存。"""
         safe = (content or "").replace("\n", "<br>")
         self.conversation_log.append({"role": role, "content": safe})
         self.state["last_speaker"] = role
-
-    def _build_world_state(self) -> Dict[str, Any]:
-        """
-        SceneManager が書き込んだ session_state から world_state を構成する。
-        """
-        loc = st.session_state.get("scene_location", "石畳の路地裏")
-        slot = st.session_state.get("scene_time_slot")
-        time_str = st.session_state.get("scene_time_str")
-
-        # Narrator 用 time_of_day は、とりあえず slot 名をそのまま渡す
-        if isinstance(slot, str) and slot:
-            time_of_day = slot
-        else:
-            time_of_day = "night"
-
-        world_state = {
-            "location_name": loc,
-            "time_of_day": time_of_day,
-            "time_str": time_str,
-            "weather": "clear",
-        }
-        return world_state
 
     def _ensure_round0_initialized(self) -> None:
         """
@@ -98,7 +107,7 @@ class CouncilManager:
         if self.conversation_log:
             return
 
-        world_state = self._build_world_state()
+        world_state = self._get_world_state_for_council()
         player_profile: Dict[str, Any] = {}
         floria_state = {"mood": "slightly_nervous"}
 
@@ -124,7 +133,7 @@ class CouncilManager:
         st.session_state.pop("council_rescue_buffer", None)
         st.session_state.pop("council_pending_action", None)
 
-        # ★ リセット直後に Round0 を再構成（最新 world_state で）
+        # ★ リセット直後に Round0 を再構成
         self._ensure_round0_initialized()
 
     def get_log(self) -> List[Dict[str, str]]:
@@ -138,11 +147,6 @@ class CouncilManager:
         """
         round_ = len(self.conversation_log) + 1
 
-        # SceneManager 側の world_state もここで拾っておく
-        loc = st.session_state.get("scene_location")
-        slot = st.session_state.get("scene_time_slot")
-        time_str = st.session_state.get("scene_time_str")
-
         return {
             "round": round_,
             "speaker": "player",
@@ -150,9 +154,6 @@ class CouncilManager:
             "participants": self.state.get("participants", ["player", "floria"]),
             "last_speaker": self.state.get("last_speaker"),
             "special_available": self.state.get("special_available", False),
-            "location": loc,
-            "time_slot": slot,
-            "time_str": time_str,
         }
 
     def proceed(self, user_text: str) -> str:
@@ -181,7 +182,7 @@ class CouncilManager:
         ログにはまだ追加しない。
         """
 
-        world_state = self._build_world_state()
+        world_state = self._get_world_state_for_council()
         floria_state = {
             "mood": "slightly_nervous",
         }
@@ -275,16 +276,12 @@ class CouncilManager:
                 st.write(f"最後の話者: {last}")
             st.write(f"スペシャル選択可: {status.get('special_available')}")
 
-            # ★ world_state 情報も表示
-            loc = status.get("location")
-            if loc:
-                st.write(f"場所: {loc}")
-            slot = status.get("time_slot")
-            if slot:
-                st.write(f"時間帯スロット: {slot}")
-            time_str = status.get("time_str")
-            if time_str:
-                st.write(f"時刻: {time_str}")
+        # ★ world_state の可視化
+        ws = self._get_world_state_for_council()
+        with st.sidebar.expander("🌏 現在のワールド状態", expanded=True):
+            st.write(f"場所: {ws.get('location_name')}")
+            st.write(f"時間帯: {ws.get('time_of_day')}")
+            st.write(f"時刻文字列: {ws.get('time_str') or '（未指定）'}")
 
         # ---- プレイヤー入力 ----
         st.markdown("### プレイヤー入力")
@@ -296,9 +293,7 @@ class CouncilManager:
         buffer = st.session_state.get("council_rescue_buffer")
         if isinstance(buffer, dict):
             if buffer.get("round") == round_no:
-                # このラウンド用のバッファなら入力欄に反映
                 st.session_state[input_key] = buffer.get("text", "")
-                # 一度使ったら破棄
                 st.session_state["council_rescue_buffer"] = None
 
         user_text = st.text_area(
@@ -394,7 +389,7 @@ class CouncilManager:
                 special_id = self.state.get("special_id") or "unknown_special"
                 title, _ = self.narrator.make_special_title_and_choice(
                     special_id,
-                    world_state=self._build_world_state(),
+                    world_state=self._get_world_state_for_council(),
                     floria_state={"mood": "slightly_nervous"},
                 )
                 msg = f"スペシャルアクション「{title}」を実行します。よろしいですか？"
@@ -417,7 +412,6 @@ class CouncilManager:
                     st.session_state["council_rescue_running"] = True
                     with st.spinner("ナレーション案を考えています…"):
                         text = self.build_rescue_text(pending)
-                    # ★ ここでは text_area は触らず、バッファに保存して rerun
                     st.session_state["council_rescue_buffer"] = {
                         "round": round_no,
                         "text": text,
