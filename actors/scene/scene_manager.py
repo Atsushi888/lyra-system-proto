@@ -34,28 +34,6 @@ DIM_JA_LABELS: Dict[str, str] = {
 class SceneManager:
     """
     場所ごとに「一日の時間帯スロット」と「感情補正ベクトル」を持つマネージャ。
-
-    JSON構造（v2.0-slot の例）:
-    {
-      "meta": {
-        "version": "2.0-slot",
-        "updated_at": "...",
-        "dimensions": ["affection", "arousal", ...]
-      },
-      "time_slots": {
-        "morning": { "start": "07:00", "end": "09:00" },
-        ...
-      },
-      "locations": {
-        "通学路": {
-          "slots": {
-            "morning": { "emotions": { "affection": 0.1, ... } },
-            ...
-          }
-        },
-        ...
-      }
-    }
     """
 
     # JSON 保存先
@@ -89,7 +67,7 @@ class SceneManager:
         meta = data.get("meta", {})
         version = meta.get("version", "")
 
-        # v2 以外は互換を考えず初期化してしまう（初期段階なので割り切り）
+        # v2 以外は互換を考えず初期化してしまう
         if version != "2.0-slot":
             self._init_default()
             return
@@ -253,10 +231,6 @@ class SceneManager:
     ) -> Dict[str, float]:
         """
         指定された場所 + 時刻/スロットに対応する感情ベクトルを返す。
-
-        - slot_name を明示指定 → そのスロットの emotions
-        - time_str="HH:MM" が渡された場合 → time_slots から該当スロットを探索
-        - 見つからない場合は 0 ベクトル（全次元 0.0）
         """
         # スロット確定
         if slot_name is None and time_str:
@@ -329,8 +303,6 @@ class SceneManager:
                 default_slot = st.session_state.get("scene_time_slot")
                 if default_slot not in slot_keys:
                     default_slot = slot_label_auto
-                else:
-                    default_slot = default_slot
                 selected_slot = st.selectbox(
                     "時間帯スロット（任意）",
                     options=slot_options,
@@ -358,20 +330,6 @@ class SceneManager:
 
             time_str_clean: Optional[str] = time_str or None
 
-            # --- world_state 変更検知用：前回値を取得 ---
-            prev_loc = st.session_state.get("scene_prev_location")
-            prev_slot = st.session_state.get("scene_prev_time_slot")
-            prev_time_str = st.session_state.get("scene_prev_time_str")
-
-            changed = (
-                prev_loc is not None
-                and (
-                    prev_loc != selected_loc
-                    or prev_slot != slot_name
-                    or prev_time_str != time_str_clean
-                )
-            )
-
             # SceneManager から感情ベクトル取得
             emo_vec = self.get_for(
                 location=selected_loc,
@@ -385,17 +343,6 @@ class SceneManager:
                 st.session_state["scene_time_slot"] = slot_name
             if time_str_clean is not None:
                 st.session_state["scene_time_str"] = time_str_clean
-
-            # 前回値を更新
-            st.session_state["scene_prev_location"] = selected_loc
-            st.session_state["scene_prev_time_slot"] = slot_name
-            st.session_state["scene_prev_time_str"] = time_str_clean
-
-            # world_state が変わっていて、かつ CouncilManager が存在するならリセット
-            if changed and "council_manager" in st.session_state:
-                mgr = st.session_state.get("council_manager")
-                if hasattr(mgr, "reset"):
-                    mgr.reset()
 
             # 結果表示
             with st.expander("現在の world_state → scene_emotion", expanded=True):
@@ -498,7 +445,7 @@ class SceneManager:
                     # 感情ディメンションを max_per_row ごとに折り返す
                     dims = list(self.dimensions)
                     for i in range(0, len(dims), max_per_row):
-                        chunk = dims[i: i + max_per_row]
+                        chunk = dims[i : i + max_per_row]
                         cols = st.columns(len(chunk))
                         for dim, col in zip(chunk, cols):
                             with col:
