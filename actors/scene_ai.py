@@ -1,73 +1,106 @@
 # actors/scene_ai.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional
-import json
+from typing import Any, Dict, Optional, Mapping
 import os
 
+import streamlit as st
 
-@dataclass
-class SceneInfo:
-    scene_id: str = "town"
-    label: str = "街"
-    # ボーナス値は Dict[str, float] で保持（affection 等）
-    emotion_bonus: Dict[str, float] | None = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "scene_id": self.scene_id,
-            "label": self.label,
-            "emotion_bonus": self.emotion_bonus or {},
-        }
+from actors.scene.scene_manager import SceneManager
 
 
 class SceneAI:
     """
-    SceneChanger が state に保存した値＋JSON ファイルのボーナス定義をまとめて扱うクラス。
+    シーン情報（場所・時間帯）から
+    SceneManager 経由で感情補正ベクトルを取り出す役。
+
+    - state: Streamlit の session_state か、外部から渡された dict 互換オブジェクト
+    - SceneManager は state["scene_manager"] に共有して使う
     """
 
-    def __init__(
+    def __init__(self, state: Optional[Mapping[str, Any]] = None) -> None:
+        # AnswerTalker と同じパターンで state を決める
+        env_debug = os.getenv("LYRA_DEBUG", "")
+
+        if state is not None:
+            self.state = state
+        elif env_debug == "1":
+            self.state = st.session_state
+        else:
+            # 現状は Streamlit 前提なので session_state を使う
+            self.state = st.session_state
+
+        # SceneManager をセッション内で 1個だけ確保
+        key = "scene_manager"
+        if key not in self.state:
+            mgr = SceneManager(
+                path="actors/scene/scene_bonus/scene_emotion_map.json"
+            )
+            mgr.load()  # ← ここで JSON 読み込み
+            self.state[key] = mgr
+
+        self.manager: SceneManager = self.state[key]
+
+    # -----------------------------
+    # world_state の取得（ひな形）
+    # -----------------------------
+    def get_world_state(self) -> Dict[str, Any]:
+        """
+        現在の world_state を返す。
+        とりあえず簡易版：
+        - scene_location: 場所名（通学路 / 学食 / 駅前 / プレイヤーの部屋 / プール）
+        - scene_time_slot: "morning" / "lunch" / "after_school" / "night"
+        - scene_time_str: "HH:MM" 形式の任意の文字列（なければ None）
+        """
+        location = self.state.get("scene_location", "通学路")
+        slot_name = self.state.get("scene_time_slot", None)   # ex: "morning"
+        time_str = self.state.get("scene_time_str", None)     # ex: "07:45"
+
+        return {
+            "location": location,
+            "time_slot": slot_name,
+            "time_str": time_str,
+        }
+
+    # -----------------------------
+    # SceneManager から感情補正を取得
+    # -----------------------------
+    def get_scene_emotion(
         self,
-        *,
-        state: Mapping[str, Any],
-        bonus_dir: str = "actors/scene_bonus",
-    ) -> None:
-        self.state = state
-        self.bonus_dir = bonus_dir
-
-    # ---------------------------------------------------------
-    def get_scene_info(self) -> SceneInfo:
-        scene_id = str(self.state.get("scene_current", "town"))
-        label = str(self.state.get("scene_label", "街"))
-
-        bonus = self._load_bonus_for_scene(scene_id)
-        return SceneInfo(scene_id=scene_id, label=label, emotion_bonus=bonus)
-
-    def get_emotion_bonus(self) -> Dict[str, float]:
-        info = self.get_scene_info()
-        return info.emotion_bonus or {}
-
-    # ---------------------------------------------------------
-    def _load_bonus_for_scene(self, scene_id: str) -> Dict[str, float]:
+        world_state: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, float]:
         """
-        actors/scene_bonus/{scene_id}.json を読み込み、"emotion_bonus" キーを返す。
-        存在しない場合は空 dict。
+        world_state をもとに SceneManager から感情補正ベクトルを取得する。
+
+        - time_slot があれば slot_name として優先
+        - なければ time_str から自動スロット判定
+        - それもなければ SceneManager 側のデフォルトスロット
         """
-        os.makedirs(self.bonus_dir, exist_ok=True)
-        path = os.path.join(self.bonus_dir, f"{scene_id}.json")
+        if world_state is None:
+            world_state = self.get_world_state()
 
-        if not os.path.exists(path):
-            return {}
+        location = world_state.get("location", "通学路")
+        slot_name = world_state.get("time_slot")
+        time_str = world_state.get("time_str")
 
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return {}
+        return self.manager.get_for(
+            location=location,
+            time_str=time_str,
+            slot_name=slot_name,
+        )
 
-        bonus = data.get("emotion_bonus")
-        if isinstance(bonus, dict):
-            # float に寄せて返す
-            return {k: float(v) for k, v in bonus.items() if isinstance(v, (int, float))}
-        return {}
+    # -----------------------------
+    # MixerAI 向けの簡易 API（オプション）
+    # -----------------------------
+    def build_emotion_override_payload(self) -> Dict[str, Any]:
+        """
+        MixerAI などに渡しやすい形で、
+        world_state + scene_emotion をまとめた dict を返す。
+        """
+        ws = self.get_world_state()
+        emo = self.get_scene_emotion(ws)
+
+        return {
+            "world_state": ws,
+            "scene_emotion": emo,
+        }
