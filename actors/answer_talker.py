@@ -1,4 +1,3 @@
-# actors/answer_talker.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Mapping
@@ -48,7 +47,7 @@ class AnswerTalker:
         elif env_debug == "1":
             self.state = st.session_state  # デバッグ時は Streamlit の state を共有
         else:
-            # 非 Streamlit 環境用の空コンテナ（dict 互換ならOK）
+            # 現在は Streamlit 環境前提なので session_state を利用
             self.state = st.session_state
 
         # PersonaAI
@@ -169,6 +168,14 @@ class AnswerTalker:
 
         if not messages:
             return ""
+
+        # 0.1) world_state を llm_meta に格納しておく
+        world_state = {
+            "location": self.state.get("scene_location", "通学路"),
+            "time_slot": self.state.get("scene_time_slot"),
+            "time_str": self.state.get("scene_time_str"),
+        }
+        self.llm_meta["world_state"] = world_state
 
         # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta へ
         try:
