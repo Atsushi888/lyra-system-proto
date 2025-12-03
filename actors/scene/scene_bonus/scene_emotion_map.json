@@ -1,0 +1,254 @@
+{
+  "meta": {
+    "version": "2.0-slot",
+    "updated_at": "2025-12-02T18:45:00",
+    "dimensions": [
+      "affection",
+      "arousal",
+      "tension",
+      "anger",
+      "sadness",
+      "excitement"
+    ]
+  },
+  "time_slots": {
+    "morning": {
+      "start": "07:00",
+      "end": "09:00"
+    },
+    "lunch": {
+      "start": "12:00",
+      "end": "13:00"
+    },
+    "after_school": {
+      "start": "16:00",
+      "end": "19:00"
+    },
+    "night": {
+      "start": "20:00",
+      "end": "23:30"
+    }
+  },
+  "locations": {
+    "通学路": {
+      "slots": {
+        "morning": {
+          "emotions": {
+            "affection": 0.2,
+            "arousal": 0.05,
+            "tension": 0.1,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.2
+          }
+        },
+        "lunch": {
+          "emotions": {
+            "affection": 0.05,
+            "arousal": 0.0,
+            "tension": -0.05,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.05
+          }
+        },
+        "after_school": {
+          "emotions": {
+            "affection": 0.3,
+            "arousal": 0.1,
+            "tension": 0.1,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.35
+          }
+        },
+        "night": {
+          "emotions": {
+            "affection": 0.1,
+            "arousal": 0.05,
+            "tension": 0.3,
+            "anger": 0.0,
+            "sadness": 0.05,
+            "excitement": 0.1
+          }
+        }
+      }
+    },
+    "学食": {
+      "slots": {
+        "morning": {
+          "emotions": {
+            "affection": 0.05,
+            "arousal": 0.0,
+            "tension": -0.05,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.05
+          }
+        },
+        "lunch": {
+          "emotions": {
+            "affection": 0.25,
+            "arousal": 0.05,
+            "tension": 0.1,
+            "anger": 0.05,
+            "sadness": 0.0,
+            "excitement": 0.3
+          }
+        },
+        "after_school": {
+          "emotions": {
+            "affection": 0.1,
+            "arousal": 0.0,
+            "tension": -0.05,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.1
+          }
+        },
+        "night": {
+          "emotions": {
+            "affection": 0.05,
+            "arousal": 0.0,
+            "tension": 0.0,
+            "anger": 0.0,
+            "sadness": 0.05,
+            "excitement": 0.0
+          }
+        }
+      }
+    },
+    "駅前": {
+      "slots": {
+        "morning": {
+          "emotions": {
+            "affection": 0.05,
+            "arousal": 0.0,
+            "tension": 0.2,
+            "anger": 0.1,
+            "sadness": 0.0,
+            "excitement": 0.1
+          }
+        },
+        "lunch": {
+          "emotions": {
+            "affection": 0.05,
+            "arousal": 0.0,
+            "tension": 0.1,
+            "anger": 0.05,
+            "sadness": 0.0,
+            "excitement": 0.1
+          }
+        },
+        "after_school": {
+          "emotions": {
+            "affection": 0.2,
+            "arousal": 0.1,
+            "tension": 0.1,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.3
+          }
+        },
+        "night": {
+          "emotions": {
+            "affection": 0.15,
+            "arousal": 0.2,
+            "tension": 0.25,
+            "anger": 0.05,
+            "sadness": 0.05,
+            "excitement": 0.35
+          }
+        }
+      }
+    },
+    "プレイヤーの部屋": {
+      "slots": {
+        "morning": {
+          "emotions": {
+            "affection": 0.15,
+            "arousal": 0.05,
+            "tension": 0.1,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.2
+          }
+        },
+        "lunch": {
+          "emotions": {
+            "affection": 0.2,
+            "arousal": 0.05,
+            "tension": -0.05,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.1
+          }
+        },
+        "after_school": {
+          "emotions": {
+            "affection": 0.3,
+            "arousal": 0.1,
+            "tension": 0.0,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.25
+          }
+        },
+        "night": {
+          "emotions": {
+            "affection": 0.4,
+            "arousal": 0.3,
+            "tension": -0.05,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.35
+          }
+        }
+      }
+    },
+    "プール": {
+      "slots": {
+        "morning": {
+          "emotions": {
+            "affection": 0.2,
+            "arousal": 0.2,
+            "tension": 0.1,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.3
+          }
+        },
+        "lunch": {
+          "emotions": {
+            "affection": 0.2,
+            "arousal": 0.2,
+            "tension": 0.0,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.3
+          }
+        },
+        "after_school": {
+          "emotions": {
+            "affection": 0.3,
+            "arousal": 0.3,
+            "tension": 0.1,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.4
+          }
+        },
+        "night": {
+          "emotions": {
+            "affection": 0.2,
+            "arousal": 0.35,
+            "tension": 0.3,
+            "anger": 0.0,
+            "sadness": 0.0,
+            "excitement": 0.4
+          }
+        }
+      }
+    }
+  }
+}
