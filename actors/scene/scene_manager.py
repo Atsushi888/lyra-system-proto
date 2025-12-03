@@ -300,7 +300,101 @@ class SceneManager:
         if not self.time_slots or not self.locations:
             self._init_default()
 
-        # ---- 時間帯スロット編集（先に出す） ----
+        # === ① 冒頭：プレイヤー所在地 & 現在時刻テスト ===
+        st.markdown("### 🎯 プレイヤー所在地 & 現在時刻テスト")
+
+        loc_names = list(self.locations.keys())
+        if not loc_names:
+            st.info("場所がまだ定義されていません。下のエディタで追加してください。")
+        else:
+            # 既存 state からデフォルトを拾う
+            default_loc = st.session_state.get("scene_location", loc_names[0])
+            if default_loc not in loc_names:
+                default_loc = loc_names[0]
+
+            col_top1, col_top2 = st.columns([2, 1])
+
+            with col_top1:
+                selected_loc = st.selectbox(
+                    "プレイヤーの現在地",
+                    options=loc_names,
+                    index=loc_names.index(default_loc),
+                    key="sm_world_loc",
+                )
+
+            slot_keys = list(self.time_slots.keys())
+            slot_label_auto = "（自動判定：時刻から決定）"
+            slot_options = [slot_label_auto] + slot_keys
+
+            with col_top2:
+                default_slot = st.session_state.get("scene_time_slot")
+                if default_slot not in slot_keys:
+                    default_slot = slot_label_auto
+                else:
+                    default_slot = default_slot
+                selected_slot = st.selectbox(
+                    "時間帯スロット（任意）",
+                    options=slot_options,
+                    index=slot_options.index(default_slot)
+                    if default_slot in slot_options
+                    else 0,
+                    key="sm_world_slot",
+                )
+
+            col_time, col_dummy = st.columns([1.2, 2])
+            with col_time:
+                default_time_str = st.session_state.get("scene_time_str", "07:30")
+                time_str = st.text_input(
+                    "現在時刻（HH:MM）※空ならスロットのみで判定",
+                    value=default_time_str,
+                    key="sm_world_time_str",
+                ).strip()
+
+            # スロット名決定
+            slot_name: Optional[str]
+            if selected_slot == slot_label_auto:
+                slot_name = None
+            else:
+                slot_name = selected_slot
+
+            time_str_clean: Optional[str] = time_str or None
+
+            # SceneManager から感情ベクトル取得
+            emo_vec = self.get_for(
+                location=selected_loc,
+                time_str=time_str_clean,
+                slot_name=slot_name,
+            )
+
+            # → SceneAI 側と共有したい world_state を session_state に書き込む
+            st.session_state["scene_location"] = selected_loc
+            if slot_name is not None:
+                st.session_state["scene_time_slot"] = slot_name
+            if time_str_clean is not None:
+                st.session_state["scene_time_str"] = time_str_clean
+
+            # 結果表示
+            with st.expander("現在の world_state → scene_emotion", expanded=True):
+                st.write(f"**場所**: {selected_loc}")
+                if slot_name:
+                    spec = self.time_slots.get(slot_name, {})
+                    st.write(
+                        f"**時間帯スロット**: {slot_name} "
+                        f"({spec.get('start', '--:--')}–{spec.get('end', '--:--')})"
+                    )
+                else:
+                    st.write("**時間帯スロット**: 時刻から自動判定")
+                st.write(f"**時刻文字列**: {time_str_clean or '（未指定）'}")
+
+                st.markdown("**感情補正ベクトル:**")
+                for dim in self.dimensions:
+                    label = self._dim_label(dim)
+                    val = float(emo_vec.get(dim, 0.0))
+                    st.write(f"- {label}: {val:+.2f}")
+
+        st.markdown("---")
+
+        # ---- ② 時間帯スロット編集 ----
         st.markdown("### ⏱ 時間帯スロット設定")
 
         for name in list(self.time_slots.keys()):
@@ -335,7 +429,7 @@ class SceneManager:
 
         st.markdown("---")
 
-        # ---- 感情ディメンション（時間帯の後ろ） ----
+        # ---- ③ 感情ディメンション ----
         st.markdown("### 🎭 感情ディメンション")
 
         # 日本語ラベル付きで表示
@@ -360,7 +454,7 @@ class SceneManager:
 
         st.markdown("---")
 
-        # ---- ロケーション別 一日スケジュール ----
+        # ---- ④ ロケーション別 一日スケジュール ----
         st.markdown("### 🏙 ロケーション別・一日スケジュール")
 
         max_per_row = 3  # スライダー 3 本ごとに改行
