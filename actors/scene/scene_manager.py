@@ -1,3 +1,4 @@
+# actors/scene/scene_manager.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -200,13 +201,6 @@ class SceneManager:
                             tension=0.05,
                         )
                     },
-                    "morning": {
-                        "emotions": vec(
-                            affection=0.05,
-                            arousal=0.00,
-                            tension=0.00,
-                        )
-                    },
                 }
             },
             "プレイヤーの部屋": {
@@ -217,7 +211,14 @@ class SceneManager:
                             arousal=0.10,
                             tension=-0.10,
                         )
-                    }
+                    },
+                    "morning": {
+                        "emotions": vec(
+                            affection=0.20,
+                            arousal=0.05,
+                            tension=-0.05,
+                        )
+                    },
                 }
             },
             "プール": {
@@ -306,113 +307,168 @@ class SceneManager:
         if not self.time_slots or not self.locations:
             self._init_default()
 
-        # === ① 冒頭：プレイヤー所在地 & 現在時刻テスト ===
-        st.markdown("### 🎯 プレイヤー所在地 & 現在時刻テスト")
-
         loc_names = list(self.locations.keys())
         if not loc_names:
-            st.info("場所がまだ定義されていません。下のエディタで追加してください。")
-        else:
-            # 既存 state からデフォルトを拾う
-            default_loc = st.session_state.get("scene_location", loc_names[0])
-            if default_loc not in loc_names:
-                default_loc = loc_names[0]
+            st.warning("場所が定義されていません。下部の『場所を追加』から作成してください。")
+            return
 
-            col_top1, col_top2 = st.columns([2, 1])
+        slot_keys = list(self.time_slots.keys())
 
-            with col_top1:
-                selected_loc = st.selectbox(
-                    "プレイヤーの現在地",
-                    options=loc_names,
-                    index=loc_names.index(default_loc),
-                    key="sm_world_loc",
+        # === 0) コミット済み world_state のデフォルトを保証 ===
+        s = st.session_state
+
+        if "scene_location" not in s:
+            if "プレイヤーの部屋" in self.locations:
+                s["scene_location"] = "プレイヤーの部屋"
+            else:
+                s["scene_location"] = loc_names[0]
+
+        if "scene_time_slot" not in s:
+            if "morning" in self.time_slots:
+                s["scene_time_slot"] = "morning"
+            elif slot_keys:
+                s["scene_time_slot"] = slot_keys[0]
+            else:
+                s["scene_time_slot"] = None
+
+        if "scene_time_str" not in s:
+            # デフォルトは time_slot の start、なければ 07:30
+            slot_name = s.get("scene_time_slot")
+            default_time = "07:30"
+            if slot_name and slot_name in self.time_slots:
+                default_time = self.time_slots[slot_name].get("start", default_time)
+            s["scene_time_str"] = default_time
+
+        current_loc = s.get("scene_location")
+        current_slot = s.get("scene_time_slot")
+        current_time_str = s.get("scene_time_str")
+
+        # === ① 現在の world_state 表示 ===
+        st.markdown("### 🎯 現在の world_state & 感情補正")
+
+        col_a, col_b, col_c = st.columns([1.5, 1.2, 1.2])
+        with col_a:
+            st.write(f"**場所**: {current_loc}")
+        with col_b:
+            if current_slot:
+                spec = self.time_slots.get(current_slot, {})
+                st.write(
+                    f"**時間帯スロット**: {current_slot} "
+                    f"({spec.get('start', '--:--')}–{spec.get('end', '--:--')})"
                 )
-
-            slot_keys = list(self.time_slots.keys())
-            slot_label_auto = "（自動判定：時刻から決定）"
-            slot_options = [slot_label_auto] + slot_keys
-
-            with col_top2:
-                default_slot = st.session_state.get("scene_time_slot")
-                if default_slot not in slot_keys:
-                    default_slot = slot_label_auto
-                selected_slot = st.selectbox(
-                    "時間帯スロット（任意）",
-                    options=slot_options,
-                    index=slot_options.index(default_slot)
-                    if default_slot in slot_options
-                    else 0,
-                    key="sm_world_slot",
-                )
-
-            col_time, _ = st.columns([1.2, 2])
-            with col_time:
-                default_time_str = st.session_state.get("scene_time_str", "07:30")
-                time_str = st.text_input(
-                    "現在時刻（HH:MM）※空ならスロットのみで判定",
-                    value=default_time_str,
-                    key="sm_world_time_str",
-                ).strip()
-
-            time_str_clean: Optional[str] = time_str or None
-
-            # get_for に渡す slot_name（自動時は None）
-            slot_for_get: Optional[str]
-            if selected_slot == slot_label_auto:
-                slot_for_get = None
             else:
-                slot_for_get = selected_slot
+                st.write("**時間帯スロット**: 自動判定")
+        with col_c:
+            st.write(f"**時刻**: {current_time_str or '（未設定）'}")
 
-            # SceneManager から感情ベクトル取得
-            emo_vec = self.get_for(
-                location=selected_loc,
-                time_str=time_str_clean,
-                slot_name=slot_for_get,
-            )
+        # 現在地の感情ベクトル
+        current_emo = self.get_for(
+            location=current_loc,
+            time_str=current_time_str,
+            slot_name=current_slot,
+        )
 
-            # 実際に使われているスロットを推定（Council 用に保存）
-            resolved_slot: Optional[str] = None
-            if slot_for_get is not None:
-                resolved_slot = slot_for_get
-            elif time_str_clean:
-                t = self._parse_time(time_str_clean)
-                if t:
-                    resolved_slot = self._find_slot_for_time(t)
-
-            # → SceneAI / CouncilAI と共有したい world_state を session_state に書き込む
-            st.session_state["scene_location"] = selected_loc
-            if resolved_slot is not None:
-                st.session_state["scene_time_slot"] = resolved_slot
-            else:
-                st.session_state.pop("scene_time_slot", None)
-
-            if time_str_clean is not None:
-                st.session_state["scene_time_str"] = time_str_clean
-            else:
-                st.session_state.pop("scene_time_str", None)
-
-            # 結果表示
-            with st.expander("現在の world_state → scene_emotion", expanded=True):
-                st.write(f"**場所**: {selected_loc}")
-                if resolved_slot:
-                    spec = self.time_slots.get(resolved_slot, {})
-                    st.write(
-                        f"**時間帯スロット**: {resolved_slot} "
-                        f"({spec.get('start', '--:--')}–{spec.get('end', '--:--')})"
-                    )
-                else:
-                    st.write("**時間帯スロット**: 未確定（時刻から判定できませんでした）")
-                st.write(f"**時刻文字列**: {time_str_clean or '（未指定）'}")
-
-                st.markdown("**感情補正ベクトル:**")
-                for dim in self.dimensions:
-                    label = self._dim_label(dim)
-                    val = float(emo_vec.get(dim, 0.0))
-                    st.write(f"- {label}: {val:+.2f}")
+        with st.expander("現在の world_state → scene_emotion", expanded=True):
+            for dim in self.dimensions:
+                label = self._dim_label(dim)
+                val = float(current_emo.get(dim, 0.0))
+                st.write(f"- {label}: {val:+.2f}")
 
         st.markdown("---")
 
-        # ---- ② 時間帯スロット編集 ----
+        # === ② 移動プラン設定 ===
+        st.markdown("### 🚶‍♀️ プレイヤー移動プラン")
+
+        # プラン用 state（未設定なら現在値で初期化）
+        plan_loc = s.get("scene_plan_location", current_loc)
+        plan_slot = s.get("scene_plan_time_slot", current_slot or "auto")
+        plan_time = s.get("scene_plan_time_str", current_time_str or "")
+
+        slot_label_auto = "auto（時刻から判定）"
+        slot_options = [slot_label_auto] + slot_keys
+
+        # 入力 UI
+        col1, col2, col3 = st.columns([1.5, 1.2, 1.2])
+        with col1:
+            plan_loc = st.selectbox(
+                "プレイヤーの移動先",
+                options=loc_names,
+                index=loc_names.index(plan_loc) if plan_loc in loc_names else 0,
+                key="sm_plan_loc",
+            )
+        with col2:
+            initial_slot = plan_slot if plan_slot in slot_keys else slot_label_auto
+            plan_slot = st.selectbox(
+                "移動先の時間帯スロット",
+                options=slot_options,
+                index=slot_options.index(initial_slot),
+                key="sm_plan_slot",
+            )
+        with col3:
+            plan_time = st.text_input(
+                "移動先の時刻（HH:MM）",
+                value=plan_time or "",
+                key="sm_plan_time_str",
+            ).strip()
+
+        # プレビューベクトル
+        preview_slot: Optional[str] = None if plan_slot == slot_label_auto else plan_slot
+        preview_time: Optional[str] = plan_time or None
+        preview_emo = self.get_for(
+            location=plan_loc,
+            time_str=preview_time,
+            slot_name=preview_slot,
+        )
+
+        with st.expander("移動先 world_state プレビュー", expanded=False):
+            st.write(f"**場所**: {plan_loc}")
+            if preview_slot:
+                spec = self.time_slots.get(preview_slot, {})
+                st.write(
+                    f"**時間帯スロット**: {preview_slot} "
+                    f"({spec.get('start', '--:--')}–{spec.get('end', '--:--')})"
+                )
+            else:
+                st.write("**時間帯スロット**: auto（時刻から判定）")
+            st.write(f"**時刻**: {preview_time or '（未設定）'}")
+            st.markdown("**感情補正ベクトル:**")
+            for dim in self.dimensions:
+                label = self._dim_label(dim)
+                val = float(preview_emo.get(dim, 0.0))
+                st.write(f"- {label}: {val:+.2f}")
+
+        # 移動ボタン
+        if st.button("🚕 この設定で移動する", type="primary", key="sm_do_move"):
+            # state にコミット
+            s["scene_location"] = plan_loc
+            s["scene_time_slot"] = None if plan_slot == slot_label_auto else plan_slot
+            s["scene_time_str"] = plan_time or None
+
+            # プラン state も現在値として覚えておく
+            s["scene_plan_location"] = plan_loc
+            s["scene_plan_time_slot"] = plan_slot
+            s["scene_plan_time_str"] = plan_time
+
+            # llm_meta に world_state を書き込む（存在すれば）
+            ws = {
+                "location": plan_loc,
+                "time_slot": s["scene_time_slot"],
+                "time_str": s["scene_time_str"],
+            }
+            llm_meta = s.get("llm_meta")
+            if isinstance(llm_meta, dict):
+                llm_meta["world_state"] = ws
+                s["llm_meta"] = llm_meta
+
+            # CouncilManager へ「場所が変わったよ」と通知
+            s["world_state_changed"] = True
+
+            st.success("プレイヤーの場所と時刻を更新しました。")
+            st.rerun()
+
+        st.markdown("---")
+
+        # ---- ③ 時間帯スロット編集 ----
         st.markdown("### ⏱ 時間帯スロット設定")
 
         for name in list(self.time_slots.keys()):
@@ -447,7 +503,7 @@ class SceneManager:
 
         st.markdown("---")
 
-        # ---- ③ 感情ディメンション ----
+        # ---- ④ 感情ディメンション ----
         st.markdown("### 🎭 感情ディメンション")
 
         # 日本語ラベル付きで表示
@@ -472,7 +528,7 @@ class SceneManager:
 
         st.markdown("---")
 
-        # ---- ④ ロケーション別 一日スケジュール ----
+        # ---- ⑤ ロケーション別 一日スケジュール ----
         st.markdown("### 🏙 ロケーション別・一日スケジュール")
 
         max_per_row = 3  # スライダー 3 本ごとに改行
@@ -492,7 +548,7 @@ class SceneManager:
                     # 感情ディメンションを max_per_row ごとに折り返す
                     dims = list(self.dimensions)
                     for i in range(0, len(dims), max_per_row):
-                        chunk = dims[i : i + max_per_row]
+                        chunk = dims[i: i + max_per_row]
                         cols = st.columns(len(chunk))
                         for dim, col in zip(chunk, cols):
                             with col:
