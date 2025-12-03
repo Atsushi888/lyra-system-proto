@@ -200,6 +200,13 @@ class SceneManager:
                             tension=0.05,
                         )
                     },
+                    "morning": {
+                        "emotions": vec(
+                            affection=0.05,
+                            arousal=0.00,
+                            tension=0.00,
+                        )
+                    },
                 }
             },
             "プレイヤーの部屋": {
@@ -338,7 +345,7 @@ class SceneManager:
                     key="sm_world_slot",
                 )
 
-            col_time, col_dummy = st.columns([1.2, 2])
+            col_time, _ = st.columns([1.2, 2])
             with col_time:
                 default_time_str = st.session_state.get("scene_time_str", "07:30")
                 time_str = st.text_input(
@@ -347,49 +354,54 @@ class SceneManager:
                     key="sm_world_time_str",
                 ).strip()
 
-            # スロット名決定
-            slot_name: Optional[str]
-            if selected_slot == slot_label_auto:
-                slot_name = None
-            else:
-                slot_name = selected_slot
-
             time_str_clean: Optional[str] = time_str or None
+
+            # get_for に渡す slot_name（自動時は None）
+            slot_for_get: Optional[str]
+            if selected_slot == slot_label_auto:
+                slot_for_get = None
+            else:
+                slot_for_get = selected_slot
 
             # SceneManager から感情ベクトル取得
             emo_vec = self.get_for(
                 location=selected_loc,
                 time_str=time_str_clean,
-                slot_name=slot_name,
+                slot_name=slot_for_get,
             )
 
-            # → SceneAI 側と共有したい world_state を session_state に書き込む
+            # 実際に使われているスロットを推定（Council 用に保存）
+            resolved_slot: Optional[str] = None
+            if slot_for_get is not None:
+                resolved_slot = slot_for_get
+            elif time_str_clean:
+                t = self._parse_time(time_str_clean)
+                if t:
+                    resolved_slot = self._find_slot_for_time(t)
+
+            # → SceneAI / CouncilAI と共有したい world_state を session_state に書き込む
             st.session_state["scene_location"] = selected_loc
-            if slot_name is not None:
-                st.session_state["scene_time_slot"] = slot_name
+            if resolved_slot is not None:
+                st.session_state["scene_time_slot"] = resolved_slot
+            else:
+                st.session_state.pop("scene_time_slot", None)
+
             if time_str_clean is not None:
                 st.session_state["scene_time_str"] = time_str_clean
-
-            # ★ world_state が変わったら CouncilManager をリセットさせる
-            world_key = f"{selected_loc}|{slot_name or ''}|{time_str_clean or ''}"
-            prev_key = st.session_state.get("scene_world_state_key")
-            if world_key != prev_key:
-                st.session_state["scene_world_state_key"] = world_key
-                # 会談マネージャを作り直させる（Round0 を新しい場所で生成させる）
-                if "council_manager" in st.session_state:
-                    st.session_state.pop("council_manager")
+            else:
+                st.session_state.pop("scene_time_str", None)
 
             # 結果表示
             with st.expander("現在の world_state → scene_emotion", expanded=True):
                 st.write(f"**場所**: {selected_loc}")
-                if slot_name:
-                    spec = self.time_slots.get(slot_name, {})
+                if resolved_slot:
+                    spec = self.time_slots.get(resolved_slot, {})
                     st.write(
-                        f"**時間帯スロット**: {slot_name} "
+                        f"**時間帯スロット**: {resolved_slot} "
                         f"({spec.get('start', '--:--')}–{spec.get('end', '--:--')})"
                     )
                 else:
-                    st.write("**時間帯スロット**: 時刻から自動判定")
+                    st.write("**時間帯スロット**: 未確定（時刻から判定できませんでした）")
                 st.write(f"**時刻文字列**: {time_str_clean or '（未指定）'}")
 
                 st.markdown("**感情補正ベクトル:**")
