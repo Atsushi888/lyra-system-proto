@@ -1,220 +1,183 @@
 # actors/scene_ai.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Mapping
-import os
+from dataclasses import dataclass
+from typing import Any, Dict, Mapping, Optional
 
 import streamlit as st
 
-from actors.scene.scene_manager import SceneManager
 
-
+@dataclass
 class SceneAI:
     """
-    シーン情報（場所・時間帯）を管理し、
-    - llm_meta["world_state"] に保存
-    - SceneManager から感情ボーナスを取り出す
-    - LLM 向けの「シーン説明 system プロンプト」を組み立てる
-    役割を持つクラス。
+    Lyra 全体で共有する「世界のデフォルト状態」を管理するクラス。
+
+    - world_state は Streamlit の session_state["world_state"] に保持
+    - player / floria の位置は完全に独立して管理する
+    - プレイヤー移動とフローリア移動は別メソッド
     """
 
-    def __init__(self, state: Optional[Mapping[str, Any]] = None) -> None:
-        # AnswerTalker と同じパターンで state を決める
-        env_debug = os.getenv("LYRA_DEBUG", "")
+    state: Optional[Mapping[str, Any]] = None
 
-        if state is not None:
-            self.state = state
-        elif env_debug == "1":
+    def __post_init__(self) -> None:
+        # 明示的 state があればそれを、なければ st.session_state を使う
+        if self.state is None:
             self.state = st.session_state
-        else:
-            # 現状は Streamlit 前提なので session_state を使う
-            self.state = st.session_state
+        # world_state のデフォルトを確保
+        self._ensure_world_defaults()
 
-        # SceneManager（JSON 読み込み用）
-        self.manager = SceneManager(
-            path="actors/scene/scene_bonus/scene_emotion_map.json"
-        )
-        self.manager.load()
+    # =========================================================
+    # 基本 world_state アクセス
+    # =========================================================
+    def _ensure_world_defaults(self) -> Dict[str, Any]:
+        """world_state の最低限のキーを必ず用意する。"""
+        world = self.state.get("world_state")
+        if not isinstance(world, dict):
+            world = {}
 
-        # llm_meta を確保
-        llm_meta = self.state.get("llm_meta")
-        if not isinstance(llm_meta, dict):
-            llm_meta = {}
+        # 場所情報
+        locs = world.get("locations")
+        if not isinstance(locs, dict):
+            locs = {}
 
-        # world_state 初期化・補正
-        ws_raw = llm_meta.get("world_state")
-        if not isinstance(ws_raw, dict) or not ws_raw:
-            ws = self._default_world_state()
-        else:
-            ws = self._merge_default_world_state(ws_raw)
+        # デフォルトは「プレイヤーの部屋」で両者スタート
+        if "player" not in locs:
+            locs["player"] = "プレイヤーの部屋"
+        if "floria" not in locs:
+            locs["floria"] = "プレイヤーの部屋"
 
-        llm_meta["world_state"] = ws
-        self.llm_meta: Dict[str, Any] = llm_meta
-        self.state["llm_meta"] = self.llm_meta
+        world["locations"] = locs
 
-    # ---------------------------------------------------------
-    # world_state の基本構造
-    # ---------------------------------------------------------
-    @staticmethod
-    def _default_world_state() -> Dict[str, Any]:
-        """
-        world_state のデフォルト。
-        - 場所: プレイヤー/フローリアとも「プレイヤーの部屋」
-        - 時間: morning / 07:30
-        """
-        return {
-            "locations": {
-                "player": "プレイヤーの部屋",
-                "floria": "プレイヤーの部屋",
-            },
-            "time": {
-                "slot": "morning",
-                "time_str": "07:30",
-            },
-        }
+        # 時刻情報
+        t = world.get("time")
+        if not isinstance(t, dict):
+            t = {}
 
-    def _merge_default_world_state(self, src: Dict[str, Any]) -> Dict[str, Any]:
-        """既存 world_state に足りないキーをデフォルトで埋める。"""
-        base = self._default_world_state()
+        t.setdefault("slot", "morning")
+        t.setdefault("time_str", "07:30")
 
-        loc_src = (src.get("locations") or {}) if isinstance(src, dict) else {}
-        time_src = (src.get("time") or {}) if isinstance(src, dict) else {}
+        world["time"] = t
 
-        locations = {
-            "player": loc_src.get("player", base["locations"]["player"]),
-            "floria": loc_src.get("floria", base["locations"]["floria"]),
-        }
-        time_block = {
-            "slot": time_src.get("slot", base["time"]["slot"]),
-            "time_str": time_src.get("time_str", base["time"]["time_str"]),
-        }
+        # 保存
+        self.state["world_state"] = world
+        return world
 
-        return {
-            "locations": locations,
-            "time": time_block,
-        }
-
-    # ---------------------------------------------------------
-    # world_state の get / set
-    # ---------------------------------------------------------
     def get_world_state(self) -> Dict[str, Any]:
-        """llm_meta から world_state を取得（コピーして返す）。"""
-        ws = self.llm_meta.get("world_state")
-        if not isinstance(ws, dict):
-            ws = self._default_world_state()
-            self.llm_meta["world_state"] = ws
-            self.state["llm_meta"] = self.llm_meta
-        return {
-            "locations": dict(ws.get("locations", {})),
-            "time": dict(ws.get("time", {})),
-        }
+        """常に正規化された world_state を返す。"""
+        return self._ensure_world_defaults()
 
-    def _save_world_state(self, ws: Dict[str, Any]) -> None:
-        """world_state を llm_meta に書き戻す。"""
-        self.llm_meta["world_state"] = self._merge_default_world_state(ws)
-        self.state["llm_meta"] = self.llm_meta
+    def set_world_state(self, world: Dict[str, Any]) -> None:
+        """world_state を直接上書きしたいとき用。"""
+        if not isinstance(world, dict):
+            world = {}
+        self.state["world_state"] = world
+        # 念のため整形
+        self._ensure_world_defaults()
 
-    # ---------------------------------------------------------
-    # プレイヤー / フローリアの移動
-    # ---------------------------------------------------------
+    # =========================================================
+    # キャラクター移動
+    # =========================================================
     def move_player(
         self,
         location: str,
         *,
         time_slot: Optional[str] = None,
         time_str: Optional[str] = None,
-    ) -> None:
+    ) -> Dict[str, Any]:
         """
-        プレイヤーを指定場所に移動させる。
-        time_slot / time_str が指定されていれば、世界共通の時間も更新。
-        """
-        ws = self.get_world_state()
-        locs = ws.setdefault("locations", {})
-        time_block = ws.setdefault("time", {})
+        プレイヤーだけを移動させる。
 
-        locs["player"] = str(location)
+        ※ ここでは絶対に floria の位置を変更しない。
+        """
+        world = self._ensure_world_defaults()
+        locs = world["locations"]
+        time_info = world["time"]
+
+        locs["player"] = location  # ★ プレイヤーだけ更新
 
         if time_slot is not None:
-            time_block["slot"] = str(time_slot)
+            time_info["slot"] = time_slot
         if time_str is not None:
-            time_block["time_str"] = str(time_str)
+            time_info["time_str"] = time_str
 
-        self._save_world_state(ws)
+        world["locations"] = locs
+        world["time"] = time_info
+        self.state["world_state"] = world
+        return world
 
-    def move_floria(self, location: str) -> None:
+    def move_floria(self, location: str) -> Dict[str, Any]:
         """
-        フローリアだけを別の場所へ移動させる。
-        （時間帯・時刻は world 共通のまま）
-        """
-        ws = self.get_world_state()
-        locs = ws.setdefault("locations", {})
-        locs["floria"] = str(location)
-        self._save_world_state(ws)
+        フローリアだけを移動させる。
 
-    # ---------------------------------------------------------
-    # SceneManager から感情ボーナスを取得
-    # ---------------------------------------------------------
-    def get_emotion_bonus(self) -> Dict[str, float]:
+        時刻・時間帯はプレイヤーと共有のまま。
         """
-        現在の world_state（プレイヤーの場所＋時間）に対応する
-        SceneManager 由来の感情ボーナスを返す。
-        """
-        ws = self.get_world_state()
-        locs = ws.get("locations", {})
-        t = ws.get("time", {})
+        world = self._ensure_world_defaults()
+        locs = world["locations"]
 
-        location = locs.get("player", "プレイヤーの部屋")
-        slot_name = t.get("slot")
-        time_str = t.get("time_str")
+        locs["floria"] = location  # ★ フローリアだけ更新
 
-        return self.manager.get_for(
-            location=location,
-            time_str=time_str,
-            slot_name=slot_name,
-        )
+        world["locations"] = locs
+        self.state["world_state"] = world
+        return world
 
-    # ---------------------------------------------------------
-    # LLM 向け：シーン説明 system プロンプト
-    # ---------------------------------------------------------
-    def build_scene_prompt_for_actor(self, actor_name: str = "フローリア") -> str:
+    # =========================================================
+    # LLM へのコンテキスト注入用ユーティリティ
+    # =========================================================
+    def build_emotion_override_payload(self) -> Dict[str, Any]:
         """
-        現在の world_state をもとに、Actor / Composer 用の
-        「シーン説明 system プロンプト」を組み立てる。
-        （日本語で簡潔に）
+        AnswerTalker から呼ばれ、world_state と scene_emotion をまとめて返す。
+
+        scene_emotion は「プレイヤーの現在位置＆時刻」に基づく感情補正ベクトル。
         """
-        ws = self.get_world_state()
-        locs = ws.get("locations", {})
-        t = ws.get("time", {})
+        world = self._ensure_world_defaults()
+        locs = world["locations"]
+        t = world["time"]
 
         player_loc = locs.get("player", "プレイヤーの部屋")
-        floria_loc = locs.get("floria", "プレイヤーの部屋")
-        slot = t.get("slot", "morning")
+        time_slot = t.get("slot", "morning")
         time_str = t.get("time_str", "07:30")
 
-        slot_spec = self.manager.time_slots.get(slot, {})
-        slot_label = f"{slot}（{slot_spec.get('start', '--:--')}〜{slot_spec.get('end', '--:--')}）"
+        # 遅延 import で循環参照を回避
+        from actors.scene.scene_manager import SceneManager
 
-        if player_loc == floria_loc:
-            relation = "プレイヤーと{actor}は同じ場所にいて、直接会話できる状態です。".format(
-                actor=actor_name
-            )
-        else:
-            relation = (
-                "プレイヤーと{actor}は別々の場所にいます。"
-                "直接会話させる場合は、通信越し・魔法通信など、"
-                "それらしい理由を補ってください。"
-            ).format(actor=actor_name)
+        mgr = SceneManager()
+        mgr.load()
+        emo_vec = mgr.get_for(
+            location=player_loc,
+            time_str=time_str,
+            slot_name=time_slot,
+        )
 
-        prompt = f"""
-あなたは、以下の「現在のシーン状況」を必ず踏まえて会話と描写を行うアシスタントです。
+        scene_emotion = {
+            "location": player_loc,
+            "time_slot": time_slot,
+            "time_str": time_str,
+            "vector": emo_vec,
+        }
 
-[現在のシーン]
-- 時間帯: {slot_label}
-- 時刻: {time_str}
-- プレイヤーの場所: {player_loc}
-- {actor_name}の場所: {floria_loc}
-- 二人の位置関係: {relation}
+        # llm_meta にもコピーしておく（あれば）
+        llm_meta = self.state.get("llm_meta")
+        if isinstance(llm_meta, dict):
+            llm_meta["world_state"] = world
+            llm_meta["scene_emotion"] = scene_emotion
+            self.state["llm_meta"] = llm_meta
 
-上記と矛盾しないように、光景描写（天気・明るさ・人の多さなど）やセリフの内容を整合させてください。
-"""
-        return prompt.strip()
+        return {
+            "world_state": world,
+            "scene_emotion": scene_emotion,
+        }
+
+    def get_prompt_world_state_text(self) -> str:
+        """
+        Council / Narrator 用に、人間が読める形で world_state をテキスト化。
+        """
+        world = self._ensure_world_defaults()
+        locs = world["locations"]
+        t = world["time"]
+
+        return (
+            "【現在の状況メモ】\n"
+            f"- プレイヤー位置: {locs.get('player')}\n"
+            f"- フローリア位置: {locs.get('floria')}\n"
+            f"- 時間帯: {t.get('slot')} / 時刻: {t.get('time_str')}\n"
+        )
