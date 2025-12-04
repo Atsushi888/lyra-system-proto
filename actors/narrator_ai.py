@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Dict, Any, Optional, List
+from typing import (
+    Literal,
+    Dict,
+    Any,
+    Optional,
+    List,
+    Mapping,
+)
 
 from actors.narrator.narrator_manager import NarratorManager
 
@@ -25,7 +32,7 @@ class NarrationLine:
 class NarrationChoice:
     """
     プレイヤーが「救済」として選ぶ行動テキスト。
-    - label: ボタン名（UI用）
+    - label: ボタン名（UI用）※今は固定でOK
     - speak_text: 実際にログに出す地の文
     """
     kind: ChoiceKind
@@ -40,144 +47,127 @@ class NarratorAI:
     """
     プロンプト設計＋最終テキストの「意味づけ」担当。
     LLM 呼び出し自体は NarratorManager に丸投げする。
+
+    2024-12 rev:
+      - world_state は CouncilManager 経由ではなく、可能な限り SceneAI から直接取得する。
+      - Round0 導入は「プレイヤーとフローリアが同じ場所にいるパターン /
+        プレイヤーだけのパターン」でプロンプトを分岐させる。
     """
 
-    def __init__(self, manager: NarratorManager) -> None:
+    def __init__(
+        self,
+        manager: NarratorManager,
+        state: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         self.manager = manager
+        # SceneAI と同じ情報源（st.session_state 想定）を共有するためのハンドル
+        self.state: Optional[Mapping[str, Any]] = state
 
     # ============================================================
-    # 内部ヘルパ：パーティー状態の判定
+    # SceneAI から world_state を直接取得するヘルパー
     # ============================================================
-    def _analyze_party_state(
+    def _fetch_world_from_scene_ai(
         self,
-        world_state: Dict[str, Any],
-        floria_state: Dict[str, Any],
+        fallback_world: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        world_state から「プレイヤーが一人か / フローリアと同じ場所にいるか」を判定する。
+        情報系のハブである SceneAI から world_state を取得する。
 
-        方針:
-        - party_state が明示的に "alone" のときだけ「完全に一人」とみなす
-        - party_state が "with_floria" / "together" / "pair" なら「確実に一緒」
-        - それ以外（空・不明）は、互換性重視で「基本は一緒」とみなす。
-          位置情報があればそれも参考にする。
+        - self.state が指定されていれば SceneAI(state) を最優先で利用
+        - 何らかの理由で失敗した場合は fallback_world をそのまま返す
         """
-        party_raw = str(world_state.get("party_state", "")).strip().lower()
+        if self.state is not None:
+            try:
+                # 循環 import 回避のためローカル import
+                from actors.scene_ai import SceneAI
 
-        # SceneAI 側で想定している locations 構造:
-        #   locations = {"player": "...", "floria": "..."}
-        locations = world_state.get("locations") or {}
+                scene_ai = SceneAI(state=self.state)
+                world = scene_ai.get_world_state()
+                # 期待形でなければフォールバック
+                if isinstance(world, dict):
+                    return world
+            except Exception:
+                # 失敗してもここでは例外を上げず、フォールバックに任せる
+                pass
 
-        player_loc = (
-            world_state.get("player_location")
-            or world_state.get("location_name")
-            or locations.get("player")
-            or "不明な場所"
-        )
-        floria_loc = (
-            world_state.get("floria_location")
-            or locations.get("floria")
-            or floria_state.get("location")
-            or ""
-        )
-
-        # デフォルトは「一緒にいる」寄りに倒す
-        together = True
-
-        # 1) party_state の明示指定を優先
-        if party_raw == "alone":
-            together = False
-        elif party_raw in ("with_floria", "together", "pair"):
-            together = True
-        else:
-            # 2) party_state が空 / 不明なら、位置を見て判断を試みる
-            if floria_loc and player_loc:
-                together = (player_loc == floria_loc)
-            else:
-                # 位置情報も怪しいなら、従来どおり「一緒にいる」前提にしておく
-                together = True
-
-        return {
-            "party_state": party_raw or None,
-            "player_loc": player_loc,
-            "floria_loc": floria_loc or None,
-            "is_together": together,
-        }
+        return fallback_world or {}
 
     # ============================================================
     # Round0 導入ナレーション
     # ============================================================
-    def _build_round0_messages(
+    def _build_round0_messages_together(
         self,
         world_state: Dict[str, Any],
         player_profile: Dict[str, Any],
         floria_state: Dict[str, Any],
     ) -> List[Dict[str, str]]:
         """
-        Round0 用プロンプト。
-        - プレイヤー単独 / フローリア同席でプロンプトを切り替える。
+        プレイヤーとフローリアが「同じ場所にいる」場合の Round0 プロンプト。
         """
-        party_info = self._analyze_party_state(world_state, floria_state)
-        is_together = bool(party_info.get("is_together"))
-
-        location_name = world_state.get("location_name", "不明な場所")
-        time_of_day = world_state.get("time_of_day", "不明")
-        weather = world_state.get("weather", "不明")
-
-        # --- 共通のシーン情報文字列 ---
-        scene_hint = (
-            f"- 場所: {location_name}\n"
-            f"- 時刻帯: {time_of_day}\n"
-            f"- 天候: {weather}\n"
-        )
-
-        # --- 同席 / 単独でプロンプト切り替え ---
-        if is_together:
-            # プレイヤーとフローリアが同じ場所にいるケース
-            floria_mood = floria_state.get("mood", "不明")
-            system = """
+        system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
 - プレイヤーとフローリアが、まだ一言も発言していない「ラウンド0」の導入文を書きます。
+- プレイヤーとフローリアは、同じ場所にいて、すでに顔を合わせています。
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーやフローリアのセリフは一切書かない（台詞は禁止）。
-- フローリアはプレイヤーと同じ場所にいます。距離感や空気感をさりげなく描写してください。
 - 最後の1文には、プレイヤーが何か話しかけたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
 
-            user = f"""
+        user = f"""
 [シーン情報]
-{scene_hint}- フローリアの雰囲気・感情: {floria_mood}
-- パーティー状態: プレイヤーとフローリアが同じ場所にいる
+- 場所: {world_state.get("location_name", "不明な場所")}
+- 時刻帯: {world_state.get("time_of_day", "不明")}
+- 天候: {world_state.get("weather", "不明")}
+- フローリアの雰囲気・感情: {floria_state.get("mood", "不明")}
 
 [要件]
 上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
+プレイヤーのすぐそばにフローリアがいる状況を前提とします。
 JSON や説明文は書かず、物語の本文だけを書きます。
-プレイヤーとフローリアが同じ場所にいることが自然に伝わるようにしてください。
 """.strip()
-        else:
-            # プレイヤーが単独（フローリアはこの場にいない）ケース
-            system = """
+
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+    def _build_round0_messages_alone(
+        self,
+        world_state: Dict[str, Any],
+        player_profile: Dict[str, Any],
+        floria_state: Dict[str, Any],
+    ) -> List[Dict[str, str]]:
+        """
+        プレイヤーが「ひとり」で現地にいる場合の Round0 プロンプト。
+        （フローリアは別の場所にいる / まだ合流していない想定）
+        """
+        system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
-- プレイヤーが一人でいる状態の「ラウンド0」の導入文を書きます。
-- プレイヤー以外の仲間（フローリアなど）は、この場にはいません。
+- プレイヤーがひとりでいる場面から始まる「ラウンド0」の導入文を書きます。
+- フローリアは今その場にはおらず、別の場所にいるか、まだ合流していません。
 - 二人称または三人称の「地の文」で、2〜4文程度。
-- セリフは一切書かない（台詞は禁止）。
-- 最後の1文には、「これからどこへ向かうか」「誰と会いに行くか」など、
-  プレイヤーが行動を起こしたくなるささやかなフックを入れてください。
+- プレイヤーやフローリアのセリフは一切書かない（台詞は禁止）。
+- 最後の1文には、「誰かに連絡したくなる」「待ち人のことを思い出す」など、
+  プレイヤーが次の行動を取りたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
 
-            user = f"""
+        user = f"""
 [シーン情報]
-{scene_hint}- パーティー状態: プレイヤーは一人。フローリアはこの場にはいない。
+- 場所: {world_state.get("location_name", "不明な場所")}
+- 時刻帯: {world_state.get("time_of_day", "不明")}
+- 天候: {world_state.get("weather", "不明")}
+- （参考）離れた場所にいるフローリアの雰囲気・感情: {floria_state.get("mood", "不明")}
 
 [要件]
 上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
+プレイヤーは今、この場所にひとりでおり、フローリアは目の前にはいません。
+必要であれば、「遠くにいる仲間」への思いとして、さりげなくフローリアに触れても構いませんが、
+プレイヤーのすぐそばにフローリアがいるような描写は避けてください。
 JSON や説明文は書かず、物語の本文だけを書きます。
-フローリアが「この場にいる」と誤解されないようにしてください。
 """.strip()
 
         return [
@@ -192,11 +182,45 @@ JSON や説明文は書かず、物語の本文だけを書きます。
         floria_state: Dict[str, Any],
     ) -> NarrationLine:
         """
-        Round0 開幕ナレーションを生成する。
-        meta には world_state と party_info を詰めておく。
+        Round0 開始ナレーションを生成する。
+
+        - 引数 world_state は「フォールバック」として扱い、
+          可能であれば SceneAI(state) から最新の world_state を取り直す。
+        - プレイヤー位置とフローリア位置を比較し、
+          同じなら「一緒パターン」、違う／片方 None なら「ひとりパターン」の
+          プロンプトを使う。
         """
-        party_info = self._analyze_party_state(world_state, floria_state)
-        messages = self._build_round0_messages(world_state, player_profile, floria_state)
+        # まず SceneAI から world_state を取得（失敗時だけ引数を使う）
+        world_state = self._fetch_world_from_scene_ai(world_state or {})
+        player_profile = player_profile or {}
+        floria_state = floria_state or {}
+
+        locs = world_state.get("locations", {}) or {}
+        party = world_state.get("party", {}) or {}
+
+        player_loc = locs.get("player")
+        floria_loc = locs.get("floria")
+        party_state = party.get("state", "")
+
+        # 「同じ場所にいる」とみなす条件（party_state は参考程度）
+        together = (
+            player_loc is not None
+            and floria_loc is not None
+            and player_loc == floria_loc
+        )
+
+        if together:
+            messages = self._build_round0_messages_together(
+                world_state=world_state,
+                player_profile=player_profile,
+                floria_state=floria_state,
+            )
+        else:
+            messages = self._build_round0_messages_alone(
+                world_state=world_state,
+                player_profile=player_profile,
+                floria_state=floria_state,
+            )
 
         text = self.manager.run_task(
             task_type="round0",
@@ -209,7 +233,10 @@ JSON や説明文は書かず、物語の本文だけを書きます。
             kind="round0",
             meta={
                 "world_state": world_state,
-                "party_info": party_info,
+                "player_loc": player_loc,
+                "floria_loc": floria_loc,
+                "party_state": party_state,
+                "together": together,
             },
         )
 
