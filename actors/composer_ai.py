@@ -11,10 +11,12 @@ class ComposerAI:
     llm_meta["models"] / llm_meta["judge"] / llm_meta["style_hint"] などをもとに、
     「最終返答テキスト」を組み立てるクラス。
 
-    v0.3 方針:
+    v0.4 方針:
       - 原則として追加で LLM を呼ばずに完結
       - ただし llm_manager が与えられていれば Refiner を任意で起動可能
       - dev_force_model があればそれを最優先で採用（開発・検証用）
+      - Refiner には world_state を渡し、「場所・時間・登場位置」との
+        明白な矛盾だけを最小限で修正させる
     """
 
     def __init__(
@@ -41,7 +43,7 @@ class ComposerAI:
                 "text": "",
                 "source_model": "",
                 "mode": "exception",
-                "summary": f"[ComposerAI 0.3] exception: {e}",
+                "summary": f"[ComposerAI 0.4] exception: {e}",
                 "base_text": "",
                 "base_source_model": "",
                 "dev_force_model": dev_force_model,
@@ -84,7 +86,7 @@ class ComposerAI:
                 "text": "",
                 "source_model": "",
                 "mode": "no_text",
-                "summary": "[ComposerAI 0.3] no usable text from judge or models",
+                "summary": "[ComposerAI 0.4] no usable text from judge or models",
                 "base_text": "",
                 "base_source_model": "",
                 "dev_force_model": dev_force_model,
@@ -99,7 +101,7 @@ class ComposerAI:
         # ここまでで「元テキスト」が確定
         # -----------------------
         summary = (
-            f"[ComposerAI 0.3] mode={mode}, "
+            f"[ComposerAI 0.4] mode={mode}, "
             f"source_model={base_model}, dev_force_model={dev_force_model or '-'}"
         )
 
@@ -171,7 +173,8 @@ class ComposerAI:
         if chosen_model and isinstance(models.get(chosen_model), Dict):
             info = models[chosen_model]
             if info.get("status") == "ok":
-                text = str(info.get("text") or "").strip()
+                text = str(info.get("text")) or ""
+                text = text.strip()
                 if text:
                     return chosen_model, text, "judge_model_fallback"
 
@@ -217,9 +220,9 @@ class ComposerAI:
 
         return "", ""
 
-    # -----------------------
-    # （任意）refinement
-    # -----------------------
+    # =======================
+    # Refiner まわり
+    # =======================
     def _maybe_refine(
         self,
         base: Dict[str, Any],
@@ -265,6 +268,43 @@ class ComposerAI:
         return base
 
     # -----------------------
+    # world_state をテキスト化するユーティリティ
+    # -----------------------
+    @staticmethod
+    def _build_world_context(llm_meta: Dict[str, Any]) -> str:
+        """
+        llm_meta["world_state"] を人間向けの要約テキストにする。
+        Refiner の system プロンプトに差し込むためのもの。
+        """
+        ws = llm_meta.get("world_state") or {}
+        locs = ws.get("locations") or {}
+        t = ws.get("time") or {}
+
+        player_loc = str(locs.get("player") or "プレイヤーの部屋")
+        floria_loc = str(
+            locs.get("floria")
+            or locs.get("floria_main")
+            or "プレイヤーの部屋"
+        )
+        slot = str(t.get("slot") or "morning")
+        time_str = str(t.get("time_str") or "07:30")
+
+        # シンプルに、日本語で状況を説明
+        ctx_lines = [
+            f"- 現在の時刻: {time_str}",
+            f"- 現在の時間帯スロット: {slot}",
+            f"- プレイヤーの位置: {player_loc}",
+            f"- フローリアの位置: {floria_loc}",
+        ]
+
+        # もし追加の情報があれば軽く添える（必須ではない）
+        # 例: ws.get("weather") など
+        if "weather" in ws:
+            ctx_lines.append(f"- 天候: {ws.get('weather')}")
+
+        return "\n".join(ctx_lines)
+
+    # -----------------------
     # 実際の Refiner 呼び出し
     # -----------------------
     def _call_refiner(self, text: str, llm_meta: Dict[str, Any]) -> str:
@@ -272,28 +312,55 @@ class ComposerAI:
         llm_manager を使って、最終テキストを「軽く整形」する。
 
         - style_hint が llm_meta にあれば、それも踏まえて整える。
+        - world_state が与えられていれば、場所・時間・位置関係との
+          明白な矛盾だけを最小限で修正する。
         - LLMManager の実装に応じて chat / chat_completion のどちらかを叩く。
         """
         if not self.llm_manager:
             raise RuntimeError("llm_manager is None")
 
         style_hint = str(llm_meta.get("style_hint") or "")
+        world_context = self._build_world_context(llm_meta)
 
+        # --- system プロンプト ---
         system_prompt = (
-            "あなたは日本語の文章スタイリストです。"
-            "与えられたテキストを、意味や内容を変えずに、読みやすく自然な文体に整えてください。"
-            "文章量（長さ）は大きく変えないでください。"
+            "あなたは日本語の物語テキストのスタイリスト兼監修者です。"
+            "与えられたテキストを、意味や物語の筋を大きく変えずに、"
+            "読みやすく自然な文体に整えてください。\n"
+            "ただし、以下の world_state に書かれている現在の状況と"
+            "明らかに矛盾する表現がある場合は、その矛盾を解消するために"
+            "必要最小限の修正を加えてください。\n"
+            "world_state に明記されていない情報（細かい情景、感情など）は、"
+            "元のテキストを尊重し、勝手に書き換えないでください。\n"
+            "場所や時間帯がテキスト内に明示されていない場合は、"
+            "無理に書き足す必要はありません。\n\n"
+            "特に次の点について world_state を優先します:\n"
+            "1. 時刻・時間帯（朝・昼・夕方・夜など）\n"
+            "2. プレイヤーの現在位置\n"
+            "3. フローリアの現在位置（プレイヤーの隣にいるか、別の場所にいるか など）\n\n"
+            "world_state とテキストがすでに整合している場合は、"
+            "内容を変えずに文体だけを整えてください。"
         )
 
         if style_hint:
             system_prompt += (
                 "\n\n以下は、望ましい文体のメモです。文体のみを参考にし、"
-                "内容や設定を改変しないでください：\n"
+                "内容や設定は改変しないでください：\n"
                 f"{style_hint}"
             )
 
+        # world_state の要約を明示的に付ける
+        if world_context.strip():
+            system_prompt += (
+                "\n\n--- 現在の world_state 概要 ---\n"
+                f"{world_context}\n"
+                "---------------------------------\n"
+            )
+
+        # --- user メッセージ ---
         user_msg = (
-            "次のテキストを、意味を変えずに、文体だけ整えてください。\n"
+            "次のテキストを、上記の world_state と矛盾しないように注意しながら、"
+            "意味や物語の流れを保ったまま、文体だけ整えてください。\n"
             "出力はテキスト本文のみを返し、解説や前置きは書かないでください。\n\n"
             "----- テキストここから -----\n"
             f"{text}\n"
