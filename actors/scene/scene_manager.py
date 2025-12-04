@@ -9,8 +9,6 @@ import os
 
 import streamlit as st
 
-from actors.scene_ai import SceneAI
-
 
 # デフォルトで持つ感情ディメンション
 DEFAULT_DIMENSIONS: List[str] = [
