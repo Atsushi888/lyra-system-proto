@@ -270,6 +270,7 @@ class SceneManager:
             self._init_default()
 
         # SceneAI 経由で world_state を取得
+        from actors.scene_ai import SceneAI
         scene_ai = SceneAI(state=st.session_state)
         world = scene_ai.get_world_state()
         locs = world.get("locations", {})
