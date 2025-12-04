@@ -1,3 +1,4 @@
+# actors/scene/scene_manager.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -262,27 +263,29 @@ class SceneManager:
 
     # ====== Streamlit UI ======
     def render(self) -> None:
+        from actors.scene_ai import SceneAI  # 循環参照回避のためローカル import
+
         st.markdown("## 🌏 Scene Emotion Manager")
         st.caption(f"保存先: `{self.path}`")
 
         if not self.time_slots or not self.locations:
             self._init_default()
 
-        # SceneAI 経由で world_state を取得
-        from actors.scene_ai import SceneAI
         scene_ai = SceneAI(state=st.session_state)
         world = scene_ai.get_world_state()
         locs = world.get("locations", {})
         t = world.get("time", {})
+        party = world.get("party", {})
 
-        current_player_loc = locs.get("player", "プレイヤーの部屋")
-        current_floria_loc = locs.get("floria", "プレイヤーの部屋")
+        player_loc = locs.get("player", "プレイヤーの部屋")
+        floria_loc = locs.get("floria", "プレイヤーの部屋")
         current_slot = t.get("slot", "morning")
         current_time_str = t.get("time_str", "07:30")
+        party_mode = party.get("mode", "with_floria")
 
-        # 現在の world_state に基づく感情補正（プレイヤー基準）
+        # 現在の world_state に基づく感情補正（プレイヤー位置）
         current_emo = self.get_for(
-            location=current_player_loc,
+            location=player_loc,
             time_str=current_time_str,
             slot_name=current_slot,
         )
@@ -290,20 +293,21 @@ class SceneManager:
         # === ① 現在の world_state 表示 ===
         st.markdown("### 🎯 現在の world_state & 感情補正")
 
-        cols = st.columns([2, 1, 1])
+        cols = st.columns([2, 2, 1])
         with cols[0]:
-            st.write(f"プレイヤーの場所: **{current_player_loc}**")
-            st.write(f"フローリアの場所: **{current_floria_loc}**")
+            st.write(f"プレイヤー: **{player_loc}**")
+            st.write(f"フローリア: **{floria_loc}**")
         with cols[1]:
             slot_spec = self.time_slots.get(current_slot, {})
             st.write(
                 f"時間帯スロット: **{current_slot}** "
                 f"({slot_spec.get('start', '--:--')}–{slot_spec.get('end', '--:--')})"
             )
+            st.write(f"パーティ状態: **{party_mode}**")
         with cols[2]:
             st.write(f"時刻: **{current_time_str}**")
 
-        with st.expander("現在の world_state → scene_emotion（プレイヤー基準）", expanded=True):
+        with st.expander("現在の world_state → scene_emotion（プレイヤー位置）", expanded=True):
             st.markdown("**感情補正ベクトル:**")
             for dim in self.dimensions:
                 label = self._dim_label(dim)
@@ -324,23 +328,23 @@ class SceneManager:
             dest_loc = st.selectbox(
                 "プレイヤーの移動先",
                 options=list(self.locations.keys()),
-                index=list(self.locations.keys()).index(current_player_loc)
-                if current_player_loc in self.locations
+                index=list(self.locations.keys()).index(player_loc)
+                if player_loc in self.locations
                 else 0,
-                key="sm_move_dest_loc",
+                key="sm_move_dest_loc_player",
             )
         with col2:
             dest_slot = st.selectbox(
                 "移動先の時間帯スロット",
                 options=slot_keys,
                 index=slot_keys.index(current_slot) if current_slot in slot_keys else 0,
-                key="sm_move_slot",
+                key="sm_move_slot_player",
             )
         with col3:
             dest_time_str = st.text_input(
                 "移動先の時刻（HH:MM）",
                 value=current_time_str,
-                key="sm_move_time_str",
+                key="sm_move_time_str_player",
             ).strip() or current_time_str
 
         # プレビュー（プレイヤー）
@@ -358,13 +362,12 @@ class SceneManager:
                 f"({spec.get('start', '--:--')}–{spec.get('end', '--:--')})"
             )
             st.write(f"時刻: **{dest_time_str}**")
-            st.markdown("**感情補正ベクトル（移動先／プレイヤー基準）:**")
+            st.markdown("**感情補正ベクトル（移動先）:**")
             for dim in self.dimensions:
                 label = self._dim_label(dim)
                 val = float(dest_emo.get(dim, 0.0))
                 st.write(f"- {label}: {val:+.2f}")
 
-        # 実際の移動（プレイヤー）
         if st.button("✨ この条件でプレイヤーを移動する", type="primary", key="sm_do_move_player"):
             scene_ai.move_player(
                 dest_loc,
@@ -372,7 +375,7 @@ class SceneManager:
                 time_str=dest_time_str,
             )
 
-            # もし CouncilManager が存在すればリセットして Round0 を再生成
+            # 会談システムがあれば Round0 からやり直し
             mgr = st.session_state.get("council_manager")
             if mgr is not None and hasattr(mgr, "reset"):
                 mgr.reset()
@@ -382,49 +385,36 @@ class SceneManager:
 
         st.markdown("---")
 
-        # === ③ フローリア移動プラン ===
-        st.markdown("### 👗 フローリア移動プラン")
+        # === ②' フローリア移動プラン ===
+        st.markdown("### 🧚‍♀️ フローリア移動プラン")
 
-        colf1, colf2 = st.columns([2, 1])
-        with colf1:
-            floria_dest_loc = st.selectbox(
-                "フローリアの移動先",
-                options=list(self.locations.keys()),
-                index=list(self.locations.keys()).index(current_floria_loc)
-                if current_floria_loc in self.locations
-                else 0,
-                key="sm_move_floria_loc",
-            )
-        with colf2:
-            st.caption("※ 時刻と時間帯はプレイヤーと共通です")
+        with st.expander("フローリアの現在位置と移動先", expanded=False):
+            colf1, colf2 = st.columns([2, 2])
+            with colf1:
+                st.write(f"現在位置: **{floria_loc}**")
+            with colf2:
+                dest_loc_floria = st.selectbox(
+                    "フローリアの移動先",
+                    options=list(self.locations.keys()),
+                    index=list(self.locations.keys()).index(floria_loc)
+                    if floria_loc in self.locations
+                    else 0,
+                    key="sm_move_dest_loc_floria",
+                )
 
-        if st.button("✨ フローリアだけを移動する", key="sm_do_move_floria"):
-            # SceneAI 側にフローリア移動専用のメソッドがある前提
-            if hasattr(scene_ai, "move_floria"):
-                scene_ai.move_floria(floria_dest_loc)
-            else:
-                # 後方互換：存在しない場合はとりあえず同じ move_player で上書きしないよう、
-                # world_state を直接補正してもよいが、ここでは単純に player と同じメソッドは呼ばない
-                ws = scene_ai.get_world_state()
-                loc_block = ws.setdefault("locations", {})
-                loc_block["floria"] = floria_dest_loc
-                # SceneAI が world_state 保存用のプライベートメソッドを持っていない場合も考え、
-                # llm_meta を直接更新
-                llm_meta = st.session_state.get("llm_meta", {})
-                if isinstance(llm_meta, dict):
-                    llm_meta["world_state"] = ws
-                    st.session_state["llm_meta"] = llm_meta
+            if st.button("✨ この条件でフローリアを移動する", key="sm_do_move_floria"):
+                scene_ai.move_floria(dest_loc_floria)
 
-            mgr = st.session_state.get("council_manager")
-            if mgr is not None and hasattr(mgr, "reset"):
-                mgr.reset()
+                mgr = st.session_state.get("council_manager")
+                if mgr is not None and hasattr(mgr, "reset"):
+                    mgr.reset()
 
-            st.success("フローリアの位置を更新し、会談システムをリセットしました。")
-            st.rerun()
+                st.success("フローリアの現在地を更新し、会談システムをリセットしました。")
+                st.rerun()
 
         st.markdown("---")
 
-        # === ④ 以降は従来どおり：時間帯スロット / 感情ディメンション / ロケーション別マップ編集 ===
+        # === ③ 以降は従来どおり：時間帯スロット / 感情ディメンション / ロケーション別マップ編集 ===
 
         # ---- 時間帯スロット編集 ----
         st.markdown("### ⏱ 時間帯スロット設定")
