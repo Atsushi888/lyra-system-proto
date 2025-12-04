@@ -1,3 +1,4 @@
+# actors/answer_talker.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Mapping
@@ -43,11 +44,13 @@ class AnswerTalker:
         # Streamlit あり／なし両対応の state
         env_debug = os.getenv("LYRA_DEBUG", "")
         if state is not None:
-            self.state = state          # 明示的に渡された state を最優先
+            # 明示的に渡された state を最優先
+            self.state = state
         elif env_debug == "1":
-            self.state = st.session_state  # デバッグ時は Streamlit の state を共有
+            # デバッグ時は Streamlit の state を共有
+            self.state = st.session_state
         else:
-            # 現在は Streamlit 環境前提なので session_state を利用
+            # 現状は Streamlit 前提なので session_state を使う
             self.state = st.session_state
 
         # PersonaAI
@@ -71,6 +74,10 @@ class AnswerTalker:
         llm_meta.setdefault("memory_context", "")
         llm_meta.setdefault("memory_update", {})
         llm_meta.setdefault("emotion_long_term", {})
+
+        # ★ シーン/ワールド情報用のスロットも確保
+        llm_meta.setdefault("world_state", {})
+        llm_meta.setdefault("scene_emotion", {})
 
         # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
         if "composer_style_hint" not in llm_meta:
@@ -169,14 +176,6 @@ class AnswerTalker:
         if not messages:
             return ""
 
-        # 0.1) world_state を llm_meta に格納しておく
-        world_state = {
-            "location": self.state.get("scene_location", "通学路"),
-            "time_slot": self.state.get("scene_time_slot"),
-            "time_str": self.state.get("scene_time_str"),
-        }
-        self.llm_meta["world_state"] = world_state
-
         # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta へ
         try:
             persona_all = self.persona_ai.get_all(reload=True)
@@ -210,6 +209,18 @@ class AnswerTalker:
         except Exception as e:
             self.llm_meta["memory_context_error"] = str(e)
             self.llm_meta["memory_context"] = ""
+
+        # 1.2) SceneAI から world_state / scene_emotion を取得して llm_meta に積む
+        try:
+            scene_payload = self.scene_ai.build_emotion_override_payload()
+            self.llm_meta["world_state"] = scene_payload.get("world_state", {})
+            self.llm_meta["scene_emotion"] = scene_payload.get("scene_emotion", {})
+            self.llm_meta["world_error"] = None
+        except Exception as e:
+            # 失敗しても致命的ではないのでエラーだけ残す
+            self.llm_meta["world_error"] = str(e)
+            self.llm_meta.setdefault("world_state", {})
+            self.llm_meta.setdefault("scene_emotion", {})
 
         # 1.5) emotion_override を MixerAI から取得
         emotion_override = self.mixer_ai.build_emotion_override()
