@@ -1,7 +1,9 @@
 # actors/scene_ai.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Mapping
+from dataclasses import dataclass
+from typing import Any, Dict, Mapping, Optional
+
 import os
 
 import streamlit as st
@@ -9,111 +11,158 @@ import streamlit as st
 from actors.scene.scene_manager import SceneManager
 
 
+@dataclass
 class SceneAI:
     """
-    シーン情報（場所・時間帯）と「誰がどこにいるか」を一元管理するクラス。
+    シーン情報（world_state）の唯一の正規窓口。
 
-    - world_state の唯一のソース
-    - SceneManager からシーン補正ベクトルを取得
-    - MixerAI 向けの emotion_bonus
-    - AnswerTalker / Composer 向けの world_state / scene_emotion ペイロード
+    - world_state は state["world_state"] にだけ保持
+    - SceneManager は state["scene_manager"] に 1 個だけ保持
+    - 他クラス（NarratorAI / AnswerTalker / SceneManager UI など）は
+      必ずこのクラス経由で world_state を取得する
     """
 
-    DEFAULT_PLAYER_LOC = "プレイヤーの部屋"
-    DEFAULT_FLORIA_LOC = "プレイヤーの部屋"
-    DEFAULT_SLOT = "morning"
-    DEFAULT_TIME_STR = "07:30"
+    state: Mapping[str, Any]
 
     def __init__(self, state: Optional[Mapping[str, Any]] = None) -> None:
         env_debug = os.getenv("LYRA_DEBUG", "")
 
         if state is not None:
-            self.state = state  # 明示 state 優先
+            self.state = state
         elif env_debug == "1":
             self.state = st.session_state
         else:
             self.state = st.session_state
 
         # SceneManager をセッション内で 1 個だけ確保
-        key_mgr = "scene_manager"
-        if key_mgr not in self.state:
+        mgr_key = "scene_manager"
+        mgr = self.state.get(mgr_key)
+        if not isinstance(mgr, SceneManager):
             mgr = SceneManager(
                 path="actors/scene/scene_bonus/scene_emotion_map.json"
             )
             mgr.load()
-            self.state[key_mgr] = mgr
+            # state は "Mapping" 型だが、実体は SessionState / dict を想定
+            self.state[mgr_key] = mgr  # type: ignore[index]
+        self.manager: SceneManager = mgr
 
-        self.manager: SceneManager = self.state[key_mgr]
+        # world_state 初期化
+        self._ensure_world_state_initialized()
 
-        # llm_meta 参照（あれば使う）
-        llm_meta = self.state.get("llm_meta")
-        if not isinstance(llm_meta, dict):
-            llm_meta = {}
-        self.llm_meta: Dict[str, Any] = llm_meta
-
-    # =========================================================
-    # world_state のソース
-    # =========================================================
-    def _ensure_world_state(self) -> Dict[str, Any]:
+    # ==========================================================
+    # world_state の正規管理
+    # ==========================================================
+    def _ensure_world_state_initialized(self) -> None:
         """
-        state["world_state"] が無ければ初期値を入れて返す。
-        以後はここが唯一のソースになる。
+        state["world_state"] がなければ、デフォルト値で初期化する。
+        すでにあれば、不足フィールドだけを補完する。
         """
         ws = self.state.get("world_state")
         if not isinstance(ws, dict):
             ws = {}
-        locs = ws.setdefault("locations", {})
-        time = ws.setdefault("time", {})
 
-        locs.setdefault("player", self.DEFAULT_PLAYER_LOC)
-        # 初期状態ではフローリアも同じ場所にいる想定
-        locs.setdefault("floria", self.DEFAULT_FLORIA_LOC)
+        # locations
+        loc = ws.get("locations") or {}
+        if not isinstance(loc, dict):
+            loc = {}
 
-        time.setdefault("slot", self.DEFAULT_SLOT)
-        time.setdefault("time_str", self.DEFAULT_TIME_STR)
+        player_loc = loc.get("player") or "プレイヤーの部屋"
+        floria_loc = loc.get("floria") or "プレイヤーの部屋"
 
-        # party.mode を更新
-        self._update_party_mode(ws)
+        loc["player"] = player_loc
+        loc["floria"] = floria_loc
 
-        self.state["world_state"] = ws
-        return ws
+        # time
+        t = ws.get("time") or {}
+        if not isinstance(t, dict):
+            t = {}
+        slot = t.get("slot") or "morning"
+        time_str = t.get("time_str") or "07:30"
+        t["slot"] = slot
+        t["time_str"] = time_str
 
-    def _update_party_mode(self, ws: Dict[str, Any]) -> None:
-        locs = ws.setdefault("locations", {})
+        # weather
+        weather = ws.get("weather") or "clear"
+
+        # party（プレイヤー視点のパーティ状態）
+        party = ws.get("party") or {}
+        if not isinstance(party, dict):
+            party = {}
+        party_mode = self._calc_party_mode(player_loc, floria_loc)
+        party["mode"] = party_mode
+
+        ws["locations"] = loc
+        ws["time"] = t
+        ws["weather"] = weather
+        ws["party"] = party
+
+        self.state["world_state"] = ws  # type: ignore[index]
+
+    @staticmethod
+    def _calc_party_mode(player_loc: Optional[str], floria_loc: Optional[str]) -> str:
+        """
+        プレイヤーから見たパーティ状態を文字列で返す。
+        - "both"  : プレイヤーとフローリアが同じ場所
+        - "alone" : プレイヤーのみ（またはフローリアが別の場所）
+        """
+        if not floria_loc:
+            return "alone"
+        if player_loc and player_loc == floria_loc:
+            return "both"
+        return "alone"
+
+    def _sync_party_mode(self, ws: Dict[str, Any]) -> None:
+        locs = ws.get("locations") or {}
+        if not isinstance(locs, dict):
+            locs = {}
         player_loc = locs.get("player")
         floria_loc = locs.get("floria")
 
-        if player_loc and floria_loc and player_loc == floria_loc:
-            mode = "with_floria"
-        else:
-            mode = "alone"
+        party = ws.get("party") or {}
+        if not isinstance(party, dict):
+            party = {}
+        party["mode"] = self._calc_party_mode(player_loc, floria_loc)
 
-        ws.setdefault("party", {})
-        ws["party"]["mode"] = mode
+        ws["locations"] = locs
+        ws["party"] = party
 
-    # ---------------------------------------------------------
-    # 公開 API: world_state 取得
-    # ---------------------------------------------------------
+    # ==========================================================
+    # 公開 API：world_state 取得・更新
+    # ==========================================================
     def get_world_state(self) -> Dict[str, Any]:
         """
-        現在の world_state を返す。
-        - locations: {player, floria}
-        - time: {slot, time_str}
-        - party: {mode: "alone" / "with_floria"}
+        現在の world_state を dict で返す。
+        呼び出し側から勝手に書き換えられないようコピーを返す。
         """
-        ws = self._ensure_world_state()
-        # 念のため毎回 party.mode を更新
-        self._update_party_mode(ws)
+        self._ensure_world_state_initialized()
+        ws = self.state.get("world_state") or {}
+        if not isinstance(ws, dict):
+            ws = {}
+        # 浅いコピーで十分（ネスト内部は SceneAI 側でしか書き換えない前提）
+        return dict(ws)
 
-        # llm_meta にも同期（あれば）
-        self.llm_meta["world_state"] = ws
-        self.state["llm_meta"] = self.llm_meta
+    def set_world_state(self, new_ws: Dict[str, Any]) -> None:
+        """
+        外部から丸ごと world_state をセットするためのフック。
+        基本的には SceneAI 内部でのみ使用する想定。
+        """
+        if not isinstance(new_ws, dict):
+            return
+        # パーティ状態を再計算
+        locs = new_ws.get("locations") or {}
+        if not isinstance(locs, dict):
+            locs = {}
+        player_loc = locs.get("player")
+        floria_loc = locs.get("floria")
+        new_ws["locations"] = locs
 
-        return ws
+        self._sync_party_mode(new_ws)
+        # 最後に state へ格納
+        self.state["world_state"] = new_ws  # type: ignore[index]
 
-    # =========================================================
-    # 移動 API
-    # =========================================================
+    # ----------------------------------------------------------
+    # プレイヤー / フローリアの移動
+    # ----------------------------------------------------------
     def move_player(
         self,
         location: str,
@@ -122,63 +171,104 @@ class SceneAI:
         time_str: Optional[str] = None,
     ) -> None:
         """
-        プレイヤーだけを指定の場所へ移動させる。
-        フローリアは動かさない。
+        プレイヤーのみを指定の場所＆時間に移動する。
+        フローリアの位置は変更しない。
         """
-        ws = self._ensure_world_state()
-        locs = ws.setdefault("locations", {})
-        time = ws.setdefault("time", {})
+        self._ensure_world_state_initialized()
+        ws = self.state.get("world_state") or {}
+        if not isinstance(ws, dict):
+            ws = {}
 
+        locs = ws.get("locations") or {}
+        if not isinstance(locs, dict):
+            locs = {}
         locs["player"] = location
+
+        t = ws.get("time") or {}
+        if not isinstance(t, dict):
+            t = {}
+
         if time_slot is not None:
-            time["slot"] = time_slot
+            t["slot"] = time_slot
         if time_str is not None:
-            time["time_str"] = time_str
+            t["time_str"] = time_str
 
-        self._update_party_mode(ws)
-        self.state["world_state"] = ws
+        ws["locations"] = locs
+        ws["time"] = t
 
-        self.llm_meta["world_state"] = ws
-        self.state["llm_meta"] = self.llm_meta
+        # パーティ状態を更新
+        self._sync_party_mode(ws)
+
+        # 保存
+        self.state["world_state"] = ws  # type: ignore[index]
 
     def move_floria(
         self,
         location: str,
+        *,
+        keep_time: bool = True,
     ) -> None:
         """
-        フローリアだけを指定の場所へ移動させる。
-        時刻情報は変更しない。
+        フローリアだけを別の場所へ移動する。
+
+        keep_time=True の場合、時間情報は変更しない。
+        （今のところ時間の主導権はプレイヤー側が握る想定）
         """
-        ws = self._ensure_world_state()
-        locs = ws.setdefault("locations", {})
+        self._ensure_world_state_initialized()
+        ws = self.state.get("world_state") or {}
+        if not isinstance(ws, dict):
+            ws = {}
 
+        locs = ws.get("locations") or {}
+        if not isinstance(locs, dict):
+            locs = {}
         locs["floria"] = location
+        ws["locations"] = locs
 
-        self._update_party_mode(ws)
-        self.state["world_state"] = ws
+        # 時刻は原則そのまま
+        if not keep_time:
+            t = ws.get("time") or {}
+            if not isinstance(t, dict):
+                t = {}
+            t.setdefault("slot", "morning")
+            t.setdefault("time_str", "07:30")
+            ws["time"] = t
 
-        self.llm_meta["world_state"] = ws
-        self.state["llm_meta"] = self.llm_meta
+        # パーティ状態を更新
+        self._sync_party_mode(ws)
 
-    # =========================================================
-    # シーン感情ボーナス
-    # =========================================================
-    def _pick_slot_and_time(self, ws: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
-        time = ws.get("time", {})
-        slot = time.get("slot")
-        time_str = time.get("time_str")
-        return slot, time_str
+        self.state["world_state"] = ws  # type: ignore[index]
 
-    def get_scene_emotion_for_location(
+    # ==========================================================
+    # SceneManager 連携：感情ボーナス
+    # ==========================================================
+    def get_scene_emotion(
         self,
-        location: str,
-        *,
-        slot_name: Optional[str],
-        time_str: Optional[str],
+        world_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, float]:
         """
-        SceneManager から「指定ロケーションのシーン補正ベクトル」を取得。
+        world_state をもとに SceneManager から感情補正ベクトルを取得。
+
+        - 基本は「プレイヤーのいる場所」を基準に補正値を取る。
         """
+        if world_state is None:
+            world_state = self.get_world_state()
+
+        locs = world_state.get("locations") or {}
+        if not isinstance(locs, dict):
+            locs = {}
+        location = (
+            locs.get("player")
+            or locs.get("floria")
+            or "プレイヤーの部屋"
+        )
+
+        t = world_state.get("time") or {}
+        if not isinstance(t, dict):
+            t = {}
+        slot_name: Optional[str] = t.get("slot")
+        time_str: Optional[str] = t.get("time_str")
+
         return self.manager.get_for(
             location=location,
             time_str=time_str,
@@ -187,49 +277,21 @@ class SceneAI:
 
     def get_emotion_bonus(self) -> Dict[str, float]:
         """
-        MixerAI 用の「シーン補正ベクトル」。
-
-        方針：
-        - フローリアがプレイヤーと同じ場所にいるとき：
-            → その場所＆時刻の補正ベクトル
-        - 離れているとき：
-            → 0 ベクトル（会話してない前提）
+        MixerAI から呼ばれる想定の薄いラッパ。
+        現在の world_state に対する感情補正ベクトルを返す。
         """
-        ws = self.get_world_state()
-        locs = ws.get("locations", {})
-        player_loc = locs.get("player", self.DEFAULT_PLAYER_LOC)
-        floria_loc = locs.get("floria", self.DEFAULT_FLORIA_LOC)
+        return self.get_scene_emotion()
 
-        slot, time_str = self._pick_slot_and_time(ws)
-
-        if floria_loc and floria_loc == player_loc:
-            return self.get_scene_emotion_for_location(
-                location=player_loc,
-                slot_name=slot,
-                time_str=time_str,
-            )
-
-        # 離れているときは 0 ベクトル
-        return {dim: 0.0 for dim in self.manager.dimensions}
-
-    # =========================================================
-    # AnswerTalker / Composer 向けペイロード
-    # =========================================================
+    # ==========================================================
+    # MixerAI / AnswerTalker 用 payload
+    # ==========================================================
     def build_emotion_override_payload(self) -> Dict[str, Any]:
         """
-        AnswerTalker から呼ばれることを想定。
-        - world_state
-        - scene_emotion（会話に効くシーン補正）
-        をまとめて返し、llm_meta にも突っ込む。
+        MixerAI や AnswerTalker へまとめて渡しやすい形。
         """
         ws = self.get_world_state()
-        scene_emo = self.get_emotion_bonus()
-
-        self.llm_meta["world_state"] = ws
-        self.llm_meta["scene_emotion"] = scene_emo
-        self.state["llm_meta"] = self.llm_meta
-
+        emo = self.get_scene_emotion(ws)
         return {
             "world_state": ws,
-            "scene_emotion": scene_emo,
+            "scene_emotion": emo,
         }
