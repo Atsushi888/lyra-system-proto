@@ -46,6 +46,81 @@ class NarratorAI:
         self.manager = manager
 
     # ============================================================
+    # 内部ユーティリティ: world_state からシーン情報を抽出
+    # ============================================================
+    def _extract_scene_info(
+        self,
+        world_state: Dict[str, Any],
+        floria_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        新しい world_state（locations/time/party…）にも、
+        旧来の location_name/time_of_day にも対応できるように整形する。
+        """
+        ws = world_state or {}
+        fl = floria_state or {}
+
+        # --- 場所 ---
+        locations = ws.get("locations", {}) or {}
+        player_loc = locations.get("player")
+        floria_loc = locations.get("floria")
+
+        # 旧仕様 fallback
+        location_name = ws.get("location_name")
+        if not player_loc:
+            player_loc = location_name or "不明な場所"
+        if not floria_loc:
+            # パーティ同席前提の古い world_state では「同じ場所」とみなす
+            floria_loc = player_loc
+
+        # --- 時間帯 ---
+        time_block = ws.get("time", {}) or {}
+        slot = time_block.get("slot")
+        time_str = time_block.get("time_str")
+
+        # 旧仕様 fallback
+        time_of_day = ws.get("time_of_day")
+        if not slot and time_of_day:
+            # 旧 time_of_day をそのまま slot 扱いしておく（互換用）
+            slot = time_of_day
+
+        # slot → 日本語ラベル変換（ざっくり）
+        slot_label_map = {
+            "morning": "朝",
+            "lunch": "昼",
+            "after_school": "放課後",
+            "night": "夜",
+        }
+        slot_label = slot_label_map.get(slot, slot or "不明")
+
+        # --- 天候 ---
+        weather = ws.get("weather", "不明")
+
+        # --- パーティ状態 ---
+        party = ws.get("party", {}) or {}
+        party_mode = party.get("mode")
+        if not party_mode:
+            # 一応、場所の一致からも判定しておく
+            if player_loc and floria_loc and player_loc == floria_loc:
+                party_mode = "with_floria"
+            else:
+                party_mode = "alone"
+
+        # --- フローリアの雰囲気 ---
+        floria_mood = fl.get("mood", "不明")
+
+        return {
+            "player_loc": player_loc,
+            "floria_loc": floria_loc,
+            "slot": slot,
+            "slot_label": slot_label,
+            "time_str": time_str or "",
+            "weather": weather,
+            "party_mode": party_mode,
+            "floria_mood": floria_mood,
+        }
+
+    # ============================================================
     # Round0 導入ナレーション
     # ============================================================
     def _build_round0_messages(
@@ -54,26 +129,86 @@ class NarratorAI:
         player_profile: Dict[str, Any],
         floria_state: Dict[str, Any],
     ) -> List[Dict[str, str]]:
+
+        scene = self._extract_scene_info(world_state, floria_state)
+        player_loc = scene["player_loc"]
+        floria_loc = scene["floria_loc"]
+        slot_label = scene["slot_label"]
+        time_str = scene["time_str"]
+        weather = scene["weather"]
+        party_mode = scene["party_mode"]
+        floria_mood = scene["floria_mood"]
+
+        # ====================================================
+        # 分岐1: プレイヤー一人（フローリア不在 or 別の場所）
+        # ====================================================
+        if party_mode == "alone" or (player_loc != floria_loc):
+            system = """
+あなたは会話RPG「Lyra」の中立的なナレーターです。
+
+- プレイヤーが「一人で」この場にいる、ラウンド0の導入文を書きます。
+- 二人称または三人称の「地の文」で、2〜4文程度。
+- フローリアを含む名前付きキャラクターはこの導入文には登場させないでください。
+  （※存在を匂わせる程度のぼかした表現はOKですが、名前は出さない）
+- プレイヤーや他キャラクターのセリフは一切書かない（台詞は禁止）。
+- 最後の1文には、プレイヤーがどこかへ出かけたり、誰かを探しに行きたくなるような
+  ささやかなフックを入れてください。
+- 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
+""".strip()
+
+            user = f"""
+[シーン情報]
+- 現在地（プレイヤー）: {player_loc}
+- 時刻帯: {slot_label}
+- 時刻: {time_str or "不明"}
+- 天候: {weather}
+
+[要件]
+上記のシーンにふさわしい「プレイヤー一人きり」の導入ナレーションを、
+2〜4文の地の文だけで書いてください。
+
+- フローリアなど名前付きのキャラクターは、ここでは登場させないでください。
+- JSON や説明文は書かず、物語の本文だけを書きます。
+""".strip()
+
+            return [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+
+        # ====================================================
+        # 分岐2: プレイヤー + フローリアが同じ場所にいる
+        # ====================================================
         system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
-- プレイヤーとフローリアが、まだ一言も発言していない「ラウンド0」の導入文を書きます。
+- プレイヤーとヒロイン（フローリア）が、まだ一言も発言していない
+  「ラウンド0」の導入文を書きます。
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーやフローリアのセリフは一切書かない（台詞は禁止）。
-- 最後の1文には、プレイヤーが何か話しかけたくなるような、ささやかなフックを入れてください。
+- 「プレイヤーとフローリアが同じ場所にいる」ことが自然に伝わる描写を
+  1〜2回だけ入れてください。名前の過剰な連呼は避けてください。
+- 最後の1文には、プレイヤーが何か話しかけたくなるような、
+  ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
 
         user = f"""
 [シーン情報]
-- 場所: {world_state.get("location_name", "不明な場所")}
-- 時刻帯: {world_state.get("time_of_day", "不明")}
-- 天候: {world_state.get("weather", "不明")}
-- フローリアの雰囲気・感情: {floria_state.get("mood", "不明")}
+- 現在地（プレイヤーとフローリア）: {player_loc}
+- 時刻帯: {slot_label}
+- 時刻: {time_str or "不明"}
+- 天候: {weather}
+- フローリアの雰囲気・感情（ヒント）: {floria_mood}
 
 [要件]
-上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
-JSON や説明文は書かず、物語の本文だけを書きます。
+上記のシーンにふさわしい導入ナレーションを、
+2〜4文の地の文だけで書いてください。
+
+- プレイヤーとフローリアが同じ場所にいることが、
+  自然に伝わる描写を 1〜2 回だけ入れてください。
+- ただしフローリアの名前を不自然に連呼しないこと。
+- JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
 
         return [
