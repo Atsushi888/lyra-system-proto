@@ -45,80 +45,56 @@ class NarratorAI:
     def __init__(self, manager: NarratorManager) -> None:
         self.manager = manager
 
-    # ============================================================
-    # 内部ユーティリティ: world_state からシーン情報を抽出
-    # ============================================================
-    def _extract_scene_info(
-        self,
-        world_state: Dict[str, Any],
-        floria_state: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    # ------------------------------------------------------------
+    # 内部ヘルパ: 「フローリアがプレイヤーと一緒か？」判定
+    # ------------------------------------------------------------
+    @staticmethod
+    def _is_floria_with_player(world_state: Dict[str, Any]) -> bool:
         """
-        新しい world_state（locations/time/party…）にも、
-        旧来の location_name/time_of_day にも対応できるように整形する。
+        world_state から、フローリアが「その場にいるかどうか」を推定する。
+
+        優先順位:
+        1) party_state == "alone" なら必ず別々
+        2) player_location / floria_location（または locations.player / locations.floria）が
+           両方あれば、それが同じかどうかで判定
+        3) 情報が足りない場合は「一緒」とみなす（従来互換）
         """
-        ws = world_state or {}
-        fl = floria_state or {}
+        if not isinstance(world_state, dict):
+            return True
 
-        # --- 場所 ---
-        locations = ws.get("locations", {}) or {}
-        player_loc = locations.get("player")
-        floria_loc = locations.get("floria")
+        # party_state 判定
+        party_state = ""
+        party_raw = world_state.get("party_state")
+        if isinstance(party_raw, str):
+            party_state = party_raw.lower()
+        else:
+            party_state = str(
+                world_state.get("party", {}).get("state", "")
+            ).lower()
 
-        # 旧仕様 fallback
-        location_name = ws.get("location_name")
-        if not player_loc:
-            player_loc = location_name or "不明な場所"
-        if not floria_loc:
-            # パーティ同席前提の古い world_state では「同じ場所」とみなす
-            floria_loc = player_loc
+        if party_state in ("alone", "solo"):
+            return False
 
-        # --- 時間帯 ---
-        time_block = ws.get("time", {}) or {}
-        slot = time_block.get("slot")
-        time_str = time_block.get("time_str")
+        # 位置情報を拾う
+        locations = world_state.get("locations") or {}
+        if not isinstance(locations, dict):
+            locations = {}
 
-        # 旧仕様 fallback
-        time_of_day = ws.get("time_of_day")
-        if not slot and time_of_day:
-            # 旧 time_of_day をそのまま slot 扱いしておく（互換用）
-            slot = time_of_day
+        player_loc = (
+            locations.get("player")
+            or world_state.get("player_location")
+            or world_state.get("location_name")
+        )
+        floria_loc = (
+            locations.get("floria")
+            or world_state.get("floria_location")
+        )
 
-        # slot → 日本語ラベル変換（ざっくり）
-        slot_label_map = {
-            "morning": "朝",
-            "lunch": "昼",
-            "after_school": "放課後",
-            "night": "夜",
-        }
-        slot_label = slot_label_map.get(slot, slot or "不明")
+        if player_loc and floria_loc:
+            return player_loc == floria_loc
 
-        # --- 天候 ---
-        weather = ws.get("weather", "不明")
-
-        # --- パーティ状態 ---
-        party = ws.get("party", {}) or {}
-        party_mode = party.get("mode")
-        if not party_mode:
-            # 一応、場所の一致からも判定しておく
-            if player_loc and floria_loc and player_loc == floria_loc:
-                party_mode = "with_floria"
-            else:
-                party_mode = "alone"
-
-        # --- フローリアの雰囲気 ---
-        floria_mood = fl.get("mood", "不明")
-
-        return {
-            "player_loc": player_loc,
-            "floria_loc": floria_loc,
-            "slot": slot,
-            "slot_label": slot_label,
-            "time_str": time_str or "",
-            "weather": weather,
-            "party_mode": party_mode,
-            "floria_mood": floria_mood,
-        }
+        # どちらか欠けている場合は、従来通り「一緒」とみなしておく
+        return True
 
     # ============================================================
     # Round0 導入ナレーション
@@ -130,86 +106,73 @@ class NarratorAI:
         floria_state: Dict[str, Any],
     ) -> List[Dict[str, str]]:
 
-        scene = self._extract_scene_info(world_state, floria_state)
-        player_loc = scene["player_loc"]
-        floria_loc = scene["floria_loc"]
-        slot_label = scene["slot_label"]
-        time_str = scene["time_str"]
-        weather = scene["weather"]
-        party_mode = scene["party_mode"]
-        floria_mood = scene["floria_mood"]
+        # ---- 共通情報の取り出し ----
+        location_name = (
+            world_state.get("location_name")
+            or (world_state.get("locations") or {}).get("player")
+            or "不明な場所"
+        )
+        time_of_day = (
+            world_state.get("time_of_day")
+            or (world_state.get("time") or {}).get("slot")
+            or world_state.get("time_slot")
+            or "不明"
+        )
+        weather = world_state.get("weather", "不明")
 
-        # ====================================================
-        # 分岐1: プレイヤー一人（フローリア不在 or 別の場所）
-        # ====================================================
-        if party_mode == "alone" or (player_loc != floria_loc):
+        floria_mood = floria_state.get("mood", "不明")
+        is_with_floria = self._is_floria_with_player(world_state)
+
+        # ---- system プロンプト ----
+        if is_with_floria:
+            # 2人一緒のパターン
             system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
-- プレイヤーが「一人で」この場にいる、ラウンド0の導入文を書きます。
-- 二人称または三人称の「地の文」で、2〜4文程度。
-- フローリアを含む名前付きキャラクターはこの導入文には登場させないでください。
-  （※存在を匂わせる程度のぼかした表現はOKですが、名前は出さない）
-- プレイヤーや他キャラクターのセリフは一切書かない（台詞は禁止）。
-- 最後の1文には、プレイヤーがどこかへ出かけたり、誰かを探しに行きたくなるような
-  ささやかなフックを入れてください。
-- 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
-""".strip()
-
-            user = f"""
-[シーン情報]
-- 現在地（プレイヤー）: {player_loc}
-- 時刻帯: {slot_label}
-- 時刻: {time_str or "不明"}
-- 天候: {weather}
-
-[要件]
-上記のシーンにふさわしい「プレイヤー一人きり」の導入ナレーションを、
-2〜4文の地の文だけで書いてください。
-
-- フローリアなど名前付きのキャラクターは、ここでは登場させないでください。
-- JSON や説明文は書かず、物語の本文だけを書きます。
-""".strip()
-
-            return [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ]
-
-        # ====================================================
-        # 分岐2: プレイヤー + フローリアが同じ場所にいる
-        # ====================================================
-        system = """
-あなたは会話RPG「Lyra」の中立的なナレーターです。
-
-- プレイヤーとヒロイン（フローリア）が、まだ一言も発言していない
-  「ラウンド0」の導入文を書きます。
+- プレイヤーとフローリアが、まだ一言も発言していない「ラウンド0」の導入文を書きます。
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーやフローリアのセリフは一切書かない（台詞は禁止）。
-- 「プレイヤーとフローリアが同じ場所にいる」ことが自然に伝わる描写を
-  1〜2回だけ入れてください。名前の過剰な連呼は避けてください。
-- 最後の1文には、プレイヤーが何か話しかけたくなるような、
-  ささやかなフックを入れてください。
+- 最後の1文には、プレイヤーが何か話しかけたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
+        else:
+            # プレイヤー単独のパターン
+            system = """
+あなたは会話RPG「Lyra」の中立的なナレーターです。
+
+- プレイヤーが一人でその場にいる「ラウンド0」の導入文を書きます。
+- この場にはフローリアはまだ到着していません。フローリアがすぐそばにいるかのような描写は禁止です。
+- 二人称または三人称の「地の文」で、2〜4文程度。
+- プレイヤーやフローリアのセリフは一切書かない（台詞は禁止）。
+- 最後の1文には、プレイヤーが何か話しかけたり、行動したくなるような、ささやかなフックを入れてください。
+- 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
+""".strip()
+
+        # ---- user プロンプト ----
+        if is_with_floria:
+            floria_pos_desc = "プレイヤーのすぐそば（同じ場所）"
+            floria_presence_note = "フローリアはプレイヤーと同じ場所におり、その存在感がシーンの一部になっています。"
+        else:
+            floria_pos_desc = "この場にはいない（まだ到着していないか、別の場所にいる）"
+            floria_presence_note = "この場にはフローリアの姿はありません。彼女はまだ到着していないか、別の場所にいます。"
 
         user = f"""
 [シーン情報]
-- 現在地（プレイヤーとフローリア）: {player_loc}
-- 時刻帯: {slot_label}
-- 時刻: {time_str or "不明"}
+- 場所: {location_name}
+- 時刻帯: {time_of_day}
 - 天候: {weather}
-- フローリアの雰囲気・感情（ヒント）: {floria_mood}
+- フローリアの位置: {floria_pos_desc}
+- フローリアの雰囲気・感情: {floria_mood}
+- 備考: {floria_presence_note}
 
 [要件]
-上記のシーンにふさわしい導入ナレーションを、
-2〜4文の地の文だけで書いてください。
-
-- プレイヤーとフローリアが同じ場所にいることが、
-  自然に伝わる描写を 1〜2 回だけ入れてください。
-- ただしフローリアの名前を不自然に連呼しないこと。
-- JSON や説明文は書かず、物語の本文だけを書きます。
+上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
+JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
+
+        if not is_with_floria:
+            # 念押し
+            user += "\nなお、この場にフローリアがいるかのように会話したり並んで立ったりする描写は書かないでください。"
 
         return [
             {"role": "system", "content": system},
@@ -318,7 +281,16 @@ floria_state: {floria_state}
         world_state: Dict[str, Any] | None = None,
         floria_state: Dict[str, Any] | None = None,
     ) -> NarrationChoice:
-        intent = f"{actor_name}の様子をうかがう"
+        world_state = world_state or {}
+        # ここでも「一緒かどうか」を判定して、単独時は
+        # 「ここにはいないことを確認する」ニュアンスに変える
+        is_with_floria = self._is_floria_with_player(world_state)
+
+        if is_with_floria:
+            intent = f"{actor_name}の様子をうかがう"
+        else:
+            intent = f"{actor_name}の姿がこの場には見当たらないことを確かめる"
+
         speak = self._refine(
             intent,
             label="look_person",
@@ -330,7 +302,7 @@ floria_state: {floria_state}
             label=f"{actor_name}の様子をうかがう",
             speak_text=speak,
             target_id=actor_id,
-            meta={"actor_name": actor_name},
+            meta={"actor_name": actor_name, "is_with_floria": is_with_floria},
         )
 
     def make_scan_area_choice(
