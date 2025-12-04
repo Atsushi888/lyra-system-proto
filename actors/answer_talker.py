@@ -1,4 +1,3 @@
-# actors/answer_talker.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Mapping
@@ -144,6 +143,36 @@ class AnswerTalker:
         )
 
     # ---------------------------------------
+    # Scene 情報を system メッセージとして注入
+    # ---------------------------------------
+    def _inject_scene_system_prompt(
+        self,
+        messages: List[Dict[str, str]],
+    ) -> List[Dict[str, str]]:
+        """
+        先頭付近に「現在のシーン状況」を説明する system メッセージを 1 つ挿入する。
+        - 最初の system メッセージ（Persona 用）があれば、その直後に挿入
+        - なければリスト先頭に挿入
+        """
+        try:
+            scene_prompt = self.scene_ai.build_scene_prompt_for_actor("フローリア")
+        except Exception:
+            return messages
+
+        if not scene_prompt:
+            return messages
+
+        scene_msg: Dict[str, str] = {
+            "role": "system",
+            "content": scene_prompt,
+        }
+
+        if messages and messages[0].get("role") == "system":
+            return [messages[0], scene_msg, *messages[1:]]
+
+        return [scene_msg, *messages]
+
+    # ---------------------------------------
     # ModelsAI 呼び出し
     # ---------------------------------------
     def run_models(
@@ -175,6 +204,9 @@ class AnswerTalker:
 
         if not messages:
             return ""
+
+        # シーン情報を system メッセージとして差し込む
+        messages = self._inject_scene_system_prompt(messages)
 
         # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta へ
         try:
