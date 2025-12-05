@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+import streamlit as st
+from actors.scene_ai import SceneAI
+
 
 class Persona:
     """
@@ -30,7 +33,6 @@ class Persona:
         sp = data.get("system_prompt", "")
         self.system_prompt: str = sp.replace("{PLAYER_NAME}", player_name)
 
-        # あれば使うテキスト系フィールド（無くても動くようにデフォルト空文字）
         self.starter_hint: str = str(data.get("starter_hint", ""))
         self.style_hint: str = str(data.get("style_hint", ""))
 
@@ -58,6 +60,62 @@ class Persona:
     def get_system_prompt(self) -> str:
         return self.system_prompt
 
+    def _build_world_context_system(self) -> str:
+        """
+        SceneAI から現在のワールド情報を軽く読み取り、
+        「いまどこで、どんな状況か」をリセリア用に要約した system メッセージを返す。
+        """
+        try:
+            scene_ai = SceneAI(state=st.session_state)
+            ws = scene_ai.get_world_state()
+        except Exception:
+            ws = {}
+
+        locs = ws.get("locations") or {}
+        t = ws.get("time") or {}
+
+        player_loc = str(locs.get("player", ""))
+        time_slot = str(t.get("slot", ""))
+        time_str = str(t.get("time_str", ""))
+
+        # ざっくりラベル化
+        slot_label_map = {
+            "morning": "朝",
+            "lunch": "昼",
+            "after_school": "放課後",
+            "night": "夜",
+        }
+        time_of_day_jp = slot_label_map.get(time_slot, time_slot or "不明な時間帯")
+
+        # ここで「プレイヤーの部屋＋朝」のときは
+        # それとなく“お泊まり明け”っぽい空気を意識させる。
+        base = (
+            f"【状況メモ（リセリア用）】\n"
+            f"- 現在の場所: {player_loc or '不明な場所'}\n"
+            f"- 時刻帯: {time_of_day_jp}（{time_str or '時刻不明'}）\n"
+            f"- リセリアは今、このシーンでプレイヤーと同じ場所にいる。\n"
+        )
+
+        if "部屋" in player_loc and time_slot == "morning":
+            # プレイヤーの部屋の朝 ⇒ 少し気まずさ・照れを強調
+            base += (
+                "- 朝の静かな空気の中、ベッドや部屋の雰囲気から、"
+                "昨夜ふたりがかなり親しい時間を過ごしたかもしれないことを、"
+                "リセリアは少し意識している。\n"
+                "- ただし、あからさまに性行為を描写したりはせず、"
+                "『一緒に夜を過ごしたかもしれない』程度の、"
+                "ふわっとした記憶と恥ずかしさとして扱うこと。\n"
+                "- 彼女の振る舞いには、場所の親密さや距離の近さに対する"
+                "ささやかな照れや意識の揺れをにじませてよい。\n"
+            )
+        else:
+            base += (
+                "- リセリアは現在の場所や時間帯にふさわしい振る舞いを心がけるが、"
+                "過剰に状況説明を喋りすぎないこと。\n"
+            )
+
+        return base
+
     def build_messages(self, conversation_log: Any) -> List[Dict[str, str]]:
         """
         Actor.speak(...) から呼び出されることを想定したメッセージ構築。
@@ -69,24 +127,22 @@ class Persona:
              "content": "<br>区切りのテキスト"}
 
         これを OpenAI / LLM 用の chat messages に変換する。
-
-        - "player"    -> role="user"
-        - "riseria"   -> role="assistant"
-        - "floria"    -> role="assistant"  （互換）
-        - "narrator"  -> role="system" として地の文扱い
-        - その他      -> role="system"
         """
-        # 1) ルート system プロンプト
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": self.system_prompt}
         ]
 
-        # あるなら文体ヒントも system に乗せておく
+        # 文体ヒント
         if self.style_hint:
             messages.append({
                 "role": "system",
                 "content": f"[Style Hint]\n{self.style_hint}",
             })
+
+        # ★ ワールド状況をリセリア用に要約したメモを system として追加
+        world_context = self._build_world_context_system()
+        if world_context:
+            messages.append({"role": "system", "content": world_context})
 
         log: List[Dict[str, str]] = []
         if isinstance(conversation_log, list):
@@ -99,10 +155,8 @@ class Persona:
             if role == "player":
                 messages.append({"role": "user", "content": text})
             elif role in ("riseria", "floria"):
-                # 会話相手側（AI）の発話
                 messages.append({"role": "assistant", "content": text})
             elif role == "narrator":
-                # ナレーションは system 扱いにしておく
                 messages.append(
                     {"role": "system", "content": f"[ナレーション]\n{text}"}
                 )
