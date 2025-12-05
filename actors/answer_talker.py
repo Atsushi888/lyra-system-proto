@@ -245,7 +245,7 @@ class AnswerTalker:
         self.llm_meta["judge"] = judge_result
 
         # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定）
-        self.llm_meta["dev_force_model"] = "gemini"
+        # self.llm_meta["dev_force_model"] = "gemini"
 
         # 4) ComposerAI
         try:
