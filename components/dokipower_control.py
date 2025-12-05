@@ -33,7 +33,6 @@ class DokiPowerController:
     - affection / arousal / doki_power / doki_level をスライダーで操作
     - 「適用」で EmotionResult を session_state["mixer_debug_emotion"] に書き込み
       → MixerAI などがここを読めば、即「効き目」を確認できる。
-    - 「更新」で、現在の mixer_debug_emotion を読み出して表示する。
     """
 
     def __init__(self, *, session_key: str = SESSION_KEY) -> None:
@@ -154,29 +153,3 @@ class DokiPowerController:
                 }
                 self._set_state(init_state)
                 st.info("ドキドキ💓パワーと感情値を初期状態に戻しました。")
-
-        # ===== 現在適用中の EmotionResult を確認 =====
-        st.markdown("---")
-        st.subheader("現在の適用中 EmotionResult（mixer_debug_emotion）")
-
-        refresh_clicked = st.button("🔄 更新", key="dokipower_refresh")
-
-        if refresh_clicked:
-            current = st.session_state.get("mixer_debug_emotion")
-            if isinstance(current, dict):
-                applied = EmotionResult.from_dict(current)
-                st.json(applied.to_dict())
-                st.info(
-                    f"適用中 affection_with_doki = {applied.affection_with_doki:.3f} "
-                    "（現在 Mixer が参照する実効好感度）"
-                )
-            else:
-                st.warning(
-                    "session_state['mixer_debug_emotion'] がまだ設定されていません。"
-                    "先に「✅ この値を Mixer デバッグ用に適用」を押してください。"
-                )
-        else:
-            st.caption(
-                "※「✅ この値を Mixer デバッグ用に適用」したあと、"
-                "ここで『🔄 更新』を押すと現在の適用値を再表示できます。"
-            )
