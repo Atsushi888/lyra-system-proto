@@ -16,7 +16,8 @@ from actors.emotion_modes.context import JudgeSignal, get_default_selectors
 @dataclass
 class EmotionResult:
     """
-    フローリア自身の「短期的な感情状態」を表すスナップショット。
+    フローリア（および将来のキャラ）自身の
+    「短期的な感情状態」を表すスナップショット。
     （1ターンごと / ComposerAI の最終返答ベース）
     """
     mode: str = "normal"        # "normal" / "erotic" / "debate" など
@@ -28,8 +29,69 @@ class EmotionResult:
     excitement: float = 0.0     # 期待・ワクワク
     raw_text: str = ""          # LLM の生返答（JSONそのもの or エラー）
 
+    # ---- SuperPack 試験運用フィールド（ドキドキ💓パワー） ----
+    doki_power: float = 0.0     # ドキドキ💓パワー 0.0〜100.0 想定
+    doki_level: int = 0         # ドキドキ段階 0〜3 くらい
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+    # ----------------------------------------
+    # 辞書⇄オブジェクト 変換まわり
+    # ----------------------------------------
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        """
+        デバッグ／保存用の辞書化。
+        affection_with_doki などの派生値も含める。
+        """
+        data = asdict(self)
+        data["affection_with_doki"] = self.affection_with_doki
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EmotionResult":
+        """
+        将来のセーブデータ復元用。
+        足りない項目はデフォルト値で補完する。
+        """
+        if not isinstance(data, dict):
+            return cls()
+
+        return cls(
+            mode=str(data.get("mode", "normal")),
+            affection=float(data.get("affection", 0.0)),
+            arousal=float(data.get("arousal", 0.0)),
+            tension=float(data.get("tension", 0.0)),
+            anger=float(data.get("anger", 0.0)),
+            sadness=float(data.get("sadness", 0.0)),
+            excitement=float(data.get("excitement", 0.0)),
+            raw_text=str(data.get("raw_text", "")),
+
+            doki_power=float(data.get("doki_power", 0.0)),
+            doki_level=int(data.get("doki_level", 0)),
+            meta=dict(data.get("meta") or {}),
+        )
+
+    # ----------------------------------------
+    # ドキドキ💓補正ロジック
+    # ----------------------------------------
+    @property
+    def affection_with_doki(self) -> float:
+        """
+        ドキドキ💓パワーによる「ゲタ」を履かせた実効好感度。
+        いまは暫定的に doki_level ごとの固定ボーナスでシンプルに定義。
+
+        - level 0: +0.0
+        - level 1: +0.15
+        - level 2: +0.35
+        - level 3: +0.60
+
+        ※将来的に SuperPack 側でチューニングしてよい前提。
+        """
+        bonus_table = [0.0, 0.15, 0.35, 0.60]
+        idx = max(0, min(self.doki_level, len(bonus_table) - 1))
+        bonus = bonus_table[idx]
+
+        base = max(0.0, min(1.0, self.affection))
+        return min(1.0, base + bonus)
 
 
 @dataclass
