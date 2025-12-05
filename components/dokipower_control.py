@@ -31,8 +31,9 @@ class DokiPowerController:
     ドキドキ💓パワーと EmotionResult を手動調整するためのコントローラ。
 
     - affection / arousal / doki_power / doki_level をスライダーで操作
-    - 適用すると EmotionResult を session_state["mixer_debug_emotion"] に書き込み
+    - 「適用」で EmotionResult を session_state["mixer_debug_emotion"] に書き込み
       → MixerAI などがここを読めば、即「効き目」を確認できる。
+    - 「更新」で、現在の mixer_debug_emotion を読み出して表示する。
     """
 
     def __init__(self, *, session_key: str = SESSION_KEY) -> None:
@@ -51,24 +52,23 @@ class DokiPowerController:
         # ===== 基本感情 =====
         st.subheader("基本感情値")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            mode = st.selectbox(
-                "mode",
-                options=["normal", "erotic", "debate"],
-                index=["normal", "erotic", "debate"].index(
-                    state.get("mode", "normal")
-                    if state.get("mode", "normal") in ["normal", "erotic", "debate"]
-                    else "normal"
-                ),
-            )
-        with col2:
-            affection = st.slider(
-                "affection（好意）",
-                0.0, 1.0,
-                float(state.get("affection", 0.5)),
-                step=0.05,
-            )
+        # 1行ずつ縦並びで: mode → affection → arousal
+        mode = st.selectbox(
+            "mode",
+            options=["normal", "erotic", "debate"],
+            index=["normal", "erotic", "debate"].index(
+                state.get("mode", "normal")
+                if state.get("mode", "normal") in ["normal", "erotic", "debate"]
+                else "normal"
+            ),
+        )
+
+        affection = st.slider(
+            "affection（好意）",
+            0.0, 1.0,
+            float(state.get("affection", 0.5)),
+            step=0.05,
+        )
 
         arousal = st.slider(
             "arousal（感情の高まり）",
@@ -104,7 +104,7 @@ class DokiPowerController:
             int(state.get("doki_level", auto_level)),
         )
 
-        # ===== EmotionResult を構築 =====
+        # ===== EmotionResult を構築（スライダー値ベースのプレビュー） =====
         emo = EmotionResult(
             mode=mode,
             affection=affection,
@@ -114,7 +114,7 @@ class DokiPowerController:
         )
 
         st.markdown("---")
-        st.subheader("現在の EmotionResult（プレビュー）")
+        st.subheader("現在の EmotionResult（スライダー値プレビュー）")
         st.json(emo.to_dict())
 
         st.info(
@@ -154,3 +154,29 @@ class DokiPowerController:
                 }
                 self._set_state(init_state)
                 st.info("ドキドキ💓パワーと感情値を初期状態に戻しました。")
+
+        # ===== 現在適用中の EmotionResult を確認 =====
+        st.markdown("---")
+        st.subheader("現在の適用中 EmotionResult（mixer_debug_emotion）")
+
+        refresh_clicked = st.button("🔄 更新", key="dokipower_refresh")
+
+        if refresh_clicked:
+            current = st.session_state.get("mixer_debug_emotion")
+            if isinstance(current, dict):
+                applied = EmotionResult.from_dict(current)
+                st.json(applied.to_dict())
+                st.info(
+                    f"適用中 affection_with_doki = {applied.affection_with_doki:.3f} "
+                    "（現在 Mixer が参照する実効好感度）"
+                )
+            else:
+                st.warning(
+                    "session_state['mixer_debug_emotion'] がまだ設定されていません。"
+                    "先に「✅ この値を Mixer デバッグ用に適用」を押してください。"
+                )
+        else:
+            st.caption(
+                "※「✅ この値を Mixer デバッグ用に適用」したあと、"
+                "ここで『🔄 更新』を押すと現在の適用値を再表示できます。"
+            )
