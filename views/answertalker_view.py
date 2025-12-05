@@ -38,7 +38,9 @@ class AnswerTalkerView:
         # ★ Streamlit の state を AnswerTalker に明示的に渡す
         #   これにより、AnswerTalker 内部とビューの両方で
         #   st.session_state["llm_meta"] などを共有できる。
-        state: Optional[MutableMapping[str, Any]] = st.session_state if LYRA_DEBUG else None
+        state: Optional[MutableMapping[str, Any]] = (
+            st.session_state if LYRA_DEBUG else None
+        )
 
         self.answer_talker = AnswerTalker(
             persona,
@@ -50,11 +52,42 @@ class AnswerTalkerView:
 
         st.info(
             "この画面では、Actor に紐づく AnswerTalker が保持している llm_meta の内容 "
-            "（models / judge / composer / emotion / memory）を参照できます。\n\n"
+            "（system_prompt / models / judge / composer / emotion / memory）を参照できます。\n\n"
             "※ この画面からは AnswerTalker.run_models() や MemoryAI.update_from_turn() などは実行しません。"
         )
 
         llm_meta: Dict[str, Any] = st.session_state.get("llm_meta", {}) or {}
+
+        # ============================================================
+        # 実際に LLM に投げた system_prompt（好感度ヒント付き）
+        # ============================================================
+        st.subheader("今回使用された system_prompt（affection / ドキドキ💓反映後）")
+        sys_used = llm_meta.get("system_prompt_used") or ""
+        sys_err = llm_meta.get("system_prompt_error")
+
+        if sys_err:
+            st.error(f"system_prompt 構築時のエラー: {sys_err}")
+
+        if not sys_used:
+            st.info(
+                "system_prompt_used がまだ記録されていません。\n"
+                "（このターンで AnswerTalker.speak() が実行されていない可能性があります）"
+            )
+        else:
+            st.text_area(
+                "system_prompt_used",
+                value=sys_used,
+                height=260,
+                label_visibility="collapsed",
+            )
+
+        # Emotion override（Mixer → ModelsAI に渡した payload）の確認
+        emo_override = llm_meta.get("emotion_override") or {}
+        with st.expander("emotion_override（MixerAI → ModelsAI に渡した感情オーバーライド）", expanded=False):
+            if emo_override:
+                st.json(emo_override)
+            else:
+                st.write("emotion_override はまだありません。")
 
         # ---- models ----
         st.subheader("llm_meta に登録された AI 回答一覧（models）")
@@ -236,14 +269,38 @@ class AnswerTalkerView:
 
             cols = st.columns(3)
             with cols[0]:
-                st.write(f"affection: {emo.get('affection', 0.0):.2f}")
-                st.write(f"arousal:   {emo.get('arousal', 0.0):.2f}")
+                st.write(f"affection: {float(emo.get('affection', 0.0)):.2f}")
+                st.write(f"arousal:   {float(emo.get('arousal', 0.0)):.2f}")
             with cols[1]:
-                st.write(f"tension:   {emo.get('tension', 0.0):.2f}")
-                st.write(f"anger:     {emo.get('anger', 0.0):.2f}")
+                st.write(f"tension:   {float(emo.get('tension', 0.0)):.2f}")
+                st.write(f"anger:     {float(emo.get('anger', 0.0)):.2f}")
             with cols[2]:
-                st.write(f"sadness:   {emo.get('sadness', 0.0):.2f}")
-                st.write(f"excitement:{emo.get('excitement', 0.0):.2f}")
+                st.write(f"sadness:   {float(emo.get('sadness', 0.0)):.2f}")
+                st.write(f"excitement:{float(emo.get('excitement', 0.0)):.2f}")
+
+            # ドキドキ補正関連の追加表示
+            affection_with_doki = emo.get("affection_with_doki")
+            doki_power = emo.get("doki_power")
+            doki_level = emo.get("doki_level")
+            meta = emo.get("meta") or {}
+
+            st.markdown("---")
+            cols2 = st.columns(3)
+            with cols2[0]:
+                if affection_with_doki is not None:
+                    st.write(
+                        f"affection_with_doki: {float(affection_with_doki):.3f}"
+                    )
+            with cols2[1]:
+                if doki_power is not None:
+                    st.write(f"doki_power: {float(doki_power):.1f}")
+            with cols2[2]:
+                if doki_level is not None:
+                    st.write(f"doki_level: {int(doki_level)}")
+
+            level_label = meta.get("affection_label") or meta.get("affection_level")
+            if level_label:
+                st.write(f"- 現在の好感度レベル: **{level_label}**")
 
             with st.expander("raw_text（EmotionAI の LLM 出力）", expanded=False):
                 st.code(emo.get("raw_text", ""), language="json")
