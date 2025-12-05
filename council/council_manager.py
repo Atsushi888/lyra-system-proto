@@ -12,6 +12,11 @@ from actors.scene_ai import SceneAI
 
 
 def get_or_create_council_actor() -> Actor:
+    """
+    互換性のためのヘルパ。
+    既存コードでは「フローリア前提」で Actor を取得しているので、
+    ここは従来どおりフローリア Actor を返す。
+    """
     actor_key = "council_actor"
 
     if actor_key not in st.session_state:
@@ -26,20 +31,35 @@ def get_or_create_council_actor() -> Actor:
 class CouncilManager:
     """
     会談システムのロジック ＋ 画面描画（β）。
+
+    - デフォルトではフローリアとの会話になる。
+    - partner / partner_role を指定することで、会話相手を差し替え可能。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, partner: Actor | None = None, partner_role: str | None = None) -> None:
         # 会話ログ
         self.conversation_log: List[Dict[str, str]] = []
 
-        # いまはフローリア AI だけ
+        # ===== 会話相手（デフォルトはフローリア） =====
+        if partner is None:
+            partner = Actor("フローリア", Persona())
+            partner_role = "floria"
+        else:
+            if partner_role is None:
+                # 明示されていなければ汎用名を付ける
+                partner_role = "partner"
+
+        self.partner_role: str = partner_role
+        self.partner: Actor = partner
+
+        # いまは 1on1（＋ナレーション）想定
         self.actors: Dict[str, Actor] = {
-            "floria": Actor("フローリア", Persona())
+            self.partner_role: self.partner
         }
 
         self.state: Dict[str, Any] = {
             "mode": "ongoing",
-            "participants": ["player", "floria"],
+            "participants": ["player", self.partner_role],
             "last_speaker": None,
             "round0_done": False,
             "special_available": False,
@@ -92,19 +112,23 @@ class CouncilManager:
         self.state["last_speaker"] = role
 
     def _ensure_round0_initialized(self) -> None:
+        """
+        会談開始時のナレーション（Round0）を一度だけ差し込む。
+        相手キャラクターは self.partner を前提にしている。
+        """
         if self.conversation_log:
             return
 
         world_state = self._build_narrator_world_state()
         player_profile: Dict[str, Any] = {}
 
-        # 将来フローリアの位置なども world_state から拾って拡張可能
-        floria_state = {"mood": "slightly_nervous"}
+        # 将来自キャラの状態も world_state から拾って拡張可能
+        partner_state = {"mood": "slightly_nervous"}
 
         line = self.narrator.generate_round0_opening(
             world_state=world_state,
             player_profile=player_profile,
-            floria_state=floria_state,
+            floria_state=partner_state,  # NarratorAI 側の引数名は現状のまま
         )
         self._append_log("narrator", line.text)
         self.state["round0_done"] = True
@@ -136,11 +160,12 @@ class CouncilManager:
             "round": round_,
             "speaker": "player",
             "mode": self.state.get("mode", "ongoing"),
-            "participants": self.state.get("participants", ["player", "floria"]),
+            "participants": self.state.get("participants", ["player", self.partner_role]),
             "last_speaker": self.state.get("last_speaker"),
             "special_available": self.state.get("special_available", False),
             "world": {
                 "player_location": locs.get("player"),
+                # TODO: location は将来 partner_role ごとに持たせる
                 "floria_location": locs.get("floria"),
                 "time_slot": t.get("slot"),
                 "time_str": t.get("time_str"),
@@ -148,36 +173,40 @@ class CouncilManager:
         }
 
     def proceed(self, user_text: str) -> str:
+        """
+        プレイヤー発言 user_text をログに追加し、
+        現在の会話相手 Actor に発言させて、その内容を返す。
+        """
         self._append_log("player", user_text)
 
         reply = ""
-        actor = self.actors.get("floria")
+        actor = self.actors.get(self.partner_role)
         if actor is not None:
             reply = actor.speak(self.conversation_log)
-            self._append_log("floria", reply)
+            self._append_log(self.partner_role, reply)
 
         return reply
 
     # ===== 救済アクション =====
     def build_rescue_text(self, kind: str) -> str:
         world_state = self._build_narrator_world_state()
-        floria_state = {"mood": "slightly_nervous"}
+        partner_state = {"mood": "slightly_nervous"}
 
         if kind == "wait":
-            choice = self.narrator.make_wait_choice(world_state, floria_state)
+            choice = self.narrator.make_wait_choice(world_state, partner_state)
 
         elif kind == "look_person":
             choice = self.narrator.make_look_person_choice(
-                actor_name="フローリア",
+                actor_name=getattr(self.partner, "name", "相手"),
                 world_state=world_state,
-                floria_state=floria_state,
+                floria_state=partner_state,
             )
 
         elif kind == "scan_area":
             choice = self.narrator.make_scan_area_choice(
                 location_name=world_state["location_name"],
                 world_state=world_state,
-                floria_state=floria_state,
+                floria_state=partner_state,
             )
 
         elif kind == "special":
@@ -185,7 +214,7 @@ class CouncilManager:
             _, choice = self.narrator.make_special_title_and_choice(
                 special_id,
                 world_state=world_state,
-                floria_state=floria_state,
+                floria_state=partner_state,
             )
         else:
             return ""
@@ -227,10 +256,10 @@ class CouncilManager:
                 text = entry.get("content", "")
                 if role == "player":
                     name = "プレイヤー"
-                elif role == "floria":
-                    name = "フローリア"
                 elif role == "narrator":
                     name = "ナレーション"
+                elif role == self.partner_role:
+                    name = getattr(self.partner, "name", self.partner_role)
                 else:
                     name = role or "？"
 
@@ -245,7 +274,12 @@ class CouncilManager:
             st.write(f"モード: {status.get('mode')}")
             participants = status.get("participants") or []
             if participants:
-                st.write("参加者: " + " / ".join(participants))
+                label_map = {
+                    "player": "プレイヤー",
+                    self.partner_role: getattr(self.partner, "name", self.partner_role),
+                }
+                labels = [label_map.get(p, p) for p in participants]
+                st.write("参加者: " + " / ".join(labels))
             last = status.get("last_speaker")
             if last:
                 st.write(f"最後の話者: {last}")
@@ -273,7 +307,7 @@ class CouncilManager:
         user_text = st.text_area(
             "あなたの発言：",
             key=input_key,
-            placeholder="ここにフローリアへの発言を書いてください。",
+            placeholder=f"ここに{getattr(self.partner, 'name', '相手キャラクター')}への発言を書いてください。",
         )
 
         send_col, wait_col, look_col, scan_col, special_col = st.columns([1, 1, 1, 1, 1])
@@ -319,7 +353,7 @@ class CouncilManager:
                     st.info("いま処理中です。少し待ってから再度お試しください。")
                 else:
                     st.session_state["council_sending"] = True
-                    with st.spinner("フローリアは少し考えています…"):
+                    with st.spinner(f"{getattr(self.partner, 'name', '相手')}は少し考えています…"):
                         self.proceed(cleaned)
                     st.session_state["council_sending"] = False
                     st.rerun()
