@@ -4,7 +4,7 @@ from typing import Protocol
 
 import streamlit as st
 
-from components.persona_editor import PersonaEditor
+from actors.persona.persona_editor import PersonaEditor
 
 
 class View(Protocol):
