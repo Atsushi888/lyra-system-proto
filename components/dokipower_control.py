@@ -6,6 +6,7 @@ from typing import Dict, Any
 import streamlit as st
 
 from actors.emotion_ai import EmotionResult
+from actors.emotion_levels import affection_to_level
 
 
 SESSION_KEY = "dokipower_state"
@@ -86,7 +87,7 @@ class DokiPowerController:
             step=1.0,
         )
 
-        # しきい値から自動レベル判定（手動で上書き可）
+        # しきい値から自動レベル判定（手動で上書き可：デバッグ用途）
         auto_level = 0
         if doki_power >= 80:
             auto_level = 3
@@ -116,10 +117,22 @@ class DokiPowerController:
         st.subheader("現在の EmotionResult（スライダー値プレビュー）")
         st.json(emo.to_dict())
 
+        # ドキドキ補正後の好感度＆レベル表示
+        aff_with_doki = getattr(emo, "affection_with_doki", emo.affection)
+        level = affection_to_level(aff_with_doki)
+
         st.info(
-            f"affection_with_doki = {emo.affection_with_doki:.3f} "
+            f"affection_with_doki = {aff_with_doki:.3f} "
             "（ドキドキ💓補正後の実効好感度）"
         )
+
+        level_label_map = {
+            "low": "LOW（まだ憧れ段階）",
+            "mid": "MID（かなり仲良し）",
+            "high": "HIGH（ほぼ両想い）",
+            "extreme": "EXTREME（婚前レベル）",
+        }
+        st.write("現在の好感度レベル:", level_label_map.get(level, level))
 
         # ===== 適用／リセット =====
         st.markdown("---")
