@@ -114,7 +114,13 @@ class CouncilManager:
         if "narrator_manager" not in st.session_state:
             st.session_state["narrator_manager"] = NarratorManager(state=st.session_state)
         self.narrator_manager: NarratorManager = st.session_state["narrator_manager"]
-        self.narrator = NarratorAI(manager=self.narrator_manager)
+
+        # ★ ここで partner_role / partner_name を渡す
+        self.narrator = NarratorAI(
+            manager=self.narrator_manager,
+            partner_role=self.partner_role,
+            partner_name=getattr(self.partner, "name", self.partner_role),
+        )
 
         # Round0 を 1 回だけ差し込む
         self._ensure_round0_initialized()
