@@ -158,29 +158,6 @@ class AnswerTalker:
         if not messages:
             return
 
-        # ★ ここで system_prompt に「好感度ヒント」を差し込む
-        try:
-            first = messages[0]
-            if isinstance(first, dict) and first.get("role") == "system":
-                base_sp = first.get("content", "") or ""
-                new_sp = build_system_prompt_with_affection(
-                    persona=self.persona,
-                    base_system_prompt=base_sp,
-                    llm_meta=self.llm_meta,
-                )
-                if new_sp and new_sp != base_sp:
-                    msgs = list(messages)
-                    new_first = dict(first)
-                    new_first["content"] = new_sp
-                    msgs[0] = new_first
-                    messages = msgs
-                    self.llm_meta["affection_hint_applied"] = True
-                else:
-                    self.llm_meta["affection_hint_applied"] = False
-        except Exception as e:
-            # 失敗しても通常プロンプトで続行する
-            self.llm_meta["affection_hint_error"] = str(e)
-
         results = self.models_ai.collect(
             messages,
             mode_current=mode_current,
@@ -250,6 +227,49 @@ class AnswerTalker:
         # 1.5) emotion_override を MixerAI から取得
         emotion_override = self.mixer_ai.build_emotion_override()
 
+        # 1.6) 好感度レベルに応じた system_prompt への追記
+        #      （ここで messages[0] の system を差し替える）
+        try:
+            # 「このターンのデレ度」に使う emotion 情報を決める
+            #   - 優先: MixerAI が組み立てた emotion_override（dict）
+            #   - 次点: EmotionAI の last_short_result（前ターンの結果）
+            emotion_for_prompt: Any = None
+            doki_power_for_prompt: float = 0.0
+
+            if isinstance(emotion_override, dict):
+                emo_raw = emotion_override.get("emotion") or emotion_override
+                if isinstance(emo_raw, dict):
+                    emotion_for_prompt = emo_raw
+                    if "doki_power" in emo_raw:
+                        try:
+                            doki_power_for_prompt = float(
+                                emo_raw.get("doki_power", 0.0) or 0.0
+                            )
+                        except Exception:
+                            doki_power_for_prompt = 0.0
+
+            if emotion_for_prompt is None:
+                # EmotionResult インスタンス（前ターンの短期感情）
+                emotion_for_prompt = self.emotion_ai.last_short_result
+
+            if emotion_for_prompt is not None:
+                # 先頭の system メッセージを探す
+                for msg in messages:
+                    if msg.get("role") == "system":
+                        base_sp = msg.get("content", "") or ""
+                        new_sp = build_system_prompt_with_affection(
+                            persona=self.persona,
+                            base_system_prompt=base_sp,
+                            emotion=emotion_for_prompt,
+                            doki_power=doki_power_for_prompt,
+                        )
+                        msg["content"] = new_sp
+                        break  # 最初の system だけ加工すればよい
+
+        except Exception as e:
+            # 失敗しても会話自体は続行できるように、エラーだけ記録
+            self.llm_meta["affection_prompt_error"] = str(e)
+
         # 2) ModelsAI.collect
         self.run_models(
             messages,
@@ -270,7 +290,7 @@ class AnswerTalker:
             }
         self.llm_meta["judge"] = judge_result
 
-        # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定）
+        # 3.5) Composer 用 dev_force_model（開発時のみ手動で有効化）
         # self.llm_meta["dev_force_model"] = "gemini"
 
         # 4) ComposerAI
