@@ -44,13 +44,20 @@ class NarratorAI:
     プロンプト設計＋最終テキストの「意味づけ」担当。
     LLM 呼び出し自体は NarratorManager に丸投げする。
 
-    ※世界情報（world_state）は SceneAI から直接取得する。
-      CouncilManager などから渡される world_state 引数は
-      後方互換のために受け取るが、基本的には無視する方針。
+    partner_role / partner_name を受け取り、
+    フローリア固定ではなく「相手キャラクター汎用」で動作する。
     """
 
-    def __init__(self, manager: NarratorManager) -> None:
+    def __init__(
+        self,
+        manager: NarratorManager,
+        *,
+        partner_role: str = "floria",
+        partner_name: str = "フローリア",
+    ) -> None:
         self.manager = manager
+        self.partner_role = partner_role
+        self.partner_name = partner_name
 
     # ============================================================
     # 内部ヘルパ：SceneAI から一括でワールド情報を取る
@@ -59,6 +66,9 @@ class NarratorAI:
         """
         SceneAI 経由で world_state を取得し、
         Narrator 用の簡易ビューを作る。
+
+        互換性のため、戻り値には
+        - "floria_location"  も残しておくが、実体は partner の位置。
         """
         scene_ai = SceneAI(state=st.session_state)
         ws = scene_ai.get_world_state()
@@ -78,12 +88,12 @@ class NarratorAI:
         weather = ws.get("weather", "clear")
 
         player_loc = locs.get("player", "プレイヤーの部屋")
-        floria_loc = locs.get("floria", player_loc)
+        partner_loc = locs.get(self.partner_role, player_loc)
 
         party_mode = party.get("mode")
         if not party_mode:
             # 念のため自己判定
-            party_mode = "both" if player_loc == floria_loc else "alone"
+            party_mode = "both" if player_loc == partner_loc else "alone"
 
         time_slot = t.get("slot", "morning")
         time_str = t.get("time_str", "07:30")
@@ -91,7 +101,12 @@ class NarratorAI:
         return {
             "world_state": ws,
             "player_location": player_loc,
-            "floria_location": floria_loc,
+            # 互換用キー（中身は partner の位置）
+            "floria_location": partner_loc,
+            # 新しい汎用キー
+            "partner_location": partner_loc,
+            "partner_role": self.partner_role,
+            "partner_name": self.partner_name,
             "party_mode": party_mode,  # "both" or "alone"
             "time_slot": time_slot,
             "time_str": time_str,
@@ -109,21 +124,22 @@ class NarratorAI:
     ) -> List[Dict[str, str]]:
         """
         Round0 用プロンプトを、パーティ状態に応じて 2 パターンで切り替える。
-        - party_mode == "both"  : プレイヤー＋フローリアが同じ場所にいる導入
-        - party_mode == "alone" : プレイヤー一人きりの導入（フローリアは本文に出さない）
+        - party_mode == "both"  : プレイヤー＋相手キャラが同じ場所にいる導入
+        - party_mode == "alone" : プレイヤー一人きりの導入（相手キャラは本文に出さない）
         """
         snap = self._get_scene_snapshot()
         ws = snap["world_state"]
         player_loc = snap["player_location"]
-        floria_loc = snap["floria_location"]
+        partner_loc = snap["partner_location"]
         party_mode = snap["party_mode"]
         time_slot = snap["time_slot"]
         time_str = snap["time_str"]
         weather = snap["weather"]
+        partner_name = self.partner_name
 
         player_profile = player_profile or {}
-        floria_state = floria_state or {}
-        floria_mood = floria_state.get("mood", "少し緊張している")
+        partner_state = floria_state or {}
+        partner_mood = partner_state.get("mood", "少し緊張している")
 
         # スロット名をざっくりした日本語にマッピング（ヒント用）
         slot_label_map = {
@@ -143,7 +159,8 @@ class NarratorAI:
 - プレイヤーは、これから誰かと出会ったり、話しかけたりする前の状態です。
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーや他キャラクターのセリフは一切書かない（台詞は禁止）。
-- 現時点ではフローリアはこの場にいません。本文中にフローリアの名前や存在を出してはいけません。
+- このシーンの相手キャラクター（例: フローリアやリセリア）はこの場にいません。
+  本文中にその相手キャラクターの名前や存在を出してはいけません。
 - 最後の1文には、プレイヤーがこれから誰かに会ったり、行動を起こしたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
@@ -156,23 +173,24 @@ world_state: {ws}
 - 現在地: {player_loc}
 - 時刻帯: {time_of_day_jp}（slot={time_slot}, time={time_str}）
 - 天候: {weather}
-- 現在この場にいるのはプレイヤーだけです。フローリアは別の場所にいます。
+- 現在この場にいるのはプレイヤーだけです。相手キャラクター（{partner_name}）は別の場所にいます。
 
 [要件]
 上記の状況にふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
 - プレイヤーの一人きりの空気感や、これから何かが起こりそうな予感を描写してください。
-- フローリアの名前や存在には一切触れないでください。
+- 相手キャラクター（{partner_name}）の名前や存在には一切触れないでください。
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
 
         else:
-            # ===== プレイヤー＋フローリア同伴バージョン =====
+            # ===== プレイヤー＋相手キャラクター同伴バージョン =====
             system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
-- プレイヤーとフローリアが、まだ一言も発言していない「ラウンド0」の導入文を書きます。
+- プレイヤーと「相手キャラクター」（例: フローリアやリセリア）が、
+  まだ一言も発言していない「ラウンド0」の導入文を書きます。
 - 二人称または三人称の「地の文」で、2〜4文程度。
-- プレイヤーやフローリアのセリフは一切書かない（台詞は禁止）。
+- プレイヤーや相手キャラクターのセリフは一切書かない（台詞は禁止）。
 - 二人の距離感や空気、これから会話が始まりそうな雰囲気をさりげなく示してください。
 - 最後の1文には、プレイヤーが何か話しかけたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
@@ -182,17 +200,18 @@ world_state: {ws}
 [ワールド状態（内部表現）]
 world_state: {ws}
 
-[シーン情報（プレイヤー＋フローリア）]
+[シーン情報（プレイヤー＋相手キャラクター）]
 - 現在地: {player_loc}
 - 時刻帯: {time_of_day_jp}（slot={time_slot}, time={time_str}）
 - 天候: {weather}
-- フローリアの雰囲気・感情: {floria_mood}
-- プレイヤーとフローリアは、今この場所で一緒にいますが、まだ一言も会話を交わしていません。
+- 相手キャラクター名: {partner_name}
+- {partner_name} の雰囲気・感情: {partner_mood}
+- プレイヤーと {partner_name} は、今この場所で一緒にいますが、まだ一言も会話を交わしていません。
 
 [要件]
 上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
-- プレイヤーとフローリアの距離感や、これから会話が始まりそうな空気感を中心に描写してください。
-- プレイヤーやフローリアのセリフは書かないでください（地の文のみ）。
+- プレイヤーと {partner_name} の距離感や、これから会話が始まりそうな空気感を中心に描写してください。
+- プレイヤーや {partner_name} のセリフは書かないでください（地の文のみ）。
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
 
@@ -246,11 +265,12 @@ world_state: {ws}
         snap = self._get_scene_snapshot()
         ws = snap["world_state"]
         player_loc = snap["player_location"]
-        floria_loc = snap["floria_location"]
+        partner_loc = snap["partner_location"]
         party_mode = snap["party_mode"]
         time_slot = snap["time_slot"]
         time_str = snap["time_str"]
         weather = snap["weather"]
+        partner_name = self.partner_name
 
         system = """
 あなたは会話RPG「Lyra」のナレーション補助AIです。
@@ -259,7 +279,7 @@ world_state: {ws}
 
 - 行動の意図（何をしたいか）は絶対に変えない。
 - 性的・暴力的な強度を勝手に盛らない。暗示レベルに留める。
-- フローリアなどキャラクターのセリフは書かない。プレイヤー側の動きだけを書く。
+- 相手キャラクターなどのセリフは書かない。プレイヤー側の動きだけを書く。
 - 1〜2文以内に収める。
 """.strip()
 
@@ -268,9 +288,9 @@ world_state: {ws}
 world_state: {ws}
 
 [シーン要約]
-- パーティ状態: {party_mode}（"both"=プレイヤーとフローリアが一緒, "alone"=プレイヤーだけ）
+- パーティ状態: {party_mode}（"both"=プレイヤーと相手キャラが一緒, "alone"=プレイヤーだけ）
 - プレイヤーの現在地: {player_loc}
-- フローリアの現在地: {floria_loc}
+- 相手キャラクター({partner_name})の現在地: {partner_loc}
 - 時刻帯: {time_slot}（time={time_str}）
 - 天候: {weather}
 
@@ -340,6 +360,11 @@ world_state: {ws}
         """
         snap = self._get_scene_snapshot()
         party_mode = snap["party_mode"]
+
+        # 互換のためデフォルト値は "フローリア" だが、
+        # 別キャラがバインドされている場合はそちらを優先する。
+        if actor_name == "フローリア" and self.partner_name != "フローリア":
+            actor_name = self.partner_name
 
         if party_mode == "alone":
             speak = (
