@@ -1,11 +1,11 @@
-# council/council_manager.py
 from __future__ import annotations
 from typing import List, Dict, Any
 
 import streamlit as st
 
 from actors.actor import Actor
-from personas.persona_floria_ja import Persona
+from personas.persona_floria_ja import Persona as FloriaPersona
+from actors.persona.persona_classes.persona_riseria_ja import Persona as RiseriaPersona
 from actors.narrator_ai import NarratorAI
 from actors.narrator.narrator_manager import NarratorManager
 from actors.scene_ai import SceneAI
@@ -22,10 +22,51 @@ def get_or_create_council_actor() -> Actor:
     if actor_key not in st.session_state:
         st.session_state[actor_key] = Actor(
             name="フローリア",
-            persona=Persona(),
+            persona=FloriaPersona(),
         )
 
     return st.session_state[actor_key]
+
+
+# ==========================================================
+# 追加: フローリア用 / リセリア用 CouncilManager ヘルパ
+# ==========================================================
+
+def get_or_create_floria_council_manager() -> "CouncilManager":
+    """
+    既存フローリア用の CouncilManager をセッションから取得（なければ作成）。
+    """
+    key = "council_manager_floria"
+
+    if key not in st.session_state:
+        floria_actor = Actor(name="フローリア", persona=FloriaPersona())
+        st.session_state[key] = CouncilManager(partner=floria_actor, partner_role="floria")
+
+    return st.session_state[key]
+
+
+def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "CouncilManager":
+    """
+    リセリアとの会話用 CouncilManager をセッションから取得（なければ作成）。
+
+    - Persona は actors/persona/persona_datas/elf_riseria_da_silva_ja.json を元に構築
+    - Actor.name には Persona.display_name（通常「リセリア・ダ・シルヴァ」）を使用
+    - partner_role は "riseria"
+    """
+    key = "council_manager_riseria"
+
+    if key not in st.session_state:
+        riseria_persona = RiseriaPersona(player_name=player_name)
+        riseria_actor = Actor(
+            name=riseria_persona.display_name,
+            persona=riseria_persona,
+        )
+        st.session_state[key] = CouncilManager(
+            partner=riseria_actor,
+            partner_role="riseria",
+        )
+
+    return st.session_state[key]
 
 
 class CouncilManager:
@@ -42,7 +83,7 @@ class CouncilManager:
 
         # ===== 会話相手（デフォルトはフローリア） =====
         if partner is None:
-            partner = Actor("フローリア", Persona())
+            partner = Actor("フローリア", FloriaPersona())
             partner_role = "floria"
         else:
             if partner_role is None:
