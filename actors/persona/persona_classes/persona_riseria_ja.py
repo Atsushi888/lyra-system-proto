@@ -1,9 +1,8 @@
-# actors/persona/persona_classes/persona_riseria_ja.py
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 
 class Persona:
@@ -11,6 +10,9 @@ class Persona:
     リセリア・ダ・シルヴァ用 Persona。
     actors/persona/persona_datas/elf_riseria_da_silva_ja.json を読み込み、
     system_prompt 内の {PLAYER_NAME} を差し替える。
+
+    Actor クラスからは Floria 用 Persona と同等に扱えるよう、
+    build_messages(conversation_log) を実装する。
     """
 
     def __init__(self, player_name: str = "アツシ") -> None:
@@ -28,6 +30,10 @@ class Persona:
         sp = data.get("system_prompt", "")
         self.system_prompt: str = sp.replace("{PLAYER_NAME}", player_name)
 
+        # あれば使うテキスト系フィールド（無くても動くようにデフォルト空文字）
+        self.starter_hint: str = str(data.get("starter_hint", ""))
+        self.style_hint: str = str(data.get("style_hint", ""))
+
     # -------------------------------------------------------
     # JSON ローダ
     # -------------------------------------------------------
@@ -39,7 +45,6 @@ class Persona:
         読みたい JSON の位置:
             actors/persona/persona_datas/elf_riseria_da_silva_ja.json
         """
-
         here = Path(__file__).resolve().parent               # persona_classes/
         persona_dir = here.parent / "persona_datas"          # persona/persona_datas/
         json_path = persona_dir / "elf_riseria_da_silva_ja.json"
@@ -48,7 +53,60 @@ class Persona:
         return json.loads(text)
 
     # -------------------------------------------------------
-    # 必要インターフェース
+    # Actor から呼ばれるインターフェース
     # -------------------------------------------------------
     def get_system_prompt(self) -> str:
         return self.system_prompt
+
+    def build_messages(self, conversation_log: Any) -> List[Dict[str, str]]:
+        """
+        Actor.speak(...) から呼び出されることを想定したメッセージ構築。
+
+        引数 conversation_log には、通常 CouncilManager が保持している
+        List[Dict[str, str]] 形式の会話ログが渡される：
+
+            {"role": "player" | "riseria" | "narrator" | ...,
+             "content": "<br>区切りのテキスト"}
+
+        これを OpenAI / LLM 用の chat messages に変換する。
+
+        - "player"    -> role="user"
+        - "riseria"   -> role="assistant"
+        - "floria"    -> role="assistant"  （互換）
+        - "narrator"  -> role="system" として地の文扱い
+        - その他      -> role="system"
+        """
+        # 1) ルート system プロンプト
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": self.system_prompt}
+        ]
+
+        # あるなら文体ヒントも system に乗せておく
+        if self.style_hint:
+            messages.append({
+                "role": "system",
+                "content": f"[Style Hint]\n{self.style_hint}",
+            })
+
+        log: List[Dict[str, str]] = []
+        if isinstance(conversation_log, list):
+            log = conversation_log
+
+        for entry in log:
+            role = entry.get("role", "")
+            text = (entry.get("content") or "").replace("<br>", "\n")
+
+            if role == "player":
+                messages.append({"role": "user", "content": text})
+            elif role in ("riseria", "floria"):
+                # 会話相手側（AI）の発話
+                messages.append({"role": "assistant", "content": text})
+            elif role == "narrator":
+                # ナレーションは system 扱いにしておく
+                messages.append(
+                    {"role": "system", "content": f"[ナレーション]\n{text}"}
+                )
+            else:
+                messages.append({"role": "system", "content": text})
+
+        return messages
