@@ -158,14 +158,76 @@ class AnswerTalker:
         if not messages:
             return
 
+        # 0) ベース system_prompt を取得（先頭が system を前提）
+        base_system_prompt = ""
+        if messages and messages[0].get("role") == "system":
+            base_system_prompt = messages[0].get("content") or ""
+
+        # 1) affection / doki_power の元データを決定
+        emo_for_prompt: Optional[EmotionResult] = None
+        doki_power_val: float = 0.0
+
+        # 優先: MixerAI から渡された emotion_override["emotion"]
+        src_dict: Optional[Dict[str, Any]] = None
+        if isinstance(emotion_override, dict):
+            cand = emotion_override.get("emotion")
+            if isinstance(cand, dict):
+                src_dict = cand
+
+        # なければ llm_meta["emotion"]（前ターンの解析結果）をフォールバック
+        if src_dict is None:
+            cand = self.llm_meta.get("emotion")
+            if isinstance(cand, dict):
+                src_dict = cand
+
+        # EmotionResult を復元
+        if isinstance(src_dict, dict):
+            try:
+                emo_for_prompt = EmotionResult(
+                    mode=str(src_dict.get("mode", "normal")),
+                    affection=float(src_dict.get("affection", 0.0) or 0.0),
+                    arousal=float(src_dict.get("arousal", 0.0) or 0.0),
+                    tension=float(src_dict.get("tension", 0.0) or 0.0),
+                    anger=float(src_dict.get("anger", 0.0) or 0.0),
+                    sadness=float(src_dict.get("sadness", 0.0) or 0.0),
+                    excitement=float(src_dict.get("excitement", 0.0) or 0.0),
+                    raw_text=src_dict.get("raw_text", "") or "",
+                    doki_power=float(src_dict.get("doki_power", 0.0) or 0.0),
+                    doki_level=int(src_dict.get("doki_level", 0) or 0),
+                    meta=src_dict.get("meta", {}) or {},
+                )
+                doki_power_val = float(src_dict.get("doki_power", 0.0) or 0.0)
+            except Exception:
+                emo_for_prompt = None
+                doki_power_val = 0.0
+
+        # 2) affection + ドキドキ💓 反映済み system_prompt を組み立て
+        system_prompt_used = build_system_prompt_with_affection(
+            persona=self.persona,
+            base_system_prompt=base_system_prompt,
+            emotion=emo_for_prompt,
+            doki_power=doki_power_val,
+        )
+
+        # 3) 実際に LLM に渡す messages[0] を差し替え
+        if messages and messages[0].get("role") == "system":
+            messages = list(messages)  # 念のためコピー
+            messages[0] = {
+                "role": "system",
+                "content": system_prompt_used,
+            }
+
+        # 4) デバッグ用に llm_meta に保存（AnswerTalkerView で表示）
+        self.llm_meta["system_prompt_used"] = system_prompt_used
+        self.state["llm_meta"] = self.llm_meta
+
+        # 5) Multi-LLM へ投げる
         results = self.models_ai.collect(
             messages,
             mode_current=mode_current,
             emotion_override=emotion_override,
         )
         self.llm_meta["models"] = results
-        # ★ emotion_override を llm_meta に保存（デバッグ用）
-        self.llm_meta["emotion_override"] = emotion_override or {}
         self.state["llm_meta"] = self.llm_meta
 
     # ---------------------------------------
@@ -228,63 +290,6 @@ class AnswerTalker:
 
         # 1.5) emotion_override を MixerAI から取得
         emotion_override = self.mixer_ai.build_emotion_override()
-        self.llm_meta["emotion_override"] = emotion_override or {}
-
-        # 1.6) affection / ドキドキ💓 反映後の system_prompt を messages[0] に差し込む
-        if (
-            messages
-            and isinstance(messages[0], dict)
-            and messages[0].get("role") == "system"
-        ):
-            base_system_prompt = messages[0].get("content", "")
-
-            emo_for_prompt: Optional[EmotionResult] = None
-            doki_power_val = 0.0
-
-            # emotion_override["emotion"] があれば最優先で使う
-            emo_dict = None
-            if isinstance(emotion_override, dict):
-                emo_dict = emotion_override.get("emotion") or None
-
-            if isinstance(emo_dict, dict):
-                emo_for_prompt = EmotionResult(
-                    mode=emo_dict.get("mode", "normal"),
-                    affection=float(emo_dict.get("affection", 0.0) or 0.0),
-                    arousal=float(emo_dict.get("arousal", 0.0) or 0.0),
-                    tension=float(emo_dict.get("tension", 0.0) or 0.0),
-                    anger=float(emo_dict.get("anger", 0.0) or 0.0),
-                    sadness=float(emo_dict.get("sadness", 0.0) or 0.0),
-                    excitement=float(emo_dict.get("excitement", 0.0) or 0.0),
-                    raw_text=str(emo_dict.get("raw_text", "(from dokipower_debug)")),
-                    doki_power=float(emo_dict.get("doki_power", 0.0) or 0.0),
-                    doki_level=int(emo_dict.get("doki_level", 0) or 0),
-                    meta=emo_dict.get("meta", {}) or {},
-                )
-                doki_power_val = emo_for_prompt.doki_power
-            else:
-                # fallback: 直近 EmotionAI の解析結果を利用
-                last_emo_dict = self.llm_meta.get("emotion")
-                if isinstance(last_emo_dict, dict) and last_emo_dict:
-                    emo_for_prompt = EmotionResult(
-                        mode=last_emo_dict.get("mode", "normal"),
-                        affection=float(last_emo_dict.get("affection", 0.0) or 0.0),
-                        arousal=float(last_emo_dict.get("arousal", 0.0) or 0.0),
-                        tension=float(last_emo_dict.get("tension", 0.0) or 0.0),
-                        anger=float(last_emo_dict.get("anger", 0.0) or 0.0),
-                        sadness=float(last_emo_dict.get("sadness", 0.0) or 0.0),
-                        excitement=float(last_emo_dict.get("excitement", 0.0) or 0.0),
-                        raw_text=str(last_emo_dict.get("raw_text", "(from EmotionAI)")),
-                    )
-
-            system_prompt_used = build_system_prompt_with_affection(
-                persona=self.persona,
-                base_system_prompt=base_system_prompt,
-                emotion=emo_for_prompt,
-                doki_power=doki_power_val,
-            )
-
-            messages[0]["content"] = system_prompt_used
-            self.llm_meta["system_prompt_used"] = system_prompt_used
 
         # 2) ModelsAI.collect
         self.run_models(
