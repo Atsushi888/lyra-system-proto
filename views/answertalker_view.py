@@ -1,7 +1,7 @@
 # views/answertalker_view.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Protocol, MutableMapping, Optional
+from typing import Any, Dict, MutableMapping, Optional, Protocol
 
 import os
 import json
@@ -50,32 +50,32 @@ class AnswerTalkerView:
 
         st.info(
             "この画面では、Actor に紐づく AnswerTalker が保持している llm_meta の内容 "
-            "（system_prompt / models / judge / composer / emotion / memory）を参照できます。\n\n"
+            "（system_prompt / emotion_override / models / judge / composer / emotion / memory）を参照できます。\n\n"
             "※ この画面からは AnswerTalker.run_models() や MemoryAI.update_from_turn() などは実行しません。"
         )
 
         llm_meta: Dict[str, Any] = st.session_state.get("llm_meta", {}) or {}
 
-        # ---- 今回使用された system_prompt（affection / ドキドキ💓反映後） ----
+        # ---- 今回使用された system_prompt ----
         st.subheader("今回使用された system_prompt（affection / ドキドキ💓反映後）")
-        system_prompt_used = llm_meta.get("system_prompt_used")
-        if system_prompt_used:
+        sys_used = llm_meta.get("system_prompt_used") or ""
+        if not sys_used:
+            st.info("system_prompt_used はまだありません。")
+        else:
             st.text_area(
                 "system_prompt_used",
-                value=system_prompt_used,
-                height=260,
+                value=sys_used,
+                height=220,
                 label_visibility="collapsed",
             )
-        else:
-            st.info("system_prompt がまだ保存されていません。AnswerTalker.speak() 実行後に表示されます。")
 
-        # ---- MixerAI → ModelsAI に渡された emotion_override （参考）----
+        # ---- emotion_override ----
         st.subheader("emotion_override（MixerAI → ModelsAI に渡した感情オーバーライド）")
-        emo_override = llm_meta.get("emotion_override")
-        if emo_override:
-            st.json(emo_override)
-        else:
+        emo_override = llm_meta.get("emotion_override") or {}
+        if not emo_override:
             st.info("emotion_override はまだありません。")
+        else:
+            st.json(emo_override)
 
         # ---- models ----
         st.subheader("llm_meta に登録された AI 回答一覧（models）")
