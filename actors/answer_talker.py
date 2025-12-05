@@ -14,6 +14,9 @@ from actors.emotion_ai import EmotionAI, EmotionResult
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
+from actors.persona.affection_prompt_utils import (
+    build_system_prompt_with_affection,
+)
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -154,6 +157,29 @@ class AnswerTalker:
     ) -> None:
         if not messages:
             return
+
+        # ★ ここで system_prompt に「好感度ヒント」を差し込む
+        try:
+            first = messages[0]
+            if isinstance(first, dict) and first.get("role") == "system":
+                base_sp = first.get("content", "") or ""
+                new_sp = build_system_prompt_with_affection(
+                    persona=self.persona,
+                    base_system_prompt=base_sp,
+                    llm_meta=self.llm_meta,
+                )
+                if new_sp and new_sp != base_sp:
+                    msgs = list(messages)
+                    new_first = dict(first)
+                    new_first["content"] = new_sp
+                    msgs[0] = new_first
+                    messages = msgs
+                    self.llm_meta["affection_hint_applied"] = True
+                else:
+                    self.llm_meta["affection_hint_applied"] = False
+        except Exception as e:
+            # 失敗しても通常プロンプトで続行する
+            self.llm_meta["affection_hint_error"] = str(e)
 
         results = self.models_ai.collect(
             messages,
