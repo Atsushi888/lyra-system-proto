@@ -1,402 +1,389 @@
-# views/answertalker_view.py
+# actors/answer_talker.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Protocol, MutableMapping, Optional
-
+from typing import Any, Dict, List, Optional, Mapping
 import os
-import json
+from types import SimpleNamespace
+
 import streamlit as st
 
-from auth.roles import Role  # いまは未使用だが将来の拡張用に残しておく
-from actors.actor import Actor
-from actors.answer_talker import AnswerTalker
-from personas.persona_floria_ja import Persona  # いまはフローリア固定
+from actors.models_ai2 import ModelsAI2
+from actors.judge_ai3 import JudgeAI3
+from actors.composer_ai import ComposerAI
+from actors.memory_ai import MemoryAI
+from actors.emotion_ai import EmotionAI, EmotionResult
+from actors.persona_ai import PersonaAI
+from actors.scene_ai import SceneAI
+from actors.mixer_ai import MixerAI
+from actors.persona.affection_prompt_utils import (
+    build_system_prompt_with_affection,
+)
+from llm.llm_manager import LLMManager
+from llm.llm_manager_factory import get_llm_manager
 
 
-class View(Protocol):
-    def render(self) -> None:
-        ...
-
-
-# 環境変数でデバッグモードを切り替え
-LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
-
-
-class AnswerTalkerView:
+class AnswerTalker:
     """
-    AnswerTalker / ModelsAI / JudgeAI3 / ComposerAI / MemoryAI の
-    デバッグ・閲覧用ビュー。
+    AI回答パイプラインの司令塔クラス。
+
+    - ModelsAI2
+    - JudgeAI3
+    - ComposerAI
+    - EmotionAI
+    - MemoryAI
+    - PersonaAI（JSONベースの人格情報）
+    - SceneAI / MixerAI（シーン＆感情オーバーライド）
     """
 
-    TITLE = "🧩 AnswerTalker（AI統合テスト）"
+    def __init__(
+        self,
+        persona: Any,
+        llm_manager: Optional[LLMManager] = None,
+        memory_model: str = "gpt4o",
+        state: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        self.persona = persona
+        persona_id = getattr(self.persona, "char_id", "default")
 
-    def __init__(self) -> None:
-        # Actor と AnswerTalker を初期化
-        persona = Persona()
-        self.actor = Actor("floria", persona)
-
-        # ★ Streamlit の state を AnswerTalker に明示的に渡す
-        #   これにより、AnswerTalker 内部とビューの両方で
-        #   st.session_state["llm_meta"] などを共有できる。
-        state: Optional[MutableMapping[str, Any]] = (
-            st.session_state if LYRA_DEBUG else None
-        )
-
-        self.answer_talker = AnswerTalker(
-            persona,
-            state=state,
-        )
-
-    def render(self) -> None:
-        st.header(self.TITLE)
-
-        st.info(
-            "この画面では、Actor に紐づく AnswerTalker が保持している llm_meta の内容 "
-            "（system_prompt / models / judge / composer / emotion / memory）を参照できます。\n\n"
-            "※ この画面からは AnswerTalker.run_models() や MemoryAI.update_from_turn() などは実行しません。"
-        )
-
-        llm_meta: Dict[str, Any] = st.session_state.get("llm_meta", {}) or {}
-
-        # ============================================================
-        # 実際に LLM に投げた system_prompt（好感度ヒント付き）
-        # ============================================================
-        st.subheader("今回使用された system_prompt（affection / ドキドキ💓反映後）")
-        sys_used = llm_meta.get("system_prompt_used") or ""
-        sys_err = llm_meta.get("system_prompt_error")
-
-        if sys_err:
-            st.error(f"system_prompt 構築時のエラー: {sys_err}")
-
-        if not sys_used:
-            st.info(
-                "system_prompt_used がまだ記録されていません。\n"
-                "（このターンで AnswerTalker.speak() が実行されていない可能性があります）"
-            )
+        # Streamlit あり／なし両対応の state
+        env_debug = os.getenv("LYRA_DEBUG", "")
+        if state is not None:
+            # 明示的に渡された state を最優先
+            self.state = state
+        elif env_debug == "1":
+            # デバッグ時は Streamlit の state を共有
+            self.state = st.session_state
         else:
-            st.text_area(
-                "system_prompt_used",
-                value=sys_used,
-                height=260,
-                label_visibility="collapsed",
-            )
+            # 現状は Streamlit 前提なので session_state を使う
+            self.state = st.session_state
 
-        # Emotion override（Mixer → ModelsAI に渡した payload）の確認
-        emo_override = llm_meta.get("emotion_override") or {}
-        with st.expander("emotion_override（MixerAI → ModelsAI に渡した感情オーバーライド）", expanded=False):
-            if emo_override:
-                st.json(emo_override)
+        # PersonaAI
+        self.persona_ai = PersonaAI(persona_id=persona_id)
+
+        # LLMManager
+        self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
+        self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
+
+        # llm_meta 初期化
+        llm_meta = self.state.get("llm_meta")
+        if not isinstance(llm_meta, dict):
+            llm_meta = {}
+
+        llm_meta.setdefault("models", {})
+        llm_meta.setdefault("judge", {})
+        llm_meta.setdefault("judge_mode", "normal")
+        llm_meta.setdefault(
+            "judge_mode_next",
+            llm_meta.get("judge_mode", "normal"),
+        )
+        llm_meta.setdefault("composer", {})
+        llm_meta.setdefault("emotion", {})
+        llm_meta.setdefault("memory_context", "")
+        llm_meta.setdefault("memory_update", {})
+        llm_meta.setdefault("emotion_long_term", {})
+
+        # ★ シーン/ワールド情報用のスロットも確保
+        llm_meta.setdefault("world_state", {})
+        llm_meta.setdefault("scene_emotion", {})
+
+        # system_prompt デバッグ用
+        llm_meta.setdefault("system_prompt_used", "")
+        llm_meta.setdefault("system_prompt_error", None)
+        llm_meta.setdefault("emotion_override", {})
+
+        # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
+        if "composer_style_hint" not in llm_meta:
+            hint = ""
+            if hasattr(self.persona, "get_composer_style_hint"):
+                try:
+                    hint = str(self.persona.get_composer_style_hint())
+                except Exception:
+                    hint = ""
+            llm_meta["composer_style_hint"] = hint
+
+        # ラウンド開始時の judge_mode リセット
+        round_no_raw = self.state.get("round_number", 0)
+        try:
+            round_no = int(round_no_raw)
+        except Exception:
+            round_no = 0
+
+        if round_no <= 1:
+            llm_meta["judge_mode"] = "normal"
+            llm_meta["judge_mode_next"] = "normal"
+            self.state["judge_mode"] = "normal"
+        else:
+            if "judge_mode" in self.state:
+                llm_meta["judge_mode"] = self.state["judge_mode"]
             else:
-                st.write("emotion_override はまだありません。")
+                self.state["judge_mode"] = llm_meta.get("judge_mode", "normal")
 
-        # ---- models ----
-        st.subheader("llm_meta に登録された AI 回答一覧（models）")
-        models = llm_meta.get("models", {})
+        self.llm_meta: Dict[str, Any] = llm_meta
+        self.state["llm_meta"] = self.llm_meta
 
-        if not models:
-            st.info("models 情報はまだありません。")
+        # Multi-LLM 集計
+        self.models_ai = ModelsAI2(llm_manager=self.llm_manager)
+
+        # Emotion / Scene / Mixer
+        self.emotion_ai = EmotionAI(
+            llm_manager=self.llm_manager,
+            model_name="gpt51",
+        )
+        self.scene_ai = SceneAI(state=self.state)
+        self.mixer_ai = MixerAI(
+            state=self.state,
+            emotion_ai=self.emotion_ai,
+            scene_ai=self.scene_ai,
+        )
+
+        # Judge / Composer / Memory
+        initial_mode = (
+            self.state.get("judge_mode")
+            or self.llm_meta.get("judge_mode")
+            or self.llm_meta.get("emotion", {}).get("mode")
+            or "normal"
+        )
+        self.judge_ai = JudgeAI3(mode=str(initial_mode))
+
+        self.composer_ai = ComposerAI(
+            llm_manager=self.llm_manager,
+            refine_model="gpt51",
+        )
+        self.memory_ai = MemoryAI(
+            llm_manager=self.llm_manager,
+            persona_id=persona_id,
+            model_name=memory_model,
+        )
+
+    # ---------------------------------------
+    # ModelsAI 呼び出し
+    # ---------------------------------------
+    def run_models(
+        self,
+        messages: List[Dict[str, str]],
+        mode_current: str = "normal",
+        emotion_override: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not messages:
+            return
+
+        results = self.models_ai.collect(
+            messages,
+            mode_current=mode_current,
+            emotion_override=emotion_override,
+        )
+        self.llm_meta["models"] = results
+
+        # ★ Mixer から渡した emotion_override もメタに保存しておく
+        if emotion_override is not None:
+            self.llm_meta["emotion_override"] = emotion_override
         else:
-            for name, info in models.items():
-                with st.expander(f"モデル: {name}", expanded=True):
-                    status = info.get("status", "unknown")
-                    text = info.get("text", "") or ""
-                    usage = info.get("usage")
-                    error = info.get("error")
+            self.llm_meta.setdefault("emotion_override", {})
 
-                    st.write("- status:", status)
-                    st.write("- len(text):", len(text))
+        self.state["llm_meta"] = self.llm_meta
 
-                    if usage is not None:
-                        st.write("- usage:", usage)
+    # ---------------------------------------
+    # メインパイプライン
+    # ---------------------------------------
+    def speak(
+        self,
+        messages: List[Dict[str, str]],
+        user_text: str = "",
+        judge_mode: Optional[str] = None,
+    ) -> str:
 
-                    if error:
-                        st.error(f"error: {error}")
+        if not messages:
+            return ""
 
-                    if text:
-                        st.markdown("**preview:**")
-                        st.code(text[:1000])
+        # 0.0) system_prompt に affection / ドキドキ💓ヒントを埋め込む
+        base_system_prompt = None
+        for m in messages:
+            if m.get("role") == "system":
+                base_system_prompt = m.get("content", "")
+                break
 
-        # ---- judge ----
-        st.subheader("JudgeAI3 の判定結果（llm_meta['judge']）")
-        judge = llm_meta.get("judge", {})
-        if not judge:
-            st.info("judge 情報はまだありません。")
-        else:
-            st.write(f"- status: `{judge.get('status', 'unknown')}`")
-            st.write(f"- chosen_model: `{judge.get('chosen_model', '')}`")
-
-            reason = judge.get("reason")
-            if reason:
-                with st.expander("選択理由（reason）", expanded=True):
-                    st.write(reason)
-
-            chosen_text = (judge.get("chosen_text") or "").strip()
-            if chosen_text:
-                with st.expander("採用テキスト（chosen_text）", expanded=True):
-                    st.text_area(
-                        "chosen_text",
-                        value=chosen_text,
-                        height=260,
-                        label_visibility="collapsed",
-                    )
-
-            raw_candidates = judge.get("candidates") or []
-            with st.expander("候補モデル一覧（candidates / scores）", expanded=False):
-                if isinstance(raw_candidates, dict):
-                    for name, info in raw_candidates.items():
-                        score = info.get("score", "-")
-                        preview = (info.get("text") or "")[:800]
-                        st.markdown(f"### {name}  |  score = `{score}`")
-                        st.write(preview)
-                        st.markdown("---")
-                elif isinstance(raw_candidates, list):
-                    for i, cand in enumerate(raw_candidates, start=1):
-                        name = cand.get("name", f"cand-{i}")
-                        score = cand.get("score", "-")
-                        length = cand.get("length", 0)
-                        preview = (cand.get("text") or "")[:800]
-                        st.markdown(
-                            f"### 候補 {i}: `{name}`  |  score = `{score}`  |  length = {length}"
-                        )
-                        details = cand.get("details") or {}
-                        if details:
-                            with st.expander("details", expanded=False):
-                                st.json(details)
-                        st.markdown("---")
+        if base_system_prompt:
+            try:
+                # 最優先: DokiPower サイドバーからのデバッグ値
+                emo_dict: Dict[str, Any] = {}
+                if isinstance(self.state.get("mixer_debug_emotion"), dict):
+                    emo_dict = dict(self.state["mixer_debug_emotion"])
                 else:
-                    st.write("candidates の形式が想定外です:", type(raw_candidates))
+                    # なければ直近ターンの EmotionAI 結果を使う
+                    if isinstance(self.llm_meta.get("emotion"), dict):
+                        emo_dict = dict(self.llm_meta["emotion"])
 
-        # ---- composer ----
-        st.subheader("ComposerAI の最終結果（llm_meta['composer']）")
-        comp = llm_meta.get("composer", {})
-        if not comp:
-            st.info("composer 情報はまだありません。")
-        else:
-            st.write(f"- status: `{comp.get('status', 'unknown')}`")
-            st.write(f"- source_model: `{comp.get('source_model', '')}`")
-            st.write(f"- mode: `{comp.get('mode', '')}`")
+                if emo_dict:
+                    emo_for_hint = SimpleNamespace(**emo_dict)
+                    doki_power = float(emo_dict.get("doki_power", 0.0) or 0.0)
+                else:
+                    emo_for_hint = None
+                    doki_power = 0.0
 
-            base_src = comp.get("base_source_model")
-            if base_src:
-                st.write(f"- base_source_model: `{base_src}`")
-
-            dev_force = comp.get("dev_force_model")
-            if dev_force:
-                st.write(f"- dev_force_model: `{dev_force}`")
-
-            st.write(f"- is_modified: `{comp.get('is_modified', False)}`")
-
-            summary = comp.get("summary")
-            if summary:
-                with st.expander("サマリ（summary）", expanded=True):
-                    st.text_area(
-                        "composer_summary",
-                        value=str(summary),
-                        height=200,
-                        label_visibility="collapsed",
-                    )
-
-            # Refiner 情報
-            with st.expander("Refiner 情報", expanded=False):
-                st.write(f"- refiner_model: `{comp.get('refiner_model', None)}`")
-                st.write(f"- refiner_used: `{comp.get('refiner_used', False)}`")
-                st.write(f"- refiner_status: `{comp.get('refiner_status', '')}`")
-                ref_err = comp.get("refiner_error")
-                if ref_err:
-                    st.error(f"refiner_error: {ref_err}")
-
-            # base_text / 最終テキスト比較
-            base_text = (comp.get("base_text") or "").strip()
-            final_text = (comp.get("text") or "").strip()
-
-            if base_text:
-                with st.expander("Refiner 前のテキスト（base_text）", expanded=False):
-                    st.text_area(
-                        "composer_base_text",
-                        value=base_text,
-                        height=260,
-                        label_visibility="collapsed",
-                    )
-
-            if final_text:
-                with st.expander("最終返答テキスト（composer.text）", expanded=True):
-                    st.text_area(
-                        "composer_text",
-                        value=final_text,
-                        height=260,
-                        label_visibility="collapsed",
-                    )
-
-        # ---- Composer 用スタイルヒント（persona 由来） ----
-        style_hint = llm_meta.get("composer_style_hint") or ""
-        if style_hint:
-            st.subheader("Composer 用スタイルヒント（persona 由来）")
-            with st.expander("composer_style_hint", expanded=False):
-                st.text_area(
-                    "composer_style_hint",
-                    value=style_hint,
-                    height=260,
-                    label_visibility="collapsed",
+                system_prompt_with_aff = build_system_prompt_with_affection(
+                    persona=self.persona,
+                    base_system_prompt=base_system_prompt,
+                    emotion=emo_for_hint,
+                    doki_power=doki_power,
                 )
 
-        # ---- Judge モード状態 ----
-        st.subheader("Judge モード状態")
-        current_mode_meta = llm_meta.get("judge_mode", None)
-        next_mode_meta = llm_meta.get("judge_mode_next", None)
-        session_mode = st.session_state.get("judge_mode", None)
-
-        cols_mode = st.columns(3)
-        with cols_mode[0]:
-            st.write(f"llm_meta['judge_mode']: `{current_mode_meta}`")
-        with cols_mode[1]:
-            st.write(f"llm_meta['judge_mode_next']: `{next_mode_meta}`")
-        with cols_mode[2]:
-            st.write(f"session_state['judge_mode']: `{session_mode}`")
-
-        # ---- EmotionAI ----
-        st.subheader("EmotionAI の解析結果（llm_meta['emotion']）")
-
-        emo = llm_meta.get("emotion") or {}
-        emo_err = llm_meta.get("emotion_error")
-
-        if emo_err:
-            st.error(f"EmotionAI error: {emo_err}")
-
-        if not emo:
-            st.info("Emotion 情報はまだありません。")
-        else:
-            st.markdown(f"- 推定 judge_mode: `{emo.get('mode', 'normal')}`")
-
-            cols = st.columns(3)
-            with cols[0]:
-                st.write(f"affection: {float(emo.get('affection', 0.0)):.2f}")
-                st.write(f"arousal:   {float(emo.get('arousal', 0.0)):.2f}")
-            with cols[1]:
-                st.write(f"tension:   {float(emo.get('tension', 0.0)):.2f}")
-                st.write(f"anger:     {float(emo.get('anger', 0.0)):.2f}")
-            with cols[2]:
-                st.write(f"sadness:   {float(emo.get('sadness', 0.0)):.2f}")
-                st.write(f"excitement:{float(emo.get('excitement', 0.0)):.2f}")
-
-            # ドキドキ補正関連の追加表示
-            affection_with_doki = emo.get("affection_with_doki")
-            doki_power = emo.get("doki_power")
-            doki_level = emo.get("doki_level")
-            meta = emo.get("meta") or {}
-
-            st.markdown("---")
-            cols2 = st.columns(3)
-            with cols2[0]:
-                if affection_with_doki is not None:
-                    st.write(
-                        f"affection_with_doki: {float(affection_with_doki):.3f}"
-                    )
-            with cols2[1]:
-                if doki_power is not None:
-                    st.write(f"doki_power: {float(doki_power):.1f}")
-            with cols2[2]:
-                if doki_level is not None:
-                    st.write(f"doki_level: {int(doki_level)}")
-
-            level_label = meta.get("affection_label") or meta.get("affection_level")
-            if level_label:
-                st.write(f"- 現在の好感度レベル: **{level_label}**")
-
-            with st.expander("raw_text（EmotionAI の LLM 出力）", expanded=False):
-                st.code(emo.get("raw_text", ""), language="json")
-
-        # ---- MemoryAI ----
-        st.subheader("MemoryAI の状態（長期記憶）")
-        memory_ctx = llm_meta.get("memory_context") or ""
-        mem_update = llm_meta.get("memory_update") or {}
-
-        memory_ai = getattr(self.answer_talker, "memory_ai", None)
-
-        if memory_ai is None:
-            st.warning("AnswerTalker.memory_ai が初期化されていません。")
-        else:
-            persona_id = getattr(memory_ai, "persona_id", "default")
-            max_records = getattr(memory_ai, "max_store_items", 0)
-            storage_file = getattr(memory_ai, "file_path", "(unknown)")
-            st.write(f"- persona_id: `{persona_id}`")
-            st.write(f"- max_records: `{max_records}`")
-            st.write(f"- storage_file: `{storage_file}`")
-
-            try:
-                records = memory_ai.get_all_records()
-            except Exception as e:
-                records = []
-                st.warning(f"MemoryRecord の取得に失敗しました: {e}")
-
-            if not records:
-                st.info("現在、保存済みの MemoryRecord はありません。")
-            else:
-                st.markdown("#### 保存済み MemoryRecord 一覧")
-                for i, r in enumerate(records, start=1):
-                    with st.expander(
-                        f"記憶 {i}: [imp={r.importance}] {r.summary[:32]}...",
-                        expanded=False,
-                    ):
-                        st.write(f"- id: `{r.id}`")
-                        st.write(f"- round_id: {r.round_id}")
-                        st.write(f"- importance: {r.importance}")
-                        st.write(f"- created_at: {r.created_at}")
-                        st.write(
-                            f"- tags: {', '.join(r.tags) if r.tags else '(なし)'}"
-                        )
-                        st.write("**summary:**")
-                        st.write(r.summary)
-                        if r.source_user:
-                            st.write("\n**source_user:**")
-                            st.text(r.source_user)
-                        if r.source_assistant:
-                            st.write("\n**source_assistant:**")
-                            st.text(r.source_assistant)
-
-            st.markdown("---")
-            st.markdown("### MemoryAI ファイル診断（JSON）")
-
-            if st.button("記憶ファイルを診断する", key="memfile_check_at"):
-                path = storage_file
-                st.write(f"対象ファイル: `{path}`")
-
-                if not path or path == "(unknown)":
-                    st.error("MemoryAI.file_path が正しく設定されていません。")
-                elif not os.path.exists(path):
-                    st.error(
-                        "ファイルが存在しません。まだ一度も記憶が保存されていない可能性があります。"
-                    )
+                if system_prompt_with_aff:
+                    for m in messages:
+                        if m.get("role") == "system":
+                            m["content"] = system_prompt_with_aff
+                            break
+                    self.llm_meta["system_prompt_used"] = system_prompt_with_aff
                 else:
-                    st.success("ファイルは存在します。")
+                    self.llm_meta["system_prompt_used"] = base_system_prompt
 
-                    size = os.path.getsize(path)
-                    st.write(f"- ファイルサイズ: `{size}` バイト")
+            except Exception as e:
+                # 失敗しても会話自体は続行
+                self.llm_meta["system_prompt_error"] = str(e)
+                self.llm_meta["system_prompt_used"] = base_system_prompt
 
-                    try:
-                        with open(path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    except Exception as e:
-                        st.error(f"JSON の読み込みに失敗しました: {e}")
-                    else:
-                        if isinstance(data, list):
-                            st.write(f"- JSON はリストです。要素数: `{len(data)}`")
-                            if data:
-                                st.write("- 先頭3件のプレビュー:")
-                                st.json(data[:3])
-                            else:
-                                st.info("リストは空です（記憶が 0 件です）。")
-                        else:
-                            st.write(f"- JSON の型: `{type(data)}`")
-                            st.json(data)
+        # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta へ
+        try:
+            persona_all = self.persona_ai.get_all(reload=True)
+            self.llm_meta["persona"] = persona_all
 
-        st.subheader("llm_meta 内のメモリ関連メタ情報")
-        st.write(f"- memory_context:\n\n```text\n{memory_ctx}\n```")
-        st.write("- memory_update（直近ターンの記憶更新結果）:")
-        st.json(mem_update)
+            style_hint = (
+                persona_all.get("style_hint")
+                or self.llm_meta.get("composer_style_hint", "")
+            )
+            self.llm_meta["style_hint"] = style_hint
+        except Exception as e:
+            self.llm_meta["persona_error"] = str(e)
 
+        # 0) judge_mode 決定
+        mode_current = (
+            judge_mode
+            or self.llm_meta.get("judge_mode")
+            or self.state.get("judge_mode")
+            or "normal"
+        )
 
-def create_answertalker_view() -> AnswerTalkerView:
-    """
-    ModeSwitcher から呼ぶためのシンプルなファクトリ関数。
-    """
-    return AnswerTalkerView()
+        self.judge_ai.set_mode(mode_current)
+        self.llm_meta["judge_mode"] = mode_current
+        self.state["judge_mode"] = mode_current
+
+        # 1) MemoryAI.build_memory_context
+        try:
+            mem_ctx = self.memory_ai.build_memory_context(user_query=user_text or "")
+            self.llm_meta["memory_context"] = mem_ctx
+            self.llm_meta["memory_context_error"] = None
+        except Exception as e:
+            self.llm_meta["memory_context_error"] = str(e)
+            self.llm_meta["memory_context"] = ""
+
+        # 1.2) SceneAI から world_state / scene_emotion を取得して llm_meta に積む
+        try:
+            scene_payload = self.scene_ai.build_emotion_override_payload()
+            self.llm_meta["world_state"] = scene_payload.get("world_state", {})
+            self.llm_meta["scene_emotion"] = scene_payload.get("scene_emotion", {})
+            self.llm_meta["world_error"] = None
+        except Exception as e:
+            self.llm_meta["world_error"] = str(e)
+            self.llm_meta.setdefault("world_state", {})
+            self.llm_meta.setdefault("scene_emotion", {})
+
+        # 1.5) emotion_override を MixerAI から取得
+        try:
+            emotion_override = self.mixer_ai.build_emotion_override()
+        except Exception as e:
+            emotion_override = {}
+            self.llm_meta["emotion_override_error"] = str(e)
+
+        # 2) ModelsAI.collect
+        self.run_models(
+            messages,
+            mode_current=mode_current,
+            emotion_override=emotion_override,
+        )
+
+        # 3) JudgeAI3
+        try:
+            judge_result = self.judge_ai.run(self.llm_meta.get("models", {}))
+        except Exception as e:
+            judge_result = {
+                "status": "error",
+                "error": str(e),
+                "chosen_model": "",
+                "chosen_text": "",
+                "candidates": [],
+            }
+        self.llm_meta["judge"] = judge_result
+
+        # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定のときに使う）
+        # self.llm_meta["dev_force_model"] = "gemini"
+
+        # 4) ComposerAI
+        try:
+            composed = self.composer_ai.compose(self.llm_meta)
+        except Exception as e:
+            fallback = judge_result.get("chosen_text") or ""
+            composed = {
+                "status": "error",
+                "error": str(e),
+                "text": fallback,
+                "source_model": judge_result.get("chosen_model", ""),
+                "mode": "judge_fallback",
+            }
+        self.llm_meta["composer"] = composed
+
+        # 5) EmotionAI.analyze + decide_judge_mode
+        try:
+            emotion_res: EmotionResult = self.emotion_ai.analyze(
+                composer=composed,
+                memory_context=self.llm_meta.get("memory_context", ""),
+                user_text=user_text or "",
+            )
+            self.llm_meta["emotion"] = emotion_res.to_dict()
+
+            next_mode = self.emotion_ai.decide_judge_mode(emotion_res)
+            self.llm_meta["judge_mode_next"] = next_mode
+            self.state["judge_mode"] = next_mode
+
+        except Exception as e:
+            self.llm_meta["emotion_error"] = str(e)
+
+        # 6) final text
+        final_text = composed.get("text") or judge_result.get("chosen_text") or ""
+
+        # 7) MemoryAI.update_from_turn
+        try:
+            round_val = int(self.state.get("round_number", 0))
+            mem_update = self.memory_ai.update_from_turn(
+                messages=messages,
+                final_reply=final_text,
+                round_id=round_val,
+            )
+        except Exception as e:
+            mem_update = {
+                "status": "error",
+                "error": str(e),
+                "records": [],
+            }
+        self.llm_meta["memory_update"] = mem_update
+
+        # 7.5) EmotionAI.update_long_term
+        try:
+            if hasattr(self.memory_ai, "get_all_records"):
+                records = self.memory_ai.get_all_records()
+            else:
+                records = []
+
+            lt_state = self.emotion_ai.update_long_term(
+                memory_records=records,
+                current_round=int(self.state.get("round_number", 0)),
+                alpha=0.3,
+            )
+
+            if hasattr(lt_state, "to_dict"):
+                self.llm_meta["emotion_long_term"] = lt_state.to_dict()
+        except Exception as e:
+            self.llm_meta["emotion_long_term_error"] = str(e)
+
+        # 8) 保存
+        self.state["llm_meta"] = self.llm_meta
+
+        return final_text
