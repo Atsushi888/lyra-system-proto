@@ -1,32 +1,37 @@
+# views/council_view.py
 from __future__ import annotations
-
-from typing import Any
 
 import streamlit as st
 
-from council.council_manager import CouncilManager
+from council.council_manager import (
+    get_or_create_riseria_council_manager,
+    # フローリア版も残したいなら↓も使える
+    # get_or_create_floria_council_manager,
+)
 
 
 class CouncilView:
     """
-    会談システム画面（β）。
-    CouncilManager を session_state に 1 つだけ持って、
-    実際の UI 描画は CouncilManager.render() に委譲する薄いラッパ。
+    会談システムビュー。
+
+    現状は「下級生エルフ：リセリア」との 1on1 (+ナレーション) 会話専用ビューとして構成。
+    将来フローリア用に戻す場合は、get_or_create_floria_council_manager() を呼ぶ分岐を追加すればOK。
     """
 
-    SESSION_MANAGER = "council_manager"
+    TITLE = "🗣 会談システム（β）"
 
     def __init__(self) -> None:
-        # 特に状態は持たないが、将来拡張を見越してクラスとして定義
         pass
 
-    def _get_manager(self) -> CouncilManager:
-        """session_state に CouncilManager インスタンスを 1 つだけ確保して返す。"""
-        if self.SESSION_MANAGER not in st.session_state:
-            st.session_state[self.SESSION_MANAGER] = CouncilManager()
-        return st.session_state[self.SESSION_MANAGER]
-
     def render(self) -> None:
-        """ModeSwitcher から呼ばれるエントリポイント。"""
-        manager = self._get_manager()
-        manager.render()
+        st.header(self.TITLE)
+
+        # 将来プレイヤーネームを UI から変えたい場合は、
+        # st.session_state などから拾う設計にしておく
+        player_name = st.session_state.get("player_name", "アツシ")
+
+        # ★ ここが一番大事：リセリア用 CouncilManager を取得
+        council = get_or_create_riseria_council_manager(player_name=player_name)
+
+        # そのまま CouncilManager に画面描画を委譲
+        council.render()
