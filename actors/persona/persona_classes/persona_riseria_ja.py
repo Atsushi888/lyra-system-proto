@@ -30,10 +30,6 @@ class Persona:
         self.display_name: str = data.get("display_name", "リセリア・ダ・シルヴァ")
         self.short_name: str = data.get("short_name", "リセ")
 
-        # AnswerTalker / PersonaAI が見る用の char_id
-        # （なければ "default" 扱いになってしまうので、id と揃えておく）
-        self.char_id: str = self.id
-
         # system_prompt 内の {PLAYER_NAME} を差し替え
         base_sp = data.get("system_prompt", "")
         self.system_prompt: str = base_sp.replace("{PLAYER_NAME}", player_name)
@@ -57,7 +53,7 @@ class Persona:
         return {}
 
     # --------------------------------------------------
-    # 公開 API（既存）
+    # 公開 API（system prompt / messages）
     # --------------------------------------------------
     def get_system_prompt(self) -> str:
         """Actor / AnswerTalker などから参照される想定のヘルパ。"""
@@ -76,12 +72,9 @@ class Persona:
 
         いまのところシンプルに
           - リセリアの system_prompt
-          - （必要なら）好感度ヒントや追加システム指示
+          - （必要なら）追加システム指示や好感度ヒント
           - プレイヤー発話（user_text）
         だけを詰める。
-
-        conversation_log / world_state は将来拡張用の受け皿として受け取るだけで、
-        現段階では使わない（互換性確保のために引数だけ受けて捨てる）。
         """
         system_parts: List[str] = [self.system_prompt]
 
@@ -104,118 +97,99 @@ class Persona:
         return messages
 
     # --------------------------------------------------
-    # 公開 API（感情プロファイル関連・新規）
+    # 感情プロファイル関連（JSON ベース）
     # --------------------------------------------------
-    def get_emotion_profile(self) -> Dict[str, Any]:
+    def _get_emotion_profiles(self) -> Dict[str, Any]:
         """
-        JSON 内の affection_levels セクションをそのまま返す。
-
-        期待される構造:
-        {
-            "low": {"description": str, "speech_hints": [str, ...]},
-            "mid": {...},
-            "high": {...},
-            "extreme": {...},
-        }
+        elf_riseria_da_silva_ja.json 内の emotion_profiles セクションを返す。
+        ない場合は空 dict。
         """
-        return self.raw.get("affection_levels", {}) or {}
+        return self.raw.get("emotion_profiles", {}) or {}
 
-    def _estimate_stage_code(
-        self,
-        affection_with_doki: float,
-        doki_level: int,
-    ) -> str:
+    def get_affection_label(self, affection_with_doki: float) -> str:
         """
-        affection + doki_level から、low/mid/high/extreme のどれに寄せるかをざっくり決める。
+        affection_with_doki に対応する「好意の解釈」ラベルを JSON から取得する。
+
+        - emotion_profiles.affection_labels: { "0.9": "...", "0.7": "...", ... }
+        - affection_with_doki 以上の閾値のうち最大のものを採用（降順で探索）
         """
-        # ベースは affection のしきい値
-        if affection_with_doki >= 0.80:
-            base = "high"
-        elif affection_with_doki >= 0.55:
-            base = "mid"
-        elif affection_with_doki >= 0.30:
-            base = "low"
-        else:
-            base = "low"
+        profiles = self._get_emotion_profiles()
+        labels = profiles.get("affection_labels", {}) or {}
+        if not labels:
+            return ""
 
-        # doki_level の影響を上乗せ
-        # 0: そのまま
-        # 1: low→mid くらいまで
-        # 2: mid 以上を積極的に
-        # 3: high 以上を強制
-        # 4: extreme 固定
-        order = ["low", "mid", "high", "extreme"]
-        idx = order.index(base)
+        try:
+            thresholds = sorted(
+                (float(k) for k in labels.keys()),
+                reverse=True,
+            )
+        except Exception:
+            # うまくパースできなければ諦める
+            return ""
 
-        if doki_level >= 4:
-            return "extreme"
-        elif doki_level == 3:
-            # 最低でも high まで引き上げ
-            return "high" if idx < 2 else order[min(idx + 1, 3)]
-        elif doki_level == 2:
-            # mid 以上を狙う
-            return "mid" if idx < 1 else order[min(idx + 1, 3)]
-        elif doki_level == 1:
-            # ほんのり上乗せ
-            return order[min(idx + 1, 3)]
-        else:
-            return base
+        for th in thresholds:
+            if affection_with_doki >= th:
+                key = f"{th:.1f}".rstrip("0").rstrip(".")  # "0.9" など
+                if key in labels:
+                    return labels[key]
+                # フォーマットずれに備えて元の str も見る
+                raw_key = str(th)
+                if raw_key in labels:
+                    return labels[raw_key]
+
+        # どの閾値も満たさない場合は、最小のものをフォールバックで使う
+        min_th = min(thresholds)
+        key = f"{min_th:.1f}".rstrip("0").rstrip(".")
+        return labels.get(key, labels.get(str(min_th), ""))
 
     def build_emotion_control_guideline(
         self,
         *,
         affection_with_doki: float,
         doki_level: int,
-        mode_current: str = "normal",
+        mode_current: str,
     ) -> str:
         """
         emotion_prompt_builder から呼ばれる、
-        「この Persona 専用の口調・距離感ガイドライン」を返す。
+        「ドキドキレベルに応じた口調・距離感ガイドライン」の本体。
 
-        - elf_riseria_da_silva_ja.json の affection_levels.*
-          description / speech_hints をベースに組み立てる。
-        - doki_level に応じてステージを補正する。
+        中身は JSON (emotion_profiles) によって完全に制御される。
         """
-        levels = self.get_emotion_profile()
-        stage_code = self._estimate_stage_code(
-            affection_with_doki=affection_with_doki,
-            doki_level=doki_level,
-        )
+        profiles = self._get_emotion_profiles()
+        affection_labels = profiles.get("affection_labels", {}) or {}
+        doki_levels = profiles.get("doki_levels", {}) or {}
+        mode_overrides = profiles.get("mode_overrides", {}) or {}
 
-        stage = levels.get(stage_code, {})
-        description: str = stage.get("description", "")
-        speech_hints: List[str] = stage.get("speech_hints", []) or []
+        # 好意ラベル
+        aff_label = ""
+        if affection_labels:
+            aff_label = self.get_affection_label(affection_with_doki)
+
+        # doki_level ごとの行リスト
+        doki_key = str(int(doki_level))
+        doki_lines: List[str] = doki_levels.get(doki_key, []) or []
+
+        # mode 別の追加ガイドライン
+        mode_lines: List[str] = mode_overrides.get(str(mode_current), []) or []
 
         lines: List[str] = []
-        lines.append("[口調・距離感のガイドライン（リセリア専用）]")
+        lines.append("[リセリア用・口調と距離感ガイドライン]")
 
-        if description:
-            lines.append(f"- 推定ステージ: {stage_code.upper()}  ({description})")
-        else:
-            lines.append(f"- 推定ステージ: {stage_code.upper()}")
+        if aff_label:
+            lines.append(f"- 現在の好意の解釈: {aff_label}")
 
-        if speech_hints:
+        if doki_lines:
+            lines.extend(doki_lines)
+
+        if mode_lines:
             lines.append("")
-            lines.append("【セリフ／振る舞いのヒント】")
-            for i, hint in enumerate(speech_hints, start=1):
-                lines.append(f"{i}) {hint}")
+            lines.append("[モード別ガイドライン]")
+            lines.extend(mode_lines)
 
-        # erotic モード時は、R18に踏み込まない範囲での追加指示だけ足しておく
-        if str(mode_current) == "erotic":
-            lines.append("")
+        if not doki_lines and not mode_lines and not aff_label:
+            # JSON が未設定の場合の最低限フォールバック
             lines.append(
-                "【モード補足（erotic）】"
+                "※ 感情プロファイルが未設定のため、通常時とほぼ同じトーンで話してください。"
             )
-            lines.append(
-                "※ 直接的・露骨な描写には踏み込まず、"
-                "甘いロマンスや少し踏み込んだスキンシップの“匂わせ”に留めてください。"
-            )
-
-        # どのステージでも共通の締め
-        lines.append("")
-        lines.append(
-            "※ いずれの場合も、リセリアとして一貫したコウハイ口調を維持しつつ、"
-            "相手を深く信頼していることがセリフや仕草から自然に伝わるように表現してください。"
-        )
 
         return "\n".join(lines)
