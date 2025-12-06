@@ -14,7 +14,7 @@ from actors.emotion_ai import EmotionAI, EmotionResult
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
-from actors.emotion_prompt_builder import (
+from actors.persona.emotion_prompt_builder import (
     build_emotion_based_system_prompt,
     replace_system_prompt,
 )
