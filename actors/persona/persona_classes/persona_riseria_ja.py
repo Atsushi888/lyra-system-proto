@@ -30,6 +30,10 @@ class Persona:
         self.display_name: str = data.get("display_name", "リセリア・ダ・シルヴァ")
         self.short_name: str = data.get("short_name", "リセ")
 
+        # AnswerTalker / PersonaAI が見る用の char_id
+        # （なければ "default" 扱いになってしまうので、id と揃えておく）
+        self.char_id: str = self.id
+
         # system_prompt 内の {PLAYER_NAME} を差し替え
         base_sp = data.get("system_prompt", "")
         self.system_prompt: str = base_sp.replace("{PLAYER_NAME}", player_name)
@@ -53,7 +57,7 @@ class Persona:
         return {}
 
     # --------------------------------------------------
-    # 公開 API
+    # 公開 API（既存）
     # --------------------------------------------------
     def get_system_prompt(self) -> str:
         """Actor / AnswerTalker などから参照される想定のヘルパ。"""
@@ -98,3 +102,120 @@ class Persona:
             {"role": "user", "content": user_text},
         ]
         return messages
+
+    # --------------------------------------------------
+    # 公開 API（感情プロファイル関連・新規）
+    # --------------------------------------------------
+    def get_emotion_profile(self) -> Dict[str, Any]:
+        """
+        JSON 内の affection_levels セクションをそのまま返す。
+
+        期待される構造:
+        {
+            "low": {"description": str, "speech_hints": [str, ...]},
+            "mid": {...},
+            "high": {...},
+            "extreme": {...},
+        }
+        """
+        return self.raw.get("affection_levels", {}) or {}
+
+    def _estimate_stage_code(
+        self,
+        affection_with_doki: float,
+        doki_level: int,
+    ) -> str:
+        """
+        affection + doki_level から、low/mid/high/extreme のどれに寄せるかをざっくり決める。
+        """
+        # ベースは affection のしきい値
+        if affection_with_doki >= 0.80:
+            base = "high"
+        elif affection_with_doki >= 0.55:
+            base = "mid"
+        elif affection_with_doki >= 0.30:
+            base = "low"
+        else:
+            base = "low"
+
+        # doki_level の影響を上乗せ
+        # 0: そのまま
+        # 1: low→mid くらいまで
+        # 2: mid 以上を積極的に
+        # 3: high 以上を強制
+        # 4: extreme 固定
+        order = ["low", "mid", "high", "extreme"]
+        idx = order.index(base)
+
+        if doki_level >= 4:
+            return "extreme"
+        elif doki_level == 3:
+            # 最低でも high まで引き上げ
+            return "high" if idx < 2 else order[min(idx + 1, 3)]
+        elif doki_level == 2:
+            # mid 以上を狙う
+            return "mid" if idx < 1 else order[min(idx + 1, 3)]
+        elif doki_level == 1:
+            # ほんのり上乗せ
+            return order[min(idx + 1, 3)]
+        else:
+            return base
+
+    def build_emotion_control_guideline(
+        self,
+        *,
+        affection_with_doki: float,
+        doki_level: int,
+        mode_current: str = "normal",
+    ) -> str:
+        """
+        emotion_prompt_builder から呼ばれる、
+        「この Persona 専用の口調・距離感ガイドライン」を返す。
+
+        - elf_riseria_da_silva_ja.json の affection_levels.*
+          description / speech_hints をベースに組み立てる。
+        - doki_level に応じてステージを補正する。
+        """
+        levels = self.get_emotion_profile()
+        stage_code = self._estimate_stage_code(
+            affection_with_doki=affection_with_doki,
+            doki_level=doki_level,
+        )
+
+        stage = levels.get(stage_code, {})
+        description: str = stage.get("description", "")
+        speech_hints: List[str] = stage.get("speech_hints", []) or []
+
+        lines: List[str] = []
+        lines.append("[口調・距離感のガイドライン（リセリア専用）]")
+
+        if description:
+            lines.append(f"- 推定ステージ: {stage_code.upper()}  ({description})")
+        else:
+            lines.append(f"- 推定ステージ: {stage_code.upper()}")
+
+        if speech_hints:
+            lines.append("")
+            lines.append("【セリフ／振る舞いのヒント】")
+            for i, hint in enumerate(speech_hints, start=1):
+                lines.append(f"{i}) {hint}")
+
+        # erotic モード時は、R18に踏み込まない範囲での追加指示だけ足しておく
+        if str(mode_current) == "erotic":
+            lines.append("")
+            lines.append(
+                "【モード補足（erotic）】"
+            )
+            lines.append(
+                "※ 直接的・露骨な描写には踏み込まず、"
+                "甘いロマンスや少し踏み込んだスキンシップの“匂わせ”に留めてください。"
+            )
+
+        # どのステージでも共通の締め
+        lines.append("")
+        lines.append(
+            "※ いずれの場合も、リセリアとして一貫したコウハイ口調を維持しつつ、"
+            "相手を深く信頼していることがセリフや仕草から自然に伝わるように表現してください。"
+        )
+
+        return "\n".join(lines)
