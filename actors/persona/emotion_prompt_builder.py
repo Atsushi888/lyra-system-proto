@@ -27,7 +27,7 @@ def build_emotion_based_system_prompt(
     """
     emotion_override = emotion_override or {}
     world_state = emotion_override.get("world_state") or {}
-    scene_emotion = emotion_override.get("scene_emotion") or {}
+    # scene_emotion = emotion_override.get("scene_emotion") or {}
     emotion = emotion_override.get("emotion") or {}
 
     # affection は doki 補正後を優先
