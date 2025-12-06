@@ -1,9 +1,12 @@
 # actors/models_ai2.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from llm.llm_manager import LLMManager
+
+
+CompletionType = Union[Dict[str, Any], Tuple[Any, ...], str]
 
 
 class ModelsAI2:
@@ -35,6 +38,53 @@ class ModelsAI2:
             self.enabled_models = models
 
     # ---------------------------------------
+    # 内部ヘルパ：LLM からの戻り値を正規化
+    # ---------------------------------------
+    @staticmethod
+    def _normalize_completion(completion: CompletionType) -> Dict[str, Any]:
+        """
+        LLMManager.chat(...) の戻り値形式の揺れを吸収して、
+        text / usage / raw を取り出すためのヘルパ。
+
+        想定パターン:
+        - dict 形式: {"text": "...", "usage": {...}, ...}
+        - tuple 形式: (text, usage_dict?) など
+        - 素の str: "answer text"
+        """
+        text: str = ""
+        usage: Any = None
+        raw: Any = None
+
+        # dict パターン
+        if isinstance(completion, dict):
+            raw = completion
+            text = (
+                completion.get("text")
+                or completion.get("content")
+                or completion.get("message")
+                or ""
+            )
+            usage = completion.get("usage")
+
+        # tuple / list パターン（例: (text, usage)）
+        elif isinstance(completion, (tuple, list)):
+            raw = {"raw_tuple": completion}
+
+            if len(completion) >= 1:
+                first = completion[0]
+                text = str(first) if first is not None else ""
+
+            if len(completion) >= 2:
+                usage = completion[1]
+
+        # それ以外（str など）はそのまま文字列化
+        else:
+            raw = {"raw": completion}
+            text = "" if completion is None else str(completion)
+
+        return {"text": text, "usage": usage, "raw": raw}
+
+    # ---------------------------------------
     # メイン：全モデルから回答を集める
     # ---------------------------------------
     def collect(
@@ -64,40 +114,32 @@ class ModelsAI2:
             props = self.model_props.get(model_name, {})
 
             try:
-                # 新 LLMManager: chat_completion(model=..., messages=...)
-                # 旧 LLMManager: chat(model=..., messages=...)
-                defaults = props.get("defaults", {}) or {}
+                # LLMManager.chat(...) への呼び出し
+                # ※ LLMManager 側の引数名は "model" を想定
+                completion: CompletionType = self.llm_manager.chat(
+                    model=model_name,
+                    messages=messages,
+                    **props.get("defaults", {}),
+                )
 
-                if hasattr(self.llm_manager, "chat_completion"):
-                    completion = self.llm_manager.chat_completion(
-                        model=model_name,
-                        messages=messages,
-                        **defaults,
-                    )
-                else:
-                    # 後方互換用フォールバック
-                    completion = self.llm_manager.chat(
-                        model=model_name,
-                        messages=messages,
-                        **defaults,
-                    )
-
-                # completion は dict を想定（llm_manager 側の仕様に準拠）
-                text = completion.get("text") or completion.get("content") or ""
-                usage = completion.get("usage")
-                error = None
+                norm = self._normalize_completion(completion)
+                text = norm["text"]
+                usage = norm["usage"]
+                raw = norm["raw"]
 
                 results[model_name] = {
                     "status": "ok",
                     "text": text,
-                    "raw": completion,
+                    "raw": raw,
                     "usage": usage,
-                    "error": error,
+                    "error": None,
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
                 }
 
             except Exception as e:
+                # ここで例外を握りつぶしておくことで、
+                # 他モデルに影響させずにエラー内容だけ記録する。
                 results[model_name] = {
                     "status": "error",
                     "text": "",
