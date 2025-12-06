@@ -81,10 +81,8 @@ class AnswerTalker:
         # ★ シーン/ワールド情報用のスロットも確保
         llm_meta.setdefault("world_state", {})
         llm_meta.setdefault("scene_emotion", {})
-
-        # system_prompt_used / messages_used もここで確保しておく
+        llm_meta.setdefault("emotion_override", {})
         llm_meta.setdefault("system_prompt_used", "")
-        llm_meta.setdefault("messages_used", [])
 
         # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
         if "composer_style_hint" not in llm_meta:
@@ -179,6 +177,147 @@ class AnswerTalker:
         self.state["llm_meta"] = self.llm_meta
 
     # ---------------------------------------
+    # system_prompt に emotion_override を反映
+    # ---------------------------------------
+    def _inject_emotion_into_system_prompt(
+        self,
+        messages: List[Dict[str, str]],
+        mode_current: str,
+        emotion_override: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        """
+        - 既存 messages から system prompt を探す
+        - Persona 情報 + emotion_override で上書きした system_prompt を生成
+        - messages の先頭 system を差し替え（なければ先頭に追加）
+        - 生成した system_prompt を llm_meta["system_prompt_used"] に保存
+        """
+
+        if emotion_override is None:
+            emotion_override = {}
+
+        # 既存 system prompt を取得
+        base_system_prompt = ""
+        system_index = None
+        for idx, m in enumerate(messages):
+            if m.get("role") == "system":
+                base_system_prompt = m.get("content", "") or ""
+                system_index = idx
+                break
+
+        # Persona 側からデフォルトの system_prompt が取れるなら、そちらも候補に
+        if not base_system_prompt and hasattr(self.persona, "get_system_prompt"):
+            try:
+                base_system_prompt = str(self.persona.get_system_prompt())
+            except Exception:
+                pass
+
+        # なければ空からでも良い
+        world_state = emotion_override.get("world_state") or {}
+        scene_emotion = emotion_override.get("scene_emotion") or {}
+        emotion = emotion_override.get("emotion") or {}
+
+        # affection は doki 補正後を優先
+        affection = float(emotion.get("affection_with_doki", emotion.get("affection", 0.0)))
+        doki_power = int(emotion.get("doki_power", 0) or 0)
+        doki_level = int(emotion.get("doki_level", 0) or 0)
+
+        # ザックリとしたラベル
+        if affection >= 0.9:
+            aff_label = "強い恋心（ほぼ告白寸前のレベル）"
+        elif affection >= 0.7:
+            aff_label = "はっきりとした好意（明らかに特別扱いしているレベル）"
+        elif affection >= 0.4:
+            aff_label = "穏やかな好意（友好的〜少し気になっている程度）"
+        else:
+            aff_label = "まだ大きな感情変化はない（普通〜やや好意寄り）"
+
+        # ドキドキの説明
+        if doki_level >= 3:
+            doki_label = "鼓動が速く、視線や距離感に敏感になっている高揚状態"
+        elif doki_level == 2:
+            doki_label = "少し緊張しつつも、相手を意識してしまう状態"
+        elif doki_level == 1:
+            doki_label = "心のどこかで相手を気にしている軽いときめき"
+        else:
+            doki_label = "特別な高鳴りはないが、落ち着いた会話ができる状態"
+
+        # 場所と時間はあれば一応説明に含める
+        loc_player = world_state.get("locations", {}).get("player")
+        time_slot = world_state.get("time", {}).get("slot")
+        time_str = world_state.get("time", {}).get("time_str")
+
+        location_hint_lines: List[str] = []
+        if loc_player:
+            location_hint_lines.append(f"- 現在の舞台は「{loc_player}」です。")
+        if time_slot or time_str:
+            ts = f"{time_slot} / {time_str}" if time_slot and time_str else (time_slot or time_str)
+            location_hint_lines.append(f"- 時間帯は「{ts}」です。")
+
+        location_hint = "\n".join(location_hint_lines)
+
+        # override 指示文
+        override_lines = [
+            "[Lyra-System Emotion Override 指示]",
+            f"- 現在の感情モード: {mode_current}",
+            f"- 好感レベル (affection_with_doki): {affection:.2f}",
+            f"  → 解釈: {aff_label}",
+            f"- 一時的なドキドキ状態 (doki_power: {doki_power}, doki_level: {doki_level})",
+            f"  → 解釈: {doki_label}",
+        ]
+        if location_hint:
+            override_lines.append(location_hint)
+
+        override_lines.append(
+            "- 上記の好意・ドキドキ状態をセリフのトーン・距離感・表情描写に必ず反映してください。"
+        )
+        override_lines.append(
+            "- ただしキャラクター設定と世界観から逸脱しない範囲で、"
+            "『今はかなりデレ寄り』であることが分かるように、"
+            "行間や仕草・言い回しでしっかり表現してください。"
+        )
+
+        # mode が erotic の場合は、表現方針だけ少し追記（R18には踏み込まない）
+        if str(mode_current) == "erotic":
+            override_lines.append(
+                "- mode=erotic の場合も、直接的な描写は避け、"
+                "甘いロマンス寄りの表現や、少し大胆なスキンシップの匂わせまでに留めてください。"
+            )
+
+        override_block = "\n".join(override_lines)
+
+        if base_system_prompt:
+            new_system_prompt = base_system_prompt.rstrip() + "\n\n" + override_block + "\n"
+        else:
+            new_system_prompt = override_block + "\n"
+
+        # llm_meta に保存（AnswerTalkerView でそのまま表示される想定）
+        self.llm_meta["system_prompt_used"] = new_system_prompt
+
+        # messages の先頭 system を差し替え / 追加
+        new_messages = list(messages)
+        if system_index is not None:
+            new_messages[system_index] = {
+                "role": "system",
+                "content": new_system_prompt,
+            }
+        else:
+            new_messages.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": new_system_prompt,
+                },
+            )
+
+        if LYRA_DEBUG:
+            st.write(
+                "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
+                f"system_index={system_index}, len(new_system_prompt)={len(new_system_prompt)}"
+            )
+
+        return new_messages
+
+    # ---------------------------------------
     # メインパイプライン
     # ---------------------------------------
     def speak(
@@ -203,26 +342,6 @@ class AnswerTalker:
                 f"[DEBUG:AnswerTalker.speak] len(messages)={len(messages)}, "
                 f"user_text={repr(user_text)[:120]}, judge_mode={judge_mode}"
             )
-
-        # 0.2) このターンで実際に使う system_prompt / messages を記録
-        try:
-            system_msg = ""
-            for m in messages:
-                if m.get("role") == "system":
-                    system_msg = str(m.get("content", "")) or ""
-                    break
-            self.llm_meta["system_prompt_used"] = system_msg
-            # messages 全体もそのまま持っておく（AnswerTalkerView 用）
-            self.llm_meta["messages_used"] = list(messages)
-
-            if LYRA_DEBUG:
-                st.write(
-                    "[DEBUG:AnswerTalker.speak] system_prompt_used preview =",
-                    repr(system_msg[:200]),
-                )
-        except Exception as e:
-            self.llm_meta["system_prompt_used"] = ""
-            self.llm_meta["system_prompt_error"] = str(e)
 
         # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta へ
         try:
@@ -282,9 +401,16 @@ class AnswerTalker:
                 emotion_override,
             )
 
+        # 1.6) system_prompt に emotion_override を織り込む
+        messages_for_models = self._inject_emotion_into_system_prompt(
+            messages=messages,
+            mode_current=mode_current,
+            emotion_override=emotion_override,
+        )
+
         # 2) ModelsAI.collect
         self.run_models(
-            messages,
+            messages_for_models,
             mode_current=mode_current,
             emotion_override=emotion_override,
         )
@@ -392,7 +518,7 @@ class AnswerTalker:
         try:
             round_val = int(self.state.get("round_number", 0))
             mem_update = self.memory_ai.update_from_turn(
-                messages=messages,
+                messages=messages_for_models,
                 final_reply=final_text,
                 round_id=round_val,
             )
