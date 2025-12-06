@@ -1,64 +1,76 @@
 # actors/persona/affection_prompt_utils.py
 from __future__ import annotations
 
-from typing import Any, Optional
-
-from actors.emotion_ai import EmotionResult
+from typing import Any, Mapping
 
 
-def _clamp01(x: float) -> float:
-    if x < 0.0:
+def _extract_affection_score(emotion: Any) -> float:
+    """
+    EmotionResult / dict / それ以外、どれが来ても
+    0.0〜1.0 の affection スコアを取り出すユーティリティ。
+    """
+    if emotion is None:
         return 0.0
-    if x > 1.0:
-        return 1.0
-    return x
+
+    # dict っぽいもの
+    if isinstance(emotion, Mapping):
+        val = (
+            emotion.get("affection_with_doki")
+            or emotion.get("affection")
+            or 0.0
+        )
+        try:
+            return float(val)
+        except Exception:
+            return 0.0
+
+    # オブジェクト（EmotionResult を想定したダックタイピング）
+    try:
+        if hasattr(emotion, "affection_with_doki"):
+            val = getattr(emotion, "affection_with_doki")
+        else:
+            val = getattr(emotion, "affection", 0.0)
+        return float(val or 0.0)
+    except Exception:
+        return 0.0
 
 
 def build_system_prompt_with_affection(
     persona: Any,
     base_system_prompt: str,
-    emotion: Optional[EmotionResult],
+    emotion: Any,
     doki_power: float = 0.0,
 ) -> str:
     """
-    Persona + EmotionResult + doki_power から、
+    Persona + Emotion + doki_power から、
     「好感度レベルに応じたデレ指示入り system_prompt」を組み立てる。
 
     - persona:
         - リセリアの Persona インスタンス想定だが、
-          `build_affection_hint_from_score(score: float)` を
-          実装していれば他キャラでも利用可能。
+          build_affection_hint_from_score(score: float) を持っていれば他キャラでもよい。
     - base_system_prompt:
-        - persona 由来の素の system_prompt。
+        - persona.get_system_prompt() で取得したベース。
     - emotion:
-        - EmotionAI.analyze() の結果、または dokipower デバッグから再構成した EmotionResult。
+        - EmotionAI / MixerAI 由来の emotion dict または EmotionResult。
     - doki_power:
-        - dokipower_control などから与えられる追加補正。
-          （0〜100 を想定し、ここでは 0〜1 に正規化して加算）
+        - -1.0〜+1.0 程度の補正値（0.0 なら無視）。
 
     返り値:
-        - LLM に渡す最終的な system_prompt 文字列。
+        - LLM に渡す最終的な system_prompt。
     """
+    # ベースだけは必ず適用
     system_prompt = base_system_prompt or ""
 
-    if emotion is None:
-        # 感情情報がなければベースだけ返す
-        return system_prompt
+    # affection スコア抽出（0.0〜1.0 にクランプ）
+    base_aff = _extract_affection_score(emotion)
 
-    # 0. ベース好感度
-    base_aff = float(getattr(emotion, "affection", 0.0) or 0.0)
+    score = base_aff + float(doki_power or 0.0)
+    if score < 0.0:
+        score = 0.0
+    if score > 1.0:
+        score = 1.0
 
-    # 1. ドキドキ💓パワーを 0.0〜1.0 にざっくり正規化して加算
-    try:
-        dp_raw = float(doki_power)
-    except Exception:
-        dp_raw = 0.0
-
-    # 0〜100 想定で 100 → +0.5 くらいのゲタをイメージ
-    dp = (dp_raw / 100.0) * 0.5
-    score = _clamp01(base_aff + dp)
-
-    # 2. Persona 側がヒント生成ヘルパを持っていれば使う
+    # Persona 側がヒント生成ヘルパを持っていれば使う
     hint = ""
     if hasattr(persona, "build_affection_hint_from_score"):
         try:
@@ -66,8 +78,7 @@ def build_system_prompt_with_affection(
         except Exception:
             hint = ""
 
-    # 3. ヒントがあれば末尾に追記
     if hint:
-        system_prompt = system_prompt.rstrip() + "\n\n" + hint.strip()
+        system_prompt = system_prompt + "\n\n" + hint
 
     return system_prompt
