@@ -14,10 +14,6 @@ from actors.emotion_ai import EmotionAI, EmotionResult
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
-from actors.persona.emotion_prompt_builder import (
-    build_emotion_based_system_prompt,
-    replace_system_prompt,
-)
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -46,7 +42,11 @@ class AnswerTalker:
         state: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.persona = persona
-        persona_id = getattr(self.persona, "char_id", "default")
+
+        # ★ char_id が無ければ id にフォールバック
+        persona_id = getattr(self.persona, "char_id", None) or getattr(
+            self.persona, "id", "default"
+        )
 
         # Streamlit あり／なし両対応の state
         env_debug = os.getenv("LYRA_DEBUG", "")
@@ -278,25 +278,55 @@ class AnswerTalker:
             except Exception:
                 base_system_prompt = ""
 
-        # ★ Persona を渡して、JSON ベースのガイドラインも全部取り込む
-        system_prompt_used = build_emotion_based_system_prompt(
-            persona=self.persona,
-            base_system_prompt=base_system_prompt,
-            emotion_override=emotion_override,
-            mode_current=mode_current,
-        )
-        self.llm_meta["system_prompt_used"] = system_prompt_used
+        # ★ PersonaBase 側のメソッドを優先して使う
+        messages_for_models: List[Dict[str, str]]
 
-        messages_for_models = replace_system_prompt(
-            messages=messages,
-            new_system_prompt=system_prompt_used,
-        )
+        if hasattr(self.persona, "build_emotion_based_system_prompt"):
+            try:
+                system_prompt_used = self.persona.build_emotion_based_system_prompt(
+                    base_system_prompt=base_system_prompt,
+                    emotion_override=emotion_override,
+                    mode_current=mode_current,
+                )
+                self.llm_meta["system_prompt_used"] = system_prompt_used
 
-        if LYRA_DEBUG:
-            st.write(
-                "[DEBUG:AnswerTalker.speak] system_prompt_used length =",
-                len(system_prompt_used),
-            )
+                if hasattr(self.persona, "replace_system_prompt"):
+                    messages_for_models = self.persona.replace_system_prompt(
+                        messages=messages,
+                        new_system_prompt=system_prompt_used,
+                    )
+                else:
+                    # replace_system_prompt が無い場合のフォールバック
+                    # （先頭 system を差し替え or 挿入）
+                    new_messages = list(messages)
+                    system_index = None
+                    for idx, mm in enumerate(new_messages):
+                        if mm.get("role") == "system":
+                            system_index = idx
+                            break
+                    system_message = {
+                        "role": "system",
+                        "content": system_prompt_used,
+                    }
+                    if system_index is not None:
+                        new_messages[system_index] = system_message
+                    else:
+                        new_messages.insert(0, system_message)
+                    messages_for_models = new_messages
+
+                if LYRA_DEBUG:
+                    st.write(
+                        "[DEBUG:AnswerTalker.speak] system_prompt_used length =",
+                        len(system_prompt_used),
+                    )
+            except Exception as e:
+                # 失敗した場合は元 messages をそのまま使う
+                self.llm_meta["system_prompt_used_error"] = str(e)
+                messages_for_models = messages
+        else:
+            # Persona がまだ新 API に対応していない場合
+            self.llm_meta["system_prompt_used"] = base_system_prompt
+            messages_for_models = messages
 
         # 2) ModelsAI.collect
         self.run_models(
@@ -419,7 +449,9 @@ class AnswerTalker:
                 "records": [],
             }
             if LYRA_DEBUG:
-                st.write("[DEBUG:AnswerTalker.speak] MemoryAI.update_from_turn error:", e)
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] MemoryAI.update_from_turn error:", e
+                )
 
         self.llm_meta["memory_update"] = mem_update
 
