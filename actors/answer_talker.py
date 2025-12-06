@@ -14,11 +14,11 @@ from actors.emotion_ai import EmotionAI, EmotionResult
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
-from actors.persona.affection_prompt_utils import (
-    build_system_prompt_with_affection,
-)
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
+
+# 環境変数でデバッグモードを切り替え
+LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
 
 
 class AnswerTalker:
@@ -81,10 +81,6 @@ class AnswerTalker:
         # ★ シーン/ワールド情報用のスロットも確保
         llm_meta.setdefault("world_state", {})
         llm_meta.setdefault("scene_emotion", {})
-
-        # ★ affection / ドキドキ反映後 system_prompt と emotion_override のスロット
-        llm_meta.setdefault("system_prompt_used", "")
-        llm_meta.setdefault("emotion_override", {})
 
         # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
         if "composer_style_hint" not in llm_meta:
@@ -160,7 +156,15 @@ class AnswerTalker:
         emotion_override: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not messages:
+            if LYRA_DEBUG:
+                st.write("[DEBUG:AnswerTalker.run_models] messages is empty. skip.")
             return
+
+        if LYRA_DEBUG:
+            st.write(
+                f"[DEBUG:AnswerTalker.run_models] start: "
+                f"len(messages)={len(messages)}, mode_current={mode_current}"
+            )
 
         results = self.models_ai.collect(
             messages,
@@ -169,59 +173,6 @@ class AnswerTalker:
         )
         self.llm_meta["models"] = results
         self.state["llm_meta"] = self.llm_meta
-
-    # ---------------------------------------
-    # 内部ユーティリティ：Persona + Emotion から system_prompt を組み立て
-    # ---------------------------------------
-    def _build_system_prompt_for_turn(
-        self,
-        emotion_override: Optional[Dict[str, Any]],
-    ) -> str:
-        """
-        Persona のベース system_prompt に、
-        affection / ドキドキ💓 情報からのデレ指示をマージする。
-        """
-
-        # 1) Persona ベースの system_prompt
-        base_prompt = ""
-        if hasattr(self.persona, "get_system_prompt"):
-            try:
-                base_prompt = str(self.persona.get_system_prompt())
-            except Exception:
-                base_prompt = ""
-        elif hasattr(self.persona, "system_prompt"):
-            try:
-                base_prompt = str(self.persona.system_prompt)
-            except Exception:
-                base_prompt = ""
-        else:
-            base_prompt = ""
-
-        # 2) 今ターンで使う emotion 情報を抽出（MixerAI → emotion_override）
-        emo_dict: Optional[Dict[str, Any]] = None
-        doki_power_scaled = 0.0
-
-        if isinstance(emotion_override, dict):
-            emo_part = emotion_override.get("emotion")
-            if isinstance(emo_part, dict):
-                emo_dict = emo_part
-
-                # doki_power は 0〜100 で来る想定なので -1.0〜+1.0 にスケール
-                try:
-                    raw_dp = float(emo_part.get("doki_power", 0.0))
-                    doki_power_scaled = raw_dp / 100.0
-                except Exception:
-                    doki_power_scaled = 0.0
-
-        # 3) affection_prompt_utils でデレ指示を合成
-        final_prompt = build_system_prompt_with_affection(
-            persona=self.persona,
-            base_system_prompt=base_prompt,
-            emotion=emo_dict,
-            doki_power=doki_power_scaled,
-        )
-
-        return final_prompt or base_prompt
 
     # ---------------------------------------
     # メインパイプライン
@@ -234,7 +185,20 @@ class AnswerTalker:
     ) -> str:
 
         if not messages:
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] messages is empty → 空文字を返します。"
+                )
             return ""
+
+        if LYRA_DEBUG:
+            st.write(
+                "[DEBUG:AnswerTalker.speak] ========= TURN START ========="
+            )
+            st.write(
+                f"[DEBUG:AnswerTalker.speak] len(messages)={len(messages)}, "
+                f"user_text={repr(user_text)[:120]}, judge_mode={judge_mode}"
+            )
 
         # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta へ
         try:
@@ -261,6 +225,9 @@ class AnswerTalker:
         self.llm_meta["judge_mode"] = mode_current
         self.state["judge_mode"] = mode_current
 
+        if LYRA_DEBUG:
+            st.write(f"[DEBUG:AnswerTalker.speak] judge_mode(current) = {mode_current}")
+
         # 1) MemoryAI.build_memory_context
         try:
             mem_ctx = self.memory_ai.build_memory_context(user_query=user_text or "")
@@ -285,30 +252,15 @@ class AnswerTalker:
         emotion_override = self.mixer_ai.build_emotion_override()
         self.llm_meta["emotion_override"] = emotion_override or {}
 
-        # 1.6) このターンで実際に使う system_prompt を組み立てて保存
-        system_prompt_used = self._build_system_prompt_for_turn(
-            emotion_override=emotion_override
-        )
-        self.llm_meta["system_prompt_used"] = system_prompt_used
-
-        # 1.7) messages の先頭 system を差し替えたバージョンを作成
-        messages_for_models: List[Dict[str, str]]
-        if (
-            messages
-            and isinstance(messages[0], dict)
-            and messages[0].get("role") == "system"
-        ):
-            first = dict(messages[0])
-            first["content"] = system_prompt_used
-            messages_for_models = [first] + list(messages[1:])
-        else:
-            # 念のため、system が無ければ prepend する
-            messages_for_models = [{"role": "system", "content": system_prompt_used}]
-            messages_for_models.extend(messages)
+        if LYRA_DEBUG:
+            st.write(
+                "[DEBUG:AnswerTalker.speak] emotion_override =",
+                emotion_override,
+            )
 
         # 2) ModelsAI.collect
         self.run_models(
-            messages_for_models,
+            messages,
             mode_current=mode_current,
             emotion_override=emotion_override,
         )
@@ -326,7 +278,17 @@ class AnswerTalker:
             }
         self.llm_meta["judge"] = judge_result
 
-        # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定したいとき用）
+        if LYRA_DEBUG:
+            st.write(
+                "[DEBUG:AnswerTalker.speak] judge_result.status =",
+                judge_result.get("status"),
+                ", chosen_model =",
+                judge_result.get("chosen_model"),
+                ", len(chosen_text) =",
+                len(judge_result.get("chosen_text") or ""),
+            )
+
+        # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定も可）
         # self.llm_meta["dev_force_model"] = "gemini"
 
         # 4) ComposerAI
@@ -343,6 +305,18 @@ class AnswerTalker:
             }
         self.llm_meta["composer"] = composed
 
+        if LYRA_DEBUG:
+            st.write(
+                "[DEBUG:AnswerTalker.speak] composer.status =",
+                composed.get("status"),
+                ", mode =",
+                composed.get("mode"),
+                ", source_model =",
+                composed.get("source_model"),
+                ", len(text) =",
+                len(composed.get("text") or ""),
+            )
+
         # 5) EmotionAI.analyze + decide_judge_mode
         try:
             emotion_res: EmotionResult = self.emotion_ai.analyze(
@@ -356,17 +330,45 @@ class AnswerTalker:
             self.llm_meta["judge_mode_next"] = next_mode
             self.state["judge_mode"] = next_mode
 
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] EmotionResult.affection =",
+                    emotion_res.affection,
+                    ", with_doki =",
+                    getattr(emotion_res, "affection_with_doki", emotion_res.affection),
+                    ", doki_power =",
+                    getattr(emotion_res, "doki_power", None),
+                    ", doki_level =",
+                    getattr(emotion_res, "doki_level", None),
+                )
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] judge_mode_next =",
+                    next_mode,
+                )
+
         except Exception as e:
             self.llm_meta["emotion_error"] = str(e)
+            if LYRA_DEBUG:
+                st.write("[DEBUG:AnswerTalker.speak] EmotionAI error:", str(e))
 
         # 6) final text
         final_text = composed.get("text") or judge_result.get("chosen_text") or ""
+
+        if LYRA_DEBUG:
+            st.write(
+                "[DEBUG:AnswerTalker.speak] final_text length =",
+                len(final_text),
+            )
+            st.write(
+                "[DEBUG:AnswerTalker.speak] final_text preview =",
+                repr(final_text[:200]),
+            )
 
         # 7) MemoryAI.update_from_turn
         try:
             round_val = int(self.state.get("round_number", 0))
             mem_update = self.memory_ai.update_from_turn(
-                messages=messages,  # ← 元のログでOK
+                messages=messages,
                 final_reply=final_text,
                 round_id=round_val,
             )
@@ -376,6 +378,9 @@ class AnswerTalker:
                 "error": str(e),
                 "records": [],
             }
+            if LYRA_DEBUG:
+                st.write("[DEBUG:AnswerTalker.speak] MemoryAI.update_from_turn error:", e)
+
         self.llm_meta["memory_update"] = mem_update
 
         # 7.5) EmotionAI.update_long_term
@@ -395,8 +400,16 @@ class AnswerTalker:
                 self.llm_meta["emotion_long_term"] = lt_state.to_dict()
         except Exception as e:
             self.llm_meta["emotion_long_term_error"] = str(e)
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] EmotionAI.update_long_term error:",
+                    e,
+                )
 
         # 8) 保存
         self.state["llm_meta"] = self.llm_meta
+
+        if LYRA_DEBUG:
+            st.write("[DEBUG:AnswerTalker.speak] ========= TURN END =========")
 
         return final_text
