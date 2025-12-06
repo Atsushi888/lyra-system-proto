@@ -27,7 +27,7 @@ def build_emotion_based_system_prompt(
     """
     emotion_override = emotion_override or {}
     world_state = emotion_override.get("world_state") or {}
-    # scene_emotion = emotion_override.get("scene_emotion") or {}
+    scene_emotion = emotion_override.get("scene_emotion") or {}
     emotion = emotion_override.get("emotion") or {}
 
     # affection は doki 補正後を優先
@@ -39,18 +39,6 @@ def build_emotion_based_system_prompt(
 
     # zone は現状はプレースホルダ（将来チューニング用）
     zone = "auto"
-
-    # doki_level 0–4 をざっくり言語化（メタ表示用）
-    if doki_level >= 4:
-        rel_stage = "エクストリーム：結婚を前提にベタ惚れしているレベル。未来を強く意識している。"
-    elif doki_level == 3:
-        rel_stage = "ディープ：強い信頼と恋情が混ざり合い、人目をあまり気にせず甘えたりできる段階。"
-    elif doki_level == 2:
-        rel_stage = "ミドル：付き合い始めのような甘い関係。お互いに好意を自覚している。"
-    elif doki_level == 1:
-        rel_stage = "ライト：ほのかな恋心。まだ自分の気持ちを探っている段階。"
-    else:
-        rel_stage = "フラット：恋愛感情としてはまだ芽生え始め〜穏やかな友好的関係。"
 
     # world_state から舞台情報を抽出（あれば）
     loc_player = (world_state.get("locations") or {}).get("player")
@@ -80,7 +68,6 @@ def build_emotion_based_system_prompt(
                 mode_current=mode_current,
             )
         except Exception:
-            # persona 側で何かあっても落とさずデフォルトへ
             guideline = ""
 
     if not guideline:
@@ -89,6 +76,14 @@ def build_emotion_based_system_prompt(
             doki_level=doki_level,
             mode_current=mode_current,
         )
+
+    # 好意ラベル（あれば Persona からもらう）
+    affection_label = ""
+    if hasattr(persona, "get_affection_label"):
+        try:
+            affection_label = persona.get_affection_label(affection)
+        except Exception:
+            affection_label = ""
 
     # -----------------------------
     # ヘッダ本体（メタ情報 + ガイドライン）
@@ -100,7 +95,9 @@ def build_emotion_based_system_prompt(
         f"- 実効好感度 (affection_with_doki): {affection:.2f} "
         f"(zone={zone}, doki_level={doki_level}, doki_power={doki_power})"
     )
-    header_lines.append(f"- 関係ステージ: {rel_stage}")
+    if affection_label:
+        header_lines.append(f"- 好意の解釈: {affection_label}")
+
     if location_lines:
         header_lines.extend(location_lines)
 
