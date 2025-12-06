@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import json
 
 from llm.llm_manager import LLMManager
-from actors.emotion_modes.context import JudgeSignal, get_default_selectors
+from actors.emotion.emotion_modes.context import JudgeSignal, get_default_selectors
 
 
 # ==============================
