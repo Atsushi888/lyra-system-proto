@@ -7,7 +7,7 @@ from .base_selector import BaseModeSelector
 
 from typing import Dict, Any, Tuple
 
-from actors.emotion_modes.judge_types import (
+from .judge_types import (
     BaseJudgeStrategy,
     JudgeCandidate,
     JudgeContext,
