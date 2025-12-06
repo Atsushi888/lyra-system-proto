@@ -22,7 +22,7 @@ def _get_state() -> Dict[str, Any]:
             "affection": 0.5,
             "arousal": 0.3,
             "doki_power": 0.0,
-            "doki_level": 0,
+            "doki_level": 0,  # 0〜4
         }
     return st.session_state[SESSION_KEY]
 
@@ -88,19 +88,29 @@ class DokiPowerController:
         )
 
         # しきい値から自動レベル判定（手動で上書き可：デバッグ用途）
+        # 0 … ほぼフラット
+        # 1 … ちょっとトキメキ
+        # 2 … かなり意識してる
+        # 3 … ゾッコン
+        # 4 … エクストリーム（結婚前提レベル）
         auto_level = 0
-        if doki_power >= 80:
+        if doki_power >= 85:
+            auto_level = 4
+        elif doki_power >= 60:
             auto_level = 3
-        elif doki_power >= 50:
+        elif doki_power >= 40:
             auto_level = 2
-        elif doki_power >= 25:
+        elif doki_power >= 20:
             auto_level = 1
 
-        st.caption(f"自動レベル判定（暫定）: {auto_level}（25/50/80 で 1/2/3）")
+        st.caption(
+            f"自動レベル判定（暫定）: {auto_level} "
+            "（20/40/60/85 付近で 1/2/3/4）"
+        )
 
         doki_level = st.slider(
-            "doki_level（段階インデックス・手動上書き可）",
-            0, 3,
+            "doki_level（0〜4：段階インデックス・手動上書き可）",
+            0, 4,
             int(state.get("doki_level", auto_level)),
         )
 
