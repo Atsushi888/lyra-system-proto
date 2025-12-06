@@ -377,35 +377,158 @@ class AnswerTalker:
             except Exception:
                 pass
 
-        # 感情ヘッダを組み立て
-        emotion_header = self._build_emotion_header(
-            mode_current=mode_current,
-            emotion_override=emotion_override,
+        world_state = emotion_override.get("world_state") or {}
+        scene_emotion = emotion_override.get("scene_emotion") or {}
+        emotion = emotion_override.get("emotion") or {}
+
+        # affection は doki 補正後を優先
+        affection = float(
+            emotion.get("affection_with_doki", emotion.get("affection", 0.0))
         )
+        doki_power = int(emotion.get("doki_power", 0) or 0)
+        doki_level = int(emotion.get("doki_level", 0) or 0)
+
+        # ===== 好感度ラベル =====
+        if affection >= 0.9:
+            aff_label = "エクストリーム：結婚を前提にベタ惚れしているレベル。未来を強く意識している。"
+        elif affection >= 0.7:
+            aff_label = "はっきりとした恋愛感情。周囲からも特別な関係だと分かるレベル。"
+        elif affection >= 0.4:
+            aff_label = "穏やかな好意（友好的〜少し気になっている程度）。"
+        else:
+            aff_label = "まだ大きな感情変化はない（普通〜やや好意寄り）。"
+
+        # ===== ドキドキレベル別のニュアンス =====
+        if doki_level >= 4:
+            doki_label = (
+                "ドキドキレベル=4（エクストリーム）：相手を将来の伴侶候補として強く意識しており、"
+                "距離が近づくと胸が高鳴って落ち着かなくなる状態。"
+            )
+        elif doki_level == 3:
+            doki_label = (
+                "ドキドキレベル=3：本人も自覚している明確な恋愛感情があり、"
+                "人前でも距離の近さやスキンシップをあまり隠さなくなる状態。"
+            )
+        elif doki_level == 2:
+            doki_label = (
+                "ドキドキレベル=2：付き合い始めのように、"
+                "相手を強く意識してしまい、ふとした仕草や言葉に胸が高鳴る状態。"
+            )
+        elif doki_level == 1:
+            doki_label = (
+                "ドキドキレベル=1：まだ素直には認めていないが、"
+                "心のどこかで相手を意識してしまう軽いときめき状態。"
+            )
+        else:
+            doki_label = "ドキドキレベル=0：特別な高鳴りはなく、落ち着いた会話ができる状態。"
+
+        # ===== 場所・時間ヒント =====
+        loc_player = world_state.get("locations", {}).get("player")
+        time_slot = world_state.get("time", {}).get("slot")
+        time_str = world_state.get("time", {}).get("time_str")
+
+        location_hint_lines: List[str] = []
+        if loc_player:
+            location_hint_lines.append(f"- 現在の舞台は「{loc_player}」。")
+        if time_slot or time_str:
+            ts = (
+                f"{time_slot} / {time_str}"
+                if time_slot and time_str
+                else (time_slot or time_str)
+            )
+            location_hint_lines.append(f"- 時間帯は「{ts}」。")
+
+        location_hint = "\n".join(location_hint_lines)
+
+        # ===== doki_level に応じた「最低ライン」の指示 =====
+        extra_tone_lines: List[str] = []
+
+        if doki_level >= 4:
+            extra_tone_lines.extend(
+                [
+                    "1) 結婚を前提にした深い信頼と愛情を前提として、将来への期待がにじむトーンで話してください。",
+                    "2) セリフの中に必ず、将来や一緒に過ごす未来を連想させる表現を1つ以上含めてください。",
+                    "   例）『ずっとそばにいたいって、本気で思っちゃいます』",
+                    "3) 手を握る・身体を寄せるなど、穏やかなスキンシップを自然に匂わせる描写を入れてください。",
+                ]
+            )
+        elif doki_level == 3:
+            extra_tone_lines.extend(
+                [
+                    "1) すでに両想いであることを前提に、相手を“特別な人”として扱うトーンで話してください。",
+                    "2) セリフの中に必ず、はっきりした好意や独占欲が伝わる表現を1つ以上含めてください。",
+                    "   例）『アツシ先輩の前だと、つい甘えたくなっちゃいます』",
+                    "3) 距離の近さ（物理的・心理的）が分かるような描写を1つ以上含めてください。",
+                ]
+            )
+        elif doki_level == 2:
+            extra_tone_lines.extend(
+                [
+                    "1) 付き合い始めのように、嬉しさと少しの照れが混ざったトーンで話してください。",
+                    "2) セリフのどこかで、相手を意識してドキドキしていることが伝わる一文を必ず入れてください。",
+                ]
+            )
+        elif doki_level == 1:
+            extra_tone_lines.extend(
+                [
+                    "1) まだ関係は友達寄りだが、心のどこかで意識していることが行間から分かるようにしてください。",
+                ]
+            )
+        else:
+            # level 0 は特に強制しない
+            pass
+
+        # ===== 最終的な Override ブロック =====
+        override_lines = [
+            "[感情・関係性プロファイル]",
+            f"- 実効好感度（affection_with_doki）: {affection:.2f} (zone={emotion.get('zone','auto')}, doki_level={doki_level})",
+            f"- 関係ステータス: {aff_label}",
+            f"- ドキドキ状態: {doki_label}",
+        ]
+
+        if location_hint:
+            override_lines.append(location_hint)
+
+        if extra_tone_lines:
+            override_lines.append("")
+            override_lines.append("[口調・距離感のガイドライン]")
+            override_lines.extend(extra_tone_lines)
+            override_lines.append(
+                "4) 上記の方針は、このターンの返答で必ず守ってください。後続の処理でトーンを薄めないでください。"
+            )
+        else:
+            # 低ドキドキ時の控えめガイド
+            override_lines.append("")
+            override_lines.append("[口調・距離感のガイドライン]")
+            override_lines.append(
+                "1) 好感度ゾーンに基づき、基本は落ち着いた会話トーンで話してください。"
+            )
+            override_lines.append(
+                "2) まだ強い恋愛感情が前面には出ていないため、素朴な信頼や好意をさりげなく滲ませる程度にしてください。"
+            )
+
+        # erotic モードの補足
+        if str(mode_current) == "erotic":
+            override_lines.append("")
+            override_lines.append(
+                "※ mode=erotic の場合も、直接的・過激な描写には踏み込まず、"
+                "ロマンス寄りの甘い雰囲気やスキンシップの匂わせ表現に留めてください。"
+            )
+
+        override_block = "\n".join(override_lines)
 
         if base_system_prompt:
-            new_system_prompt = base_system_prompt.rstrip() + "\n\n" + emotion_header + "\n"
+            new_system_prompt = base_system_prompt.rstrip() + "\n\n" + override_block + "\n"
         else:
-            new_system_prompt = emotion_header + "\n"
+            new_system_prompt = override_block + "\n"
 
-        # llm_meta に保存（AnswerTalkerView でそのまま表示される想定）
         self.llm_meta["system_prompt_used"] = new_system_prompt
 
-        # messages の先頭 system を差し替え / 追加
         new_messages = list(messages)
         if system_index is not None:
-            new_messages[system_index] = {
-                "role": "system",
-                "content": new_system_prompt,
-            }
+            new_messages[system_index] = {"role": "system", "content": new_system_prompt}
         else:
-            new_messages.insert(
-                0,
-                {
-                    "role": "system",
-                    "content": new_system_prompt,
-                },
-            )
+            new_messages.insert(0, {"role": "system", "content": new_system_prompt})
 
         if LYRA_DEBUG:
             st.write(
