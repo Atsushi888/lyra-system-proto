@@ -1,12 +1,8 @@
 # actors/emotion_modes/erotic_selector.py
 from __future__ import annotations
 
-from typing import Optional
-
+from typing import Optional, Dict, Any, Tuple
 from .base_selector import BaseModeSelector
-
-from typing import Dict, Any, Tuple
-
 from .judge_types import (
     BaseJudgeStrategy,
     JudgeCandidate,
