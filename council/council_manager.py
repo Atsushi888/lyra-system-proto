@@ -1,9 +1,6 @@
-# council_manager.py
-
 from __future__ import annotations
 from typing import List, Dict, Any
 
-import os
 import streamlit as st
 
 from actors.actor import Actor
@@ -14,12 +11,12 @@ from actors.narrator.narrator_manager import NarratorManager
 from actors.scene_ai import SceneAI
 
 
-LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
-
-
-def _debug(msg: str) -> None:
-    if LYRA_DEBUG:
-        st.write(f"[DEBUG:Council] {msg}")
+# --------------------------------------------------
+# 小さなデバッグヘルパ
+# --------------------------------------------------
+def _dbg(msg: str) -> None:
+    """Council 系のデバッグ出力用ヘルパ。"""
+    st.write(f"[DEBUG:Council] {msg}")
 
 
 def get_or_create_council_actor() -> Actor:
@@ -31,7 +28,7 @@ def get_or_create_council_actor() -> Actor:
     actor_key = "council_actor"
 
     if actor_key not in st.session_state:
-        _debug("create default council_actor (Floria)")
+        _dbg("create council_actor (Floria default)")
         st.session_state[actor_key] = Actor(
             name="フローリア",
             persona=FloriaPersona(),
@@ -51,7 +48,7 @@ def get_or_create_floria_council_manager() -> "CouncilManager":
     key = "council_manager_floria"
 
     if key not in st.session_state:
-        _debug("create CouncilManager for Floria")
+        _dbg("create CouncilManager for Floria")
         floria_actor = Actor(name="フローリア", persona=FloriaPersona())
         st.session_state[key] = CouncilManager(
             partner=floria_actor,
@@ -72,7 +69,7 @@ def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "Co
     key = "council_manager_riseria"
 
     if key not in st.session_state:
-        _debug(f"create CouncilManager for Riseria (player_name={player_name})")
+        _dbg(f"create CouncilManager for Riseria (player_name={player_name})")
         riseria_persona = RiseriaPersona(player_name=player_name)
         riseria_actor = Actor(
             name=riseria_persona.display_name,
@@ -94,31 +91,34 @@ class CouncilManager:
     - partner / partner_role を指定することで、会話相手を差し替え可能。
     """
 
-    def __init__(self, partner: Actor | None = None, partner_role: str | None = None) -> None:
-        # 会話ログ
-        self.conversation_log: List[Dict[str, str]] = []
-
+    def __init__(
+        self,
+        partner: Actor | None = None,
+        partner_role: str | None = None,
+    ) -> None:
         # ===== 会話相手（デフォルトはフローリア） =====
         if partner is None:
             partner = Actor("フローリア", FloriaPersona())
             partner_role = "floria"
-            _debug("CouncilManager.__init__ partner=None → create Floria Actor")
         else:
             if partner_role is None:
                 # 明示されていなければ汎用名を付ける
                 partner_role = "partner"
-            _debug(
-                f"CouncilManager.__init__ partner={getattr(partner, 'name', '???')}, "
-                f"partner_role={partner_role}"
-            )
 
         self.partner_role: str = partner_role
         self.partner: Actor = partner
 
+        _dbg(
+            f"CouncilManager.__init__ partner={getattr(self.partner, 'name', self.partner_role)}, "
+            f"partner_role={self.partner_role}"
+        )
+
         # いまは 1on1（＋ナレーション）想定
-        self.actors: Dict[str, Actor] = {
-            self.partner_role: self.partner
-        }
+        self.actors: Dict[str, Actor] = {self.partner_role: self.partner}
+
+        # 会話ログは session_state に永続化する
+        self._log_key = f"council_log_{self.partner_role}"
+        self.conversation_log: List[Dict[str, str]] = self._load_log_from_session()
 
         self.state: Dict[str, Any] = {
             "mode": "ongoing",
@@ -130,30 +130,42 @@ class CouncilManager:
         }
 
         # world_state を必ず初期化しておく
-        _debug("initialize SceneAI world_state (ensure_world_initialized)")
-        SceneAI(state=st.session_state)  # __init__ 内で ensure_world_initialized が走る
+        SceneAI(state=st.session_state)  # __init__ の中で ensure_world_initialized が走る
+        _dbg("initialize SceneAI world_state (ensure_world_initialized)")
 
         # NarratorManager / NarratorAI
         if "narrator_manager" not in st.session_state:
-            _debug("create NarratorManager")
             st.session_state["narrator_manager"] = NarratorManager(state=st.session_state)
         self.narrator_manager: NarratorManager = st.session_state["narrator_manager"]
 
-        # partner_role / partner_name を渡す
+        # ★ ここで partner_role / partner_name を渡す
         self.narrator = NarratorAI(
             manager=self.narrator_manager,
             partner_role=self.partner_role,
             partner_name=getattr(self.partner, "name", self.partner_role),
         )
+        _dbg("create NarratorManager / NarratorAI")
 
         # Round0 を 1 回だけ差し込む
         self._ensure_round0_initialized()
 
+    # ===== ログの永続化ヘルパ =====
+    def _load_log_from_session(self) -> List[Dict[str, str]]:
+        log = st.session_state.get(self._log_key)
+        if not isinstance(log, list):
+            log = []
+            st.session_state[self._log_key] = log
+        _dbg(f"load conversation_log from session: len={len(log)} (key={self._log_key})")
+        return log
+
+    def _save_log_to_session(self) -> None:
+        st.session_state[self._log_key] = self.conversation_log
+        _dbg(f"save conversation_log to session: len={len(self.conversation_log)} (key={self._log_key})")
+
     # ===== world_state 関連ヘルパ =====
     def _get_world_snapshot(self) -> Dict[str, Any]:
         llm_meta = st.session_state.get("llm_meta", {})
-        # 互換性のため "world" / "world_state" の両方を見る
-        world = llm_meta.get("world") or llm_meta.get("world_state") or {}
+        world = llm_meta.get("world") or {}
         if not world:
             scene_ai = SceneAI(state=st.session_state)
             world = scene_ai.get_world_state()
@@ -182,7 +194,11 @@ class CouncilManager:
         safe = (content or "").replace("\n", "<br>")
         self.conversation_log.append({"role": role, "content": safe})
         self.state["last_speaker"] = role
-        _debug(f"_append_log role={role}, len(log)={len(self.conversation_log)}")
+        _dbg(
+            f"_append_log role={role}, len(log)={len(self.conversation_log)}, "
+            f"preview='{safe[:32]}'"
+        )
+        self._save_log_to_session()
 
     def _ensure_round0_initialized(self) -> None:
         """
@@ -190,16 +206,17 @@ class CouncilManager:
         相手キャラクターは self.partner を前提にしている。
         """
         if self.conversation_log:
-            _debug("round0 already exists, skip")
+            _dbg("round0 already done (conversation_log not empty)")
+            self.state["round0_done"] = True
             return
 
-        _debug("generate Round0 narration")
         world_state = self._build_narrator_world_state()
         player_profile: Dict[str, Any] = {}
 
         # 将来自キャラの状態も world_state から拾って拡張可能
         partner_state = {"mood": "slightly_nervous"}
 
+        _dbg("generate Round0 narration")
         line = self.narrator.generate_round0_opening(
             world_state=world_state,
             player_profile=player_profile,
@@ -207,12 +224,14 @@ class CouncilManager:
         )
         self._append_log("narrator", line.text)
         self.state["round0_done"] = True
-        _debug(f"round0_done set True, log_len={len(self.conversation_log)}")
+        _dbg(f"round0_done set True, log_len={len(self.conversation_log)}")
 
     # ===== 公開 API =====
     def reset(self) -> None:
-        _debug("CouncilManager.reset() called")
-        self.conversation_log.clear()
+        _dbg("reset() called: clear conversation_log & state")
+        self.conversation_log = []
+        self._save_log_to_session()
+
         self.state["mode"] = "ongoing"
         self.state["last_speaker"] = None
         self.state["round0_done"] = False
@@ -225,6 +244,8 @@ class CouncilManager:
         self._ensure_round0_initialized()
 
     def get_log(self) -> List[Dict[str, str]]:
+        # 念のため session_state から再読込
+        self.conversation_log = self._load_log_from_session()
         return list(self.conversation_log)
 
     def get_status(self) -> Dict[str, Any]:
@@ -233,7 +254,7 @@ class CouncilManager:
         locs = world.get("locations", {})
         t = world.get("time", {})
 
-        status = {
+        return {
             "round": round_,
             "speaker": "player",
             "mode": self.state.get("mode", "ongoing"),
@@ -248,26 +269,30 @@ class CouncilManager:
                 "time_str": t.get("time_str"),
             },
         }
-        return status
 
     def proceed(self, user_text: str) -> str:
         """
         プレイヤー発言 user_text をログに追加し、
         現在の会話相手 Actor に発言させて、その内容を返す。
         """
-        _debug(f"proceed() user_text={repr(user_text)[:80]}")
+        _dbg(f"proceed() user_text='{user_text}'")
         self._append_log("player", user_text)
 
         reply = ""
         actor = self.actors.get(self.partner_role)
         if actor is not None:
-            _debug(f"call Actor.speak() for partner_role={self.partner_role}")
+            _dbg(
+                f"call Actor.speak() for partner_role={self.partner_role}, "
+                f"partner_name={getattr(self.partner, 'name', self.partner_role)}"
+            )
             reply = actor.speak(self.conversation_log)
-            _debug(f"Actor.speak() returned len={len(reply)}")
-            if reply:
-                self._append_log(self.partner_role, reply)
+            _dbg(
+                f"Actor.speak() returned len={len(reply)}, "
+                f"preview='{(reply or '')[:32]}'"
+            )
+            self._append_log(self.partner_role, reply)
         else:
-            _debug(f"No Actor found for partner_role={self.partner_role}")
+            _dbg("proceed(): actor is None (no reply)")
 
         return reply
 
