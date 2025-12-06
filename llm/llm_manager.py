@@ -45,9 +45,9 @@ class LLMManager:
         manager = cls(persona_id=persona_id)
 
         # 標準モデル登録
-        manager.register_gpt4o(priority=3.0, enabled=True)
+        # manager.register_gpt4o(priority=3.0, enabled=True)
         manager.register_gpt51(priority=2.0, enabled=True)
-        manager.register_hermes(priority=1.0, enabled=True)
+        # manager.register_hermes(priority=1.0, enabled=True)
         manager.register_grok(priority=1.5, enabled=True)
         manager.register_gemini(priority=1.5, enabled=True)
 
