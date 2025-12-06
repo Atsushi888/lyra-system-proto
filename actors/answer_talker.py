@@ -11,6 +11,7 @@ from actors.judge_ai3 import JudgeAI3
 from actors.composer_ai import ComposerAI
 from actors.memory_ai import MemoryAI
 from actors.emotion_ai import EmotionAI, EmotionResult
+from actors.emotion.emotion_models import EmotionModel
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
@@ -28,10 +29,13 @@ class AnswerTalker:
     - ModelsAI2
     - JudgeAI3
     - ComposerAI
-    - EmotionAI
+    - EmotionAI / EmotionModel
     - MemoryAI
     - PersonaAI（JSONベースの人格情報）
     - SceneAI / MixerAI（シーン＆感情オーバーライド）
+
+    ※ system_prompt への感情ヘッダ付与や差し替えは、
+       PersonaBase 側のメソッドに委譲する。
     """
 
     def __init__(
@@ -42,11 +46,7 @@ class AnswerTalker:
         state: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.persona = persona
-
-        # ★ char_id が無ければ id にフォールバック
-        persona_id = getattr(self.persona, "char_id", None) or getattr(
-            self.persona, "id", "default"
-        )
+        persona_id = getattr(self.persona, "char_id", "default")
 
         # Streamlit あり／なし両対応の state
         env_debug = os.getenv("LYRA_DEBUG", "")
@@ -87,6 +87,7 @@ class AnswerTalker:
         llm_meta.setdefault("scene_emotion", {})
         llm_meta.setdefault("emotion_override", {})
         llm_meta.setdefault("system_prompt_used", "")
+        llm_meta.setdefault("emotion_model_snapshot", {})
 
         # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
         if "composer_style_hint" not in llm_meta:
@@ -278,55 +279,51 @@ class AnswerTalker:
             except Exception:
                 base_system_prompt = ""
 
-        # ★ PersonaBase 側のメソッドを優先して使う
-        messages_for_models: List[Dict[str, str]]
-
+        # PersonaBase 側のメソッドに完全委譲
         if hasattr(self.persona, "build_emotion_based_system_prompt"):
-            try:
-                system_prompt_used = self.persona.build_emotion_based_system_prompt(
-                    base_system_prompt=base_system_prompt,
-                    emotion_override=emotion_override,
-                    mode_current=mode_current,
-                )
-                self.llm_meta["system_prompt_used"] = system_prompt_used
-
-                if hasattr(self.persona, "replace_system_prompt"):
-                    messages_for_models = self.persona.replace_system_prompt(
-                        messages=messages,
-                        new_system_prompt=system_prompt_used,
-                    )
-                else:
-                    # replace_system_prompt が無い場合のフォールバック
-                    # （先頭 system を差し替え or 挿入）
-                    new_messages = list(messages)
-                    system_index = None
-                    for idx, mm in enumerate(new_messages):
-                        if mm.get("role") == "system":
-                            system_index = idx
-                            break
-                    system_message = {
-                        "role": "system",
-                        "content": system_prompt_used,
-                    }
-                    if system_index is not None:
-                        new_messages[system_index] = system_message
-                    else:
-                        new_messages.insert(0, system_message)
-                    messages_for_models = new_messages
-
-                if LYRA_DEBUG:
-                    st.write(
-                        "[DEBUG:AnswerTalker.speak] system_prompt_used length =",
-                        len(system_prompt_used),
-                    )
-            except Exception as e:
-                # 失敗した場合は元 messages をそのまま使う
-                self.llm_meta["system_prompt_used_error"] = str(e)
-                messages_for_models = messages
+            system_prompt_used = self.persona.build_emotion_based_system_prompt(
+                base_system_prompt=base_system_prompt,
+                emotion_override=emotion_override,
+                mode_current=mode_current,
+            )
         else:
-            # Persona がまだ新 API に対応していない場合
-            self.llm_meta["system_prompt_used"] = base_system_prompt
-            messages_for_models = messages
+            # 念のためのフォールバック：何も加工しない
+            system_prompt_used = base_system_prompt
+
+        self.llm_meta["system_prompt_used"] = system_prompt_used
+
+        # messages の system を差し替え
+        if hasattr(self.persona, "replace_system_prompt"):
+            messages_for_models = self.persona.replace_system_prompt(
+                messages=messages,
+                new_system_prompt=system_prompt_used,
+            )
+        else:
+            # 互換性フォールバック：この場で簡易差し替え
+            new_messages = list(messages)
+            system_index = None
+            for idx, m in enumerate(new_messages):
+                if m.get("role") == "system":
+                    system_index = idx
+                    break
+
+            system_message = {
+                "role": "system",
+                "content": system_prompt_used,
+            }
+
+            if system_index is not None:
+                new_messages[system_index] = system_message
+            else:
+                new_messages.insert(0, system_message)
+
+            messages_for_models = new_messages
+
+        if LYRA_DEBUG:
+            st.write(
+                "[DEBUG:AnswerTalker.speak] system_prompt_used length =",
+                len(system_prompt_used),
+            )
 
         # 2) ModelsAI.collect
         self.run_models(
@@ -387,16 +384,27 @@ class AnswerTalker:
                 len(composed.get("text") or ""),
             )
 
-        # 5) EmotionAI.analyze + decide_judge_mode
+        # 5) EmotionAI.analyze + EmotionModel + decide_judge_mode
         try:
             emotion_res: EmotionResult = self.emotion_ai.analyze(
                 composer=composed,
                 memory_context=self.llm_meta.get("memory_context", ""),
                 user_text=user_text or "",
             )
-            self.llm_meta["emotion"] = emotion_res.to_dict()
 
+            # EmotionModel ラッパを介して関係フェーズを同期
+            emo_model = EmotionModel(result=emotion_res)
+            emo_model.sync_relationship_fields()
+
+            # メタ情報保存（ビューで見れるように）
+            self.llm_meta["emotion"] = emotion_res.to_dict()
+            self.llm_meta["emotion_model_snapshot"] = emo_model.to_debug_snapshot()
+
+            # judge_mode の決定（現状は従来ロジックを維持）
             next_mode = self.emotion_ai.decide_judge_mode(emotion_res)
+            # 将来はこちらに寄せられる:
+            # next_mode = emo_model.decide_judge_mode(current_mode=mode_current)
+
             self.llm_meta["judge_mode_next"] = next_mode
             self.state["judge_mode"] = next_mode
 
@@ -410,6 +418,14 @@ class AnswerTalker:
                     getattr(emotion_res, "doki_power", None),
                     ", doki_level =",
                     getattr(emotion_res, "doki_level", None),
+                    ", relationship_stage =",
+                    getattr(emotion_res, "relationship_stage", None),
+                    ", relationship_label =",
+                    getattr(emotion_res, "relationship_label", None),
+                )
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] emotion_model_snapshot =",
+                    self.llm_meta.get("emotion_model_snapshot"),
                 )
                 st.write(
                     "[DEBUG:AnswerTalker.speak] judge_mode_next =",
@@ -419,7 +435,7 @@ class AnswerTalker:
         except Exception as e:
             self.llm_meta["emotion_error"] = str(e)
             if LYRA_DEBUG:
-                st.write("[DEBUG:AnswerTalker.speak] EmotionAI error:", str(e))
+                st.write("[DEBUG:AnswerTalker.speak] EmotionAI/EmotionModel error:", str(e))
 
         # 6) final text
         final_text = composed.get("text") or judge_result.get("chosen_text") or ""
@@ -449,9 +465,7 @@ class AnswerTalker:
                 "records": [],
             }
             if LYRA_DEBUG:
-                st.write(
-                    "[DEBUG:AnswerTalker.speak] MemoryAI.update_from_turn error:", e
-                )
+                st.write("[DEBUG:AnswerTalker.speak] MemoryAI.update_from_turn error:", e)
 
         self.llm_meta["memory_update"] = mem_update
 
