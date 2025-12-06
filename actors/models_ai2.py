@@ -1,151 +1,100 @@
+# actors/models_ai2.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from actors.llm_ai import LLMAIRegistry, LLMAI
-from actors.emotion_modes.emotion_style_prompt import EmotionStyle
+from llm.llm_manager import LLMManager
 
 
 class ModelsAI2:
     """
-    新マルチLLM集約クラス（LLMAI ベース）。
+    複数 LLM から一斉に回答案を集めるためのクラス。
 
-    - AnswerTalker から messages / mode_current / emotion_override を受け取る
-    - emotion_override がある場合、EmotionStyle から生成した system メッセージを
-      既存のペルソナ system の直後に挿入して LLM に渡す
-    - LLMAIRegistry に登録された AI 達を一巡させて結果を集約する
+    - LLMManager に登録されているモデル定義（model_props）を参照
+    - enable フラグが立っているモデルだけを順番に呼び出し
+    - 結果を {model_name: {...}} の dict で返す
     """
 
     def __init__(
         self,
-        llm_manager: Optional[Any] = None,
-        registry: Optional[LLMAIRegistry] = None,
+        llm_manager: LLMManager,
+        *,
+        enabled_models: Optional[List[str]] = None,
     ) -> None:
         self.llm_manager = llm_manager
-        self.registry: LLMAIRegistry = registry or LLMAIRegistry.create_default()
+        self.model_props: Dict[str, Dict[str, Any]] = llm_manager.get_model_props()
 
-    # ------------------------------------------------------
-    # EmotionStyle を system メッセージとして注入
-    # ------------------------------------------------------
-    def _inject_emotion_into_messages(
-        self,
-        base_messages: List[Dict[str, str]],
-        emotion_style: Optional[EmotionStyle],
-    ) -> List[Dict[str, str]]:
-        """
-        EmotionStyle から生成した system プロンプトを、既存の system メッセージ
-        （ペルソナ定義）の直後に挿入する。
+        if enabled_models is not None:
+            self.enabled_models = enabled_models
+        else:
+            # model_props 内で `"enabled": True` なモデルだけを対象にする
+            models: List[str] = []
+            for name, props in self.model_props.items():
+                if props.get("enabled", True):
+                    models.append(name)
+            self.enabled_models = models
 
-        base_messages:
-            Persona.build_messages() などで組み立てられた元の messages。
-        """
-        if emotion_style is None:
-            return base_messages
-
-        emo_system_msg = {
-            "role": "system",
-            "content": emotion_style.build_system_prompt(),
-        }
-
-        new_messages: List[Dict[str, str]] = []
-        inserted = False
-
-        for msg in base_messages:
-            new_messages.append(msg)
-            # 最初の system メッセージの直後に挿入
-            if (not inserted) and msg.get("role") == "system":
-                new_messages.append(emo_system_msg)
-                inserted = True
-
-        # 万一 system が一つも無かった場合は、先頭に挿入
-        if not inserted:
-            new_messages.insert(0, emo_system_msg)
-
-        return new_messages
-
-    # ------------------------------------------------------
-    # メイン処理
-    # ------------------------------------------------------
+    # ---------------------------------------
+    # メイン：全モデルから回答を集める
+    # ---------------------------------------
     def collect(
         self,
         messages: List[Dict[str, str]],
+        *,
         mode_current: str = "normal",
         emotion_override: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """
+        Parameters
+        ----------
+        messages:
+            OpenAI / OpenRouter 互換の chat messages 配列。
+            ※ 先頭の system などは AnswerTalker 側で既に差し替え済み。
+        mode_current:
+            JudgeAI3 などと揃えるための「モード名」。temperature などの
+            プリセット切り替えに使いたい場合はここで参照可能。
+        emotion_override:
+            MixerAI から渡された感情オーバーライド情報（任意）。
+            ここでは logging 用にそのまま結果に混ぜるだけ。
+        """
 
-        mode_key = (mode_current or "normal").lower()
         results: Dict[str, Any] = {}
 
-        # emotion_override → EmotionStyle（LLMAI 互換）
-        emotion_style: Optional[EmotionStyle] = None
-        if emotion_override:
+        for model_name in self.enabled_models:
+            props = self.model_props.get(model_name, {})
+
             try:
-                emotion_style = EmotionStyle(
-                    mode=str(emotion_override.get("mode", mode_key)),
-                    affection=float(emotion_override.get("affection", 0.0)),
-                    arousal=float(emotion_override.get("arousal", 0.0)),
-                    tension=float(emotion_override.get("tension", 0.0)),
-                    sadness=float(emotion_override.get("sadness", 0.0)),
-                    excitement=float(emotion_override.get("excitement", 0.0)),
+                # LLMManager.chat() はこのプロジェクトで既に使っているラッパを想定
+                # もしシグネチャが違えば、ここだけ調整すればよい。
+                completion = self.llm_manager.chat(
+                    model_name=model_name,
+                    messages=messages,
+                    **props.get("defaults", {}),
                 )
-            except Exception:
-                emotion_style = None
 
-        # ★ EmotionStyle を system prompt として統合
-        messages_injected = self._inject_emotion_into_messages(
-            base_messages=messages,
-            emotion_style=emotion_style,
-        )
+                text = completion.get("text") or completion.get("content") or ""
+                usage = completion.get("usage")
+                error = None
 
-        # ------------------------------------------------------
-        # 各 LLM を叩く
-        # ------------------------------------------------------
-        for name, ai in self.registry.all().items():
-
-            # モード不一致なら skip
-            if not ai.enabled or not ai.should_answer(mode_key):
-                results[name] = {
-                    "status": "disabled",
-                    "text": "",
-                    "usage": None,
-                    "meta": {"mode": mode_key},
-                    "error": "disabled_by_config_or_mode",
-                }
-                continue
-
-            # 呼び出し引数
-            call_kwargs: Dict[str, Any] = {"mode": mode_key}
-            if getattr(ai, "max_tokens", None) is not None:
-                call_kwargs["max_tokens"] = int(ai.max_tokens)
-
-            # 互換のため EmotionStyle もそのまま渡す（サブクラス側が使えばさらに強く効く）
-            if emotion_style is not None:
-                call_kwargs["emotion_style"] = emotion_style
-
-            # 実際の LLM 呼び出し
-            try:
-                text, usage = ai.call(messages_injected, **call_kwargs)
-
-                results[name] = {
+                results[model_name] = {
                     "status": "ok",
-                    "text": text or "",
-                    "usage": usage or {},
-                    "meta": {
-                        "mode": mode_key,
-                        "emotion_override": bool(emotion_override),
-                    },
+                    "text": text,
+                    "raw": completion,
+                    "usage": usage,
+                    "error": error,
+                    "mode_current": mode_current,
+                    "emotion_override": emotion_override,
                 }
 
             except Exception as e:
-                results[name] = {
+                results[model_name] = {
                     "status": "error",
                     "text": "",
-                    "usage": {},
-                    "meta": {
-                        "mode": mode_key,
-                        "emotion_override": bool(emotion_override),
-                    },
+                    "raw": None,
+                    "usage": None,
                     "error": str(e),
+                    "mode_current": mode_current,
+                    "emotion_override": emotion_override,
                 }
 
         return results
