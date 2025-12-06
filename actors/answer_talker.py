@@ -278,7 +278,9 @@ class AnswerTalker:
             except Exception:
                 base_system_prompt = ""
 
+        # ★ Persona を渡して、JSON ベースのガイドラインも全部取り込む
         system_prompt_used = build_emotion_based_system_prompt(
+            persona=self.persona,
             base_system_prompt=base_system_prompt,
             emotion_override=emotion_override,
             mode_current=mode_current,
