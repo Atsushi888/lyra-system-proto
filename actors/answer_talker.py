@@ -258,6 +258,71 @@ class AnswerTalker:
                 emotion_override,
             )
 
+        # 1.6) emotion_override を system_prompt に反映
+        try:
+            if messages and messages[0].get("role") == "system":
+                base_sp: str = messages[0].get("content", "")
+
+                emo = (emotion_override or {}).get("emotion", {}) or {}
+                meta = emo.get("meta", {}) or {}
+                mode = emo.get("mode", "normal")
+                affection = emo.get("affection", 0.0)
+                arousal = emo.get("arousal", 0.0)
+                doki_power = emo.get("doki_power", 0.0)
+                affection_with_doki = meta.get("affection_with_doki", affection)
+
+                # ざっくりレベル判定（説明文用）
+                if affection_with_doki >= 0.95:
+                    rel = "almost_lover"
+                    jp_rel = "ほぼ恋人同士"
+                elif affection_with_doki >= 0.75:
+                    rel = "close_friend"
+                    jp_rel = "かなり親しい関係"
+                elif affection_with_doki >= 0.5:
+                    rel = "friend"
+                    jp_rel = "仲の良い友人"
+                else:
+                    rel = "acquaintance"
+                    jp_rel = "まだ少し距離のある相手"
+
+                # system_prompt 追記部分
+                extra = (
+                    "\n\n"
+                    "【Lyra-System Emotion Override 指示】\n"
+                    f"- 現在の感情モード: {mode}\n"
+                    f"- 好意レベル(affection_with_doki): {affection_with_doki:.2f} "
+                    f"（{jp_rel}）\n"
+                    f"- 一時的なドキドキ度(doki_power): {doki_power:.1f} / 100\n"
+                    "- あなたは、上記の感情状態を前提に、プレイヤーへの口調・距離感・"
+                    "表情描写を調整してください。好意やドキドキが高いほど、"
+                    "少し踏み込んだ親密さや照れ、甘さをにじませて構いませんが、"
+                    "キャラクター設定と世界観から逸脱しないようにしてください。\n"
+                    "- mode が 'erotic' の場合でも、R18描写には踏み込まず、"
+                    "ロマンス寄りの表現やほのかな艶っぽさにとどめてください。\n"
+                )
+
+                new_sp = base_sp + extra
+                messages[0]["content"] = new_sp
+                self.llm_meta["system_prompt_used"] = new_sp
+
+                if LYRA_DEBUG:
+                    st.write(
+                        "[DEBUG:AnswerTalker.speak] system_prompt patched by emotion_override; "
+                        f"len(base)={len(base_sp)}, len(new)={len(new_sp)}"
+                    )
+            else:
+                # system メッセージが無いケースに備えて記録だけしておく
+                self.llm_meta["system_prompt_used"] = (
+                    messages[0]["content"] if messages else ""
+                )
+        except Exception as e:
+            self.llm_meta["system_prompt_patch_error"] = str(e)
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] system_prompt patch error:",
+                    e,
+                )
+
         # 2) ModelsAI.collect
         self.run_models(
             messages,
@@ -351,45 +416,8 @@ class AnswerTalker:
             if LYRA_DEBUG:
                 st.write("[DEBUG:AnswerTalker.speak] EmotionAI error:", str(e))
 
-        # 6) final text（フォールバック付き）
-        final_text = (composed.get("text") or "").strip()
-
-        need_fallback = (not final_text) or (composed.get("status") != "ok")
-        if need_fallback:
-            if LYRA_DEBUG:
-                st.write(
-                    "[DEBUG:AnswerTalker.speak] composer returned empty or error. "
-                    "status=", composed.get("status"),
-                    ", trying fallback from models / judge_result.",
-                )
-
-            # 6-1) models のどこかに text があれば、それを優先して採用
-            models_dict = self.llm_meta.get("models") or {}
-            fallback_text = ""
-            for name, info in models_dict.items():
-                t = (info or {}).get("text") or ""
-                if t.strip():
-                    fallback_text = t.strip()
-                    if LYRA_DEBUG:
-                        st.write(
-                            f"[DEBUG:AnswerTalker.speak] fallback_text from model='{name}', len={len(fallback_text)}"
-                        )
-                    break
-
-            # 6-2) それでも無ければ judge_result.chosen_text
-            if not fallback_text:
-                fallback_text = (judge_result.get("chosen_text") or "").strip()
-                if LYRA_DEBUG and fallback_text:
-                    st.write(
-                        "[DEBUG:AnswerTalker.speak] fallback_text from judge_result, len=",
-                        len(fallback_text),
-                    )
-
-            # 6-3) 本当に何も無い場合は固定メッセージ
-            if not fallback_text:
-                fallback_text = "……リセリアは少し考え込んでいるようです。"
-
-            final_text = fallback_text
+        # 6) final text
+        final_text = composed.get("text") or judge_result.get("chosen_text") or ""
 
         if LYRA_DEBUG:
             st.write(
