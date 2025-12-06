@@ -1,4 +1,3 @@
-# actors/answer_talker.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Mapping
@@ -14,7 +13,9 @@ from actors.emotion_ai import EmotionAI, EmotionResult
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
-from actors.persona.affection_prompt_utils import build_system_prompt_with_affection
+from actors.persona.affection_prompt_utils import (
+    build_system_prompt_with_affection,
+)
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -46,13 +47,13 @@ class AnswerTalker:
         env_debug = os.getenv("LYRA_DEBUG", "")
         if state is not None:
             # 明示的に渡された state を最優先
-            self.state = state
+            self.state = state  # type: ignore[assignment]
         elif env_debug == "1":
             # デバッグ時は Streamlit の state を共有
-            self.state = st.session_state
+            self.state = st.session_state  # type: ignore[assignment]
         else:
             # 現状は Streamlit 前提なので session_state を使う
-            self.state = st.session_state
+            self.state = st.session_state  # type: ignore[assignment]
 
         # PersonaAI
         self.persona_ai = PersonaAI(persona_id=persona_id)
@@ -79,8 +80,6 @@ class AnswerTalker:
         # ★ シーン/ワールド情報用のスロットも確保
         llm_meta.setdefault("world_state", {})
         llm_meta.setdefault("scene_emotion", {})
-        llm_meta.setdefault("emotion_override", {})
-        llm_meta.setdefault("system_prompt_used", "")
 
         # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
         if "composer_style_hint" not in llm_meta:
@@ -147,7 +146,7 @@ class AnswerTalker:
         )
 
     # ---------------------------------------
-    # ModelsAI 呼び出し（system_prompt デレ補正付き）
+    # ModelsAI 呼び出し
     # ---------------------------------------
     def run_models(
         self,
@@ -158,98 +157,6 @@ class AnswerTalker:
         if not messages:
             return
 
-        # emotion_override を llm_meta に残しておく（デバッグ用）
-        if emotion_override is not None:
-            self.llm_meta["emotion_override"] = emotion_override
-        else:
-            emotion_override = self.llm_meta.get("emotion_override", {})
-
-        # ==============================
-        # system_prompt を affection / ドキドキ💓で補正
-        # ==============================
-        try:
-            # 1) messages からベースの system_prompt を抜き出す
-            base_system_prompt = ""
-            sys_index: Optional[int] = None
-            for i, m in enumerate(messages):
-                if m.get("role") == "system":
-                    base_system_prompt = str(m.get("content", "") or "")
-                    sys_index = i
-                    break
-
-            # 念のため Persona 側からもバックアップ
-            if not base_system_prompt and hasattr(self.persona, "get_system_prompt"):
-                try:
-                    base_system_prompt = str(self.persona.get_system_prompt() or "")
-                except Exception:
-                    base_system_prompt = ""
-
-            # 2) emotion_override から EmotionResult を復元
-            emotion_for_prompt: Optional[EmotionResult] = None
-            doki_power_for_prompt: float = 0.0
-
-            if isinstance(emotion_override, dict):
-                emo_dict = emotion_override.get("emotion") or emotion_override
-                if isinstance(emo_dict, dict):
-                    try:
-                        emotion_for_prompt = EmotionResult.from_dict(emo_dict)
-                    except Exception:
-                        # 最低限必要なフィールドだけ拾って構築
-                        try:
-                            emotion_for_prompt = EmotionResult(
-                                mode=emo_dict.get("mode", "normal"),
-                                affection=float(emo_dict.get("affection", 0.0) or 0.0),
-                                arousal=float(emo_dict.get("arousal", 0.0) or 0.0),
-                                doki_power=float(
-                                    emo_dict.get("doki_power", 0.0) or 0.0
-                                ),
-                                doki_level=int(
-                                    emo_dict.get("doki_level", 0) or 0
-                                ),
-                            )
-                        except Exception:
-                            emotion_for_prompt = None
-
-                    try:
-                        doki_power_for_prompt = float(
-                            emo_dict.get("doki_power", 0.0) or 0.0
-                        ) / 100.0  # 0.0〜1.0 に正規化
-                    except Exception:
-                        doki_power_for_prompt = 0.0
-
-            # 3) affection_prompt_utils でデレ指示入り system_prompt を生成
-            if base_system_prompt:
-                final_system_prompt = build_system_prompt_with_affection(
-                    persona=self.persona,
-                    base_system_prompt=base_system_prompt,
-                    emotion=emotion_for_prompt,
-                    doki_power=doki_power_for_prompt,
-                )
-
-                # 4) messages に書き戻し
-                if sys_index is not None:
-                    messages[sys_index] = {
-                        "role": "system",
-                        "content": final_system_prompt,
-                    }
-                else:
-                    messages.insert(
-                        0, {"role": "system", "content": final_system_prompt}
-                    )
-
-                # 5) デバッグ表示用に保持
-                self.llm_meta["system_prompt_used"] = final_system_prompt
-            else:
-                # system_prompt が見つからない場合も空文字で残す
-                self.llm_meta["system_prompt_used"] = ""
-
-        except Exception as e:
-            # 失敗しても落とさず、そのままベースの messages を使う
-            self.llm_meta["system_prompt_error"] = str(e)
-
-        # ==============================
-        # ModelsAI.collect 実行
-        # ==============================
         results = self.models_ai.collect(
             messages,
             mode_current=mode_current,
@@ -316,11 +223,65 @@ class AnswerTalker:
             self.llm_meta.setdefault("world_state", {})
             self.llm_meta.setdefault("scene_emotion", {})
 
-        # 1.5) emotion_override を MixerAI から取得
-        emotion_override = self.mixer_ai.build_emotion_override()
+        # 1.5) MixerAI から emotion_override を取得
+        try:
+            emotion_override = self.mixer_ai.build_emotion_override()
+        except Exception as e:
+            emotion_override = {"status": "error", "error": str(e)}
+
         self.llm_meta["emotion_override"] = emotion_override
 
-        # 2) ModelsAI.collect （※内部で system_prompt デレ補正も実行）
+        # 1.6) system_prompt に affection / ドキドキ💓 を反映
+        try:
+            # 直近の EmotionResult を構築（あれば debug 優先）
+            emotion_for_prompt: Optional[EmotionResult] = None
+
+            emo_dict = None
+            if isinstance(emotion_override, dict):
+                emo_dict = emotion_override.get("emotion")
+
+            if isinstance(emo_dict, dict):
+                try:
+                    emotion_for_prompt = EmotionResult.from_dict(emo_dict)
+                except Exception:
+                    emotion_for_prompt = None
+
+            # ベースの system_prompt を抽出（最初の system ロールを対象）
+            base_system_prompt = ""
+            for msg in messages:
+                if msg.get("role") == "system":
+                    base_system_prompt = msg.get("content", "")
+                    break
+
+            if base_system_prompt:
+                # doki_power があれば補正用に渡す（なければ 0.0）
+                doki_power = 0.0
+                if isinstance(emo_dict, dict):
+                    try:
+                        doki_power = float(emo_dict.get("doki_power", 0.0))
+                    except Exception:
+                        doki_power = 0.0
+
+                # affection / doki を反映した最終 system_prompt を生成
+                final_system_prompt = build_system_prompt_with_affection(
+                    persona=self.persona,
+                    base_system_prompt=base_system_prompt,
+                    emotion=emotion_for_prompt,
+                    doki_power=doki_power,
+                )
+
+                # messages 内の最初の system メッセージを書き換え
+                for msg in messages:
+                    if msg.get("role") == "system":
+                        msg["content"] = final_system_prompt
+                        break
+
+                # デバッグ表示用に保存
+                self.llm_meta["system_prompt_used"] = final_system_prompt
+        except Exception as e:
+            self.llm_meta["system_prompt_error"] = str(e)
+
+        # 2) ModelsAI.collect
         self.run_models(
             messages,
             mode_current=mode_current,
@@ -340,7 +301,7 @@ class AnswerTalker:
             }
         self.llm_meta["judge"] = judge_result
 
-        # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定などに使う）
+        # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定）
         # self.llm_meta["dev_force_model"] = "gemini"
 
         # 4) ComposerAI
