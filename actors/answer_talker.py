@@ -82,7 +82,11 @@ class AnswerTalker:
         llm_meta.setdefault("world_state", {})
         llm_meta.setdefault("scene_emotion", {})
 
-        # Persona 由来のスタイルヒント
+        # system_prompt_used / messages_used もここで確保しておく
+        llm_meta.setdefault("system_prompt_used", "")
+        llm_meta.setdefault("messages_used", [])
+
+        # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
         if "composer_style_hint" not in llm_meta:
             hint = ""
             if hasattr(self.persona, "get_composer_style_hint"):
@@ -200,6 +204,26 @@ class AnswerTalker:
                 f"user_text={repr(user_text)[:120]}, judge_mode={judge_mode}"
             )
 
+        # 0.2) このターンで実際に使う system_prompt / messages を記録
+        try:
+            system_msg = ""
+            for m in messages:
+                if m.get("role") == "system":
+                    system_msg = str(m.get("content", "")) or ""
+                    break
+            self.llm_meta["system_prompt_used"] = system_msg
+            # messages 全体もそのまま持っておく（AnswerTalkerView 用）
+            self.llm_meta["messages_used"] = list(messages)
+
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] system_prompt_used preview =",
+                    repr(system_msg[:200]),
+                )
+        except Exception as e:
+            self.llm_meta["system_prompt_used"] = ""
+            self.llm_meta["system_prompt_error"] = str(e)
+
         # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta へ
         try:
             persona_all = self.persona_ai.get_all(reload=True)
@@ -258,78 +282,6 @@ class AnswerTalker:
                 emotion_override,
             )
 
-        # 1.7) emotion_hint を system_prompt に注入（ドキドキ優先指示）
-        try:
-            if messages and messages[0].get("role") == "system":
-                base_system = messages[0].get("content", "")
-
-                eo = emotion_override or {}
-                emo = eo.get("emotion") or {}
-                doki_power = float(emo.get("doki_power", 0) or 0.0)
-                doki_level = int(emo.get("doki_level", 0) or 0)
-                affection = float(emo.get("affection", 0.0) or 0.0)
-                affection_with_doki = float(
-                    emo.get("affection_with_doki", affection) or affection
-                )
-
-                # まったく情報がなければ何もしない
-                if affection_with_doki > 0 or doki_power > 0 or doki_level > 0:
-                    # 関係性ラベル
-                    if affection_with_doki >= 0.95 or doki_level >= 3:
-                        rel = "ほぼ恋人同士（両想いがほぼ確定）"
-                    elif affection_with_doki >= 0.8 or doki_level >= 2:
-                        rel = "強く惹かれ合っている親密な関係"
-                    elif affection_with_doki >= 0.5:
-                        rel = "好意を自覚し始めた親しい友人"
-                    else:
-                        rel = "まだ友達寄りだが、内心では気になっている相手"
-
-                    emotion_hint_lines = [
-                        "【Lyra-System Emotion Override 指示】",
-                        f"- 現在の感情モード: {mode_current}",
-                        f"- 好感レベル（affection_with_doki）: {affection_with_doki:.2f}",
-                        f"- 一時的なドキドキ度（doki_power）: {doki_power:.0f} / 100",
-                        f"- このターンのあなたとプレイヤーの関係性: {rel}",
-                        "",
-                        "▼ トーン指示（この項目は他の設定より優先してください）",
-                    ]
-
-                    if affection_with_doki >= 0.95 or doki_level >= 3:
-                        emotion_hint_lines += [
-                            "- プレイヤーのことを明確に恋愛対象として強く想っています。",
-                            "- 台詞のどこかで、恋人未満〜恋人同然レベルの甘さ・独占欲・照れを必ず表現してください。",
-                            "- 物理的な距離感はかなり近く、手を伸ばせば触れられる距離を想定して、仕草や視線の描写を増やしてください。",
-                        ]
-                    elif affection_with_doki >= 0.8 or doki_level >= 2:
-                        emotion_hint_lines += [
-                            "- プレイヤーへの好意はかなり高く、内心ではほぼ恋愛感情だと自覚しています。",
-                            "- 返答の中に、胸が高鳴る・視線をそらしてしまう・少し踏み込んだ甘い言い回しなどを 1 箇所以上入れてください。",
-                            "- 先生／生徒という距離よりも、『個人的に大事な人』としての距離感を優先してください。",
-                        ]
-                    else:
-                        emotion_hint_lines += [
-                            "- まだ関係性は穏やかですが、プレイヤーに対して好意的で、少しドキドキしている雰囲気を台詞に滲ませてください。",
-                        ]
-
-                    emotion_hint_lines += [
-                        "",
-                        "- ただし世界観やキャラクター設定から完全には逸脱せず、R18 描写には踏み込まない範囲で調整してください。",
-                    ]
-
-                    emotion_hint_text = "\n".join(emotion_hint_lines)
-
-                    messages[0]["content"] = base_system.rstrip() + "\n\n" + emotion_hint_text
-
-                    if LYRA_DEBUG:
-                        st.write(
-                            "[DEBUG:AnswerTalker.speak] system_prompt(after emotion_hint) ="
-                        )
-                        st.code(messages[0]["content"][:1200])
-        except Exception as e:
-            self.llm_meta["emotion_hint_error"] = str(e)
-            if LYRA_DEBUG:
-                st.write("[DEBUG:AnswerTalker.speak] emotion_hint inject error:", e)
-
         # 2) ModelsAI.collect
         self.run_models(
             messages,
@@ -359,6 +311,9 @@ class AnswerTalker:
                 ", len(chosen_text) =",
                 len(judge_result.get("chosen_text") or ""),
             )
+
+        # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定も可）
+        # self.llm_meta["dev_force_model"] = "gemini"
 
         # 4) ComposerAI
         try:
