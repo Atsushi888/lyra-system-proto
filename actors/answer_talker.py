@@ -14,12 +14,14 @@ from actors.emotion_ai import EmotionAI, EmotionResult
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
-from actors.persona.affection_prompt_utils import build_emotion_header
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
 # 環境変数でデバッグモードを切り替え
 LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
+
+# この AnswerTalker で有効にするモデル一覧
+DEFAULT_ENABLED_MODELS = ["gpt51", "grok", "gemini"]
 
 
 class AnswerTalker:
@@ -84,6 +86,7 @@ class AnswerTalker:
         llm_meta.setdefault("scene_emotion", {})
         llm_meta.setdefault("emotion_override", {})
         llm_meta.setdefault("system_prompt_used", "")
+        llm_meta.setdefault("emotion_header_debug", {})
 
         # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
         if "composer_style_hint" not in llm_meta:
@@ -115,8 +118,11 @@ class AnswerTalker:
         self.llm_meta: Dict[str, Any] = llm_meta
         self.state["llm_meta"] = self.llm_meta
 
-        # Multi-LLM 集計
-        self.models_ai = ModelsAI2(llm_manager=self.llm_manager)
+        # Multi-LLM 集計（Hermes / gpt4o はここで停止）
+        self.models_ai = ModelsAI2(
+            llm_manager=self.llm_manager,
+            enabled_models=DEFAULT_ENABLED_MODELS,
+        )
 
         # Emotion / Scene / Mixer
         self.emotion_ai = EmotionAI(
@@ -178,6 +184,165 @@ class AnswerTalker:
         self.state["llm_meta"] = self.llm_meta
 
     # ---------------------------------------
+    # 感情ヘッダ生成（5段階 doki_level 対応）
+    # ---------------------------------------
+    def _build_emotion_header(
+        self,
+        *,
+        mode_current: str,
+        emotion_override: Dict[str, Any],
+    ) -> str:
+        """
+        emotion_override の内容をそのまま使って、
+        - affection / doki_level / doki_power
+        から 5 段階のステージ説明＆口調ガイドラインを作る。
+        """
+
+        world_state = emotion_override.get("world_state") or {}
+        emotion = emotion_override.get("emotion") or {}
+
+        # 生の affection
+        base_affection = float(emotion.get("affection", 0.0) or 0.0)
+        doki_level = int(emotion.get("doki_level", 0) or 0)
+        doki_power = int(emotion.get("doki_power", 0) or 0)
+
+        # affection_with_doki があれば優先、なければ簡易合成
+        aff_with_doki = emotion.get("affection_with_doki")
+        if aff_with_doki is None:
+            # ざっくり：doki_level に応じて +0〜0.4 までブースト
+            boost_table = {
+                0: 0.0,
+                1: 0.1,
+                2: 0.2,
+                3: 0.3,
+                4: 0.4,
+            }
+            boost = boost_table.get(doki_level, 0.4)
+            aff_with_doki = max(0.0, min(1.0, base_affection + boost))
+        else:
+            aff_with_doki = float(aff_with_doki)
+
+        # affection ゾーン
+        if aff_with_doki >= 0.9:
+            zone = "max"
+        elif aff_with_doki >= 0.7:
+            zone = "high"
+        elif aff_with_doki >= 0.4:
+            zone = "mid"
+        else:
+            zone = "low"
+
+        # doki_level 5段階のラベル
+        doki_level_clamped = max(0, min(4, doki_level))
+        if doki_level_clamped == 0:
+            stage = "ほぼフラット：親しい先輩後輩・友人として落ち着いた関係。"
+        elif doki_level_clamped == 1:
+            stage = "少しときめき：片想い〜明確な好意。相手を意識し始めている段階。"
+        elif doki_level_clamped == 2:
+            stage = "付き合い始め：お互いに好意を自覚していて、距離が縮まりつつある段階。"
+        elif doki_level_clamped == 3:
+            stage = "ゾッコン：人目をあまり気にせず、かなり親密な距離感でも自然に振る舞える段階。"
+        else:  # 4
+            stage = "エクストリーム：結婚を前提にベタ惚れしているレベル。未来を強く意識している。"
+
+        # 舞台情報（あれば）
+        loc_player = world_state.get("locations", {}).get("player")
+        time_slot = world_state.get("time", {}).get("slot")
+        time_str = world_state.get("time", {}).get("time_str")
+        location_lines: List[str] = []
+        if loc_player:
+            location_lines.append(f"- 現在の舞台は「{loc_player}」。")
+        if time_slot or time_str:
+            ts = f"{time_slot} / {time_str}" if time_slot and time_str else (time_slot or time_str)
+            location_lines.append(f"- 時間帯は「{ts}」。")
+
+        # 口調・距離感ガイド
+        if doki_level_clamped == 0:
+            tone = (
+                "1) 基本は落ち着いた丁寧さと、親しみのある先輩後輩トーン。\n"
+                "2) まだ恋愛感情は前面には出さず、信頼と安心感が伝わる穏やかな会話にしてください。\n"
+                "3) ときどき軽い冗談や気遣いを混ぜて、今後の距離感が広がる余地を感じさせると良いです。"
+            )
+        elif doki_level_clamped == 1:
+            tone = (
+                "1) 基本は丁寧で礼儀正しいが、ところどころに『特別扱い』が滲むトーン。\n"
+                "2) 自分の感情を少しだけ言葉や仕草に乗せ、"
+                "相手を意識していることが伝わるようにしてください（照れや小さな間など）。\n"
+                "3) まだ大胆な行動は控えめにしつつ、『もう一歩近づけそう』な雰囲気を作ってください。"
+            )
+        elif doki_level_clamped == 2:
+            tone = (
+                "1) すでに両想いに近い、柔らかく甘いトーンで話してください。\n"
+                "2) 距離感は近めで、呼び方や言い回しに『恋人候補』としての親しさを反映させてください。\n"
+                "3) 手が触れそう・見つめ合ってしまう等、"
+                "ライトなスキンシップやドキドキするシチュエーションを素直に楽しんでいる様子を描写してください。"
+            )
+        elif doki_level_clamped == 3:
+            tone = (
+                "1) 相手への強い恋愛感情が明確に伝わる、熱量高めのトーン。\n"
+                "2) 人目をあまり気にせず、距離がかなり近い状態でも自然に振る舞ってください。"
+                "軽い抱きつきや腕を組むなども、キャラ設定を壊さない範囲で匂わせて構いません。\n"
+                "3) 相手を励ましたり支えたり、『大切な人』としての覚悟や想いがセリフの端々に見えるようにしてください。"
+            )
+        else:  # 4
+            tone = (
+                "1) 結婚を前提にしたベタ惚れ状態として、"
+                "深い信頼と将来への期待がにじむトーンで話してください。\n"
+                "2) 二人の未来（同棲・結婚・家族）を自然に連想させるセリフや比喩を、"
+                "穏やかな会話の中にときどき混ぜてください。\n"
+                "3) それでもキャラクター性と世界観は維持し、"
+                "過度に露骨な表現ではなく『温かくて甘い関係』として描写してください。"
+            )
+
+        # Persona 側でヘッダ追記ロジックがあれば、尊重して追加
+        persona_hint = ""
+        if hasattr(self.persona, "build_emotion_header_hint"):
+            try:
+                persona_hint = str(
+                    self.persona.build_emotion_header_hint(
+                        affection_with_doki=aff_with_doki,
+                        doki_level=doki_level_clamped,
+                        mode_current=mode_current,
+                    )
+                )
+            except Exception:
+                persona_hint = ""
+
+        lines: List[str] = []
+        lines.append("[感情・関係性プロファイル]")
+        lines.append(
+            f"- 実効好感度 (affection_with_doki): {aff_with_doki:.2f} "
+            f"(zone={zone}, doki_level={doki_level_clamped})"
+        )
+        lines.append(f"- 関係ステージ: {stage}")
+        if location_lines:
+            lines.append("")
+            lines.extend(location_lines)
+
+        lines.append("")
+        lines.append("[口調・距離感のガイドライン]")
+        lines.append(tone)
+
+        if persona_hint:
+            lines.append("")
+            lines.append("[キャラクター固有の補足]")
+            lines.append(persona_hint)
+
+        header_text = "\n".join(lines)
+
+        # デバッグ用に保持
+        self.llm_meta["emotion_header_debug"] = {
+            "affection": base_affection,
+            "affection_with_doki": aff_with_doki,
+            "doki_level": doki_level_clamped,
+            "doki_power": doki_power,
+            "zone": zone,
+            "mode_current": mode_current,
+        }
+
+        return header_text
+
+    # ---------------------------------------
     # system_prompt に emotion_override を反映
     # ---------------------------------------
     def _inject_emotion_into_system_prompt(
@@ -188,9 +353,7 @@ class AnswerTalker:
     ) -> List[Dict[str, str]]:
         """
         - 既存 messages から system prompt を探す
-        - Persona 情報 + emotion_override から EmotionResult を組み立て、
-          build_emotion_header() で感情ヘッダを生成
-        - base system_prompt の末尾に感情ヘッダを結合
+        - Persona 情報 + emotion_override で上書きした system_prompt を生成
         - messages の先頭 system を差し替え（なければ先頭に追加）
         - 生成した system_prompt を llm_meta["system_prompt_used"] に保存
         """
@@ -200,7 +363,7 @@ class AnswerTalker:
 
         # 既存 system prompt を取得
         base_system_prompt = ""
-        system_index: Optional[int] = None
+        system_index = None
         for idx, m in enumerate(messages):
             if m.get("role") == "system":
                 base_system_prompt = m.get("content", "") or ""
@@ -214,90 +377,40 @@ class AnswerTalker:
             except Exception:
                 pass
 
-        # world_state / scene_emotion は llm_meta 側に格納している前提
-        world_state = self.llm_meta.get("world_state", {}) or {}
-        scene_emotion = self.llm_meta.get("scene_emotion", {}) or {}
+        # 感情ヘッダを組み立て
+        emotion_header = self._build_emotion_header(
+            mode_current=mode_current,
+            emotion_override=emotion_override,
+        )
 
-        # MixerAI からの emotion_override → EmotionResult にマッピング
-        emotion_obj: Optional[EmotionResult] = None
-        if emotion_override:
-            try:
-                emotion_obj = EmotionResult(
-                    mode=str(emotion_override.get("mode", "normal") or "normal"),
-                    affection=float(emotion_override.get("affection", 0.0) or 0.0),
-                    arousal=float(emotion_override.get("arousal", 0.0) or 0.0),
-                    tension=float(emotion_override.get("tension", 0.0) or 0.0),
-                    anger=float(emotion_override.get("anger", 0.0) or 0.0),
-                    sadness=float(emotion_override.get("sadness", 0.0) or 0.0),
-                    excitement=float(emotion_override.get("excitement", 0.0) or 0.0),
-                    doki_power=float(emotion_override.get("doki_power", 0.0) or 0.0),
-                    doki_level=int(emotion_override.get("doki_level", 0) or 0),
-                    raw_text="(from MixerAI override)",
-                )
-            except Exception as e:
-                if LYRA_DEBUG:
-                    st.write(
-                        "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
-                        "EmotionResult build error:",
-                        e,
-                    )
-                emotion_obj = None
+        if base_system_prompt:
+            new_system_prompt = base_system_prompt.rstrip() + "\n\n" + emotion_header + "\n"
+        else:
+            new_system_prompt = emotion_header + "\n"
 
-        # Persona 共通ユーティリティから感情ヘッダを生成
-        emotion_header = ""
-        try:
-            emotion_header = build_emotion_header(
-                persona=self.persona,
-                emotion=emotion_obj,
-                world_state=world_state,
-                scene_emotion=scene_emotion,
-            ) or ""
-        except Exception as e:
-            if LYRA_DEBUG:
-                st.write(
-                    "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
-                    "build_emotion_header error:",
-                    e,
-                )
-            emotion_header = ""
-
-        # base_system_prompt + emotion_header を結合
-        new_system_prompt = base_system_prompt or ""
-        if emotion_header:
-            if new_system_prompt:
-                new_system_prompt = new_system_prompt.rstrip() + "\n\n" + emotion_header
-            else:
-                new_system_prompt = emotion_header
-
-        # llm_meta に保存（AnswerTalkerView で参照）
+        # llm_meta に保存（AnswerTalkerView でそのまま表示される想定）
         self.llm_meta["system_prompt_used"] = new_system_prompt
-
-        # system が一切ない & new_system_prompt も空なら、そのまま返す
-        if system_index is None and not new_system_prompt:
-            if LYRA_DEBUG:
-                st.write(
-                    "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
-                    "no system prompt and no emotion_header → messages unchanged."
-                )
-            return messages
 
         # messages の先頭 system を差し替え / 追加
         new_messages = list(messages)
-        system_payload = {
-            "role": "system",
-            "content": new_system_prompt,
-        }
-
         if system_index is not None:
-            new_messages[system_index] = system_payload
+            new_messages[system_index] = {
+                "role": "system",
+                "content": new_system_prompt,
+            }
         else:
-            new_messages.insert(0, system_payload)
+            new_messages.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": new_system_prompt,
+                },
+            )
 
         if LYRA_DEBUG:
             st.write(
                 "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
-                f"system_index={system_index}, "
-                f"len(new_system_prompt)={len(new_system_prompt)}"
+                f"system_index={system_index}, len(new_system_prompt)={len(new_system_prompt)}"
             )
 
         return new_messages
