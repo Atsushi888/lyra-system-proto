@@ -64,14 +64,25 @@ class ModelsAI2:
             props = self.model_props.get(model_name, {})
 
             try:
-                # LLMManager.chat() はこのプロジェクトで既に使っているラッパを想定
-                # もしシグネチャが違えば、ここだけ調整すればよい。
-                completion = self.llm_manager.chat(
-                    model_name=model_name,
-                    messages=messages,
-                    **props.get("defaults", {}),
-                )
+                # 新 LLMManager: chat_completion(model=..., messages=...)
+                # 旧 LLMManager: chat(model=..., messages=...)
+                defaults = props.get("defaults", {}) or {}
 
+                if hasattr(self.llm_manager, "chat_completion"):
+                    completion = self.llm_manager.chat_completion(
+                        model=model_name,
+                        messages=messages,
+                        **defaults,
+                    )
+                else:
+                    # 後方互換用フォールバック
+                    completion = self.llm_manager.chat(
+                        model=model_name,
+                        messages=messages,
+                        **defaults,
+                    )
+
+                # completion は dict を想定（llm_manager 側の仕様に準拠）
                 text = completion.get("text") or completion.get("content") or ""
                 usage = completion.get("usage")
                 error = None
