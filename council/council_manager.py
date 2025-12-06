@@ -1,6 +1,9 @@
+# council_manager.py
+
 from __future__ import annotations
 from typing import List, Dict, Any
 
+import os
 import streamlit as st
 
 from actors.actor import Actor
@@ -9,6 +12,14 @@ from actors.persona.persona_classes.persona_riseria_ja import Persona as Riseria
 from actors.narrator_ai import NarratorAI
 from actors.narrator.narrator_manager import NarratorManager
 from actors.scene_ai import SceneAI
+
+
+LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
+
+
+def _debug(msg: str) -> None:
+    if LYRA_DEBUG:
+        st.write(f"[DEBUG:Council] {msg}")
 
 
 def get_or_create_council_actor() -> Actor:
@@ -20,6 +31,7 @@ def get_or_create_council_actor() -> Actor:
     actor_key = "council_actor"
 
     if actor_key not in st.session_state:
+        _debug("create default council_actor (Floria)")
         st.session_state[actor_key] = Actor(
             name="フローリア",
             persona=FloriaPersona(),
@@ -39,8 +51,12 @@ def get_or_create_floria_council_manager() -> "CouncilManager":
     key = "council_manager_floria"
 
     if key not in st.session_state:
+        _debug("create CouncilManager for Floria")
         floria_actor = Actor(name="フローリア", persona=FloriaPersona())
-        st.session_state[key] = CouncilManager(partner=floria_actor, partner_role="floria")
+        st.session_state[key] = CouncilManager(
+            partner=floria_actor,
+            partner_role="floria",
+        )
 
     return st.session_state[key]
 
@@ -56,6 +72,7 @@ def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "Co
     key = "council_manager_riseria"
 
     if key not in st.session_state:
+        _debug(f"create CouncilManager for Riseria (player_name={player_name})")
         riseria_persona = RiseriaPersona(player_name=player_name)
         riseria_actor = Actor(
             name=riseria_persona.display_name,
@@ -85,10 +102,15 @@ class CouncilManager:
         if partner is None:
             partner = Actor("フローリア", FloriaPersona())
             partner_role = "floria"
+            _debug("CouncilManager.__init__ partner=None → create Floria Actor")
         else:
             if partner_role is None:
                 # 明示されていなければ汎用名を付ける
                 partner_role = "partner"
+            _debug(
+                f"CouncilManager.__init__ partner={getattr(partner, 'name', '???')}, "
+                f"partner_role={partner_role}"
+            )
 
         self.partner_role: str = partner_role
         self.partner: Actor = partner
@@ -108,14 +130,16 @@ class CouncilManager:
         }
 
         # world_state を必ず初期化しておく
-        SceneAI(state=st.session_state)  # __init__ の中で ensure_world_initialized が走る
+        _debug("initialize SceneAI world_state (ensure_world_initialized)")
+        SceneAI(state=st.session_state)  # __init__ 内で ensure_world_initialized が走る
 
         # NarratorManager / NarratorAI
         if "narrator_manager" not in st.session_state:
+            _debug("create NarratorManager")
             st.session_state["narrator_manager"] = NarratorManager(state=st.session_state)
         self.narrator_manager: NarratorManager = st.session_state["narrator_manager"]
 
-        # ★ ここで partner_role / partner_name を渡す
+        # partner_role / partner_name を渡す
         self.narrator = NarratorAI(
             manager=self.narrator_manager,
             partner_role=self.partner_role,
@@ -128,7 +152,8 @@ class CouncilManager:
     # ===== world_state 関連ヘルパ =====
     def _get_world_snapshot(self) -> Dict[str, Any]:
         llm_meta = st.session_state.get("llm_meta", {})
-        world = llm_meta.get("world") or {}
+        # 互換性のため "world" / "world_state" の両方を見る
+        world = llm_meta.get("world") or llm_meta.get("world_state") or {}
         if not world:
             scene_ai = SceneAI(state=st.session_state)
             world = scene_ai.get_world_state()
@@ -157,6 +182,7 @@ class CouncilManager:
         safe = (content or "").replace("\n", "<br>")
         self.conversation_log.append({"role": role, "content": safe})
         self.state["last_speaker"] = role
+        _debug(f"_append_log role={role}, len(log)={len(self.conversation_log)}")
 
     def _ensure_round0_initialized(self) -> None:
         """
@@ -164,8 +190,10 @@ class CouncilManager:
         相手キャラクターは self.partner を前提にしている。
         """
         if self.conversation_log:
+            _debug("round0 already exists, skip")
             return
 
+        _debug("generate Round0 narration")
         world_state = self._build_narrator_world_state()
         player_profile: Dict[str, Any] = {}
 
@@ -179,9 +207,11 @@ class CouncilManager:
         )
         self._append_log("narrator", line.text)
         self.state["round0_done"] = True
+        _debug(f"round0_done set True, log_len={len(self.conversation_log)}")
 
     # ===== 公開 API =====
     def reset(self) -> None:
+        _debug("CouncilManager.reset() called")
         self.conversation_log.clear()
         self.state["mode"] = "ongoing"
         self.state["last_speaker"] = None
@@ -203,7 +233,7 @@ class CouncilManager:
         locs = world.get("locations", {})
         t = world.get("time", {})
 
-        return {
+        status = {
             "round": round_,
             "speaker": "player",
             "mode": self.state.get("mode", "ongoing"),
@@ -218,19 +248,26 @@ class CouncilManager:
                 "time_str": t.get("time_str"),
             },
         }
+        return status
 
     def proceed(self, user_text: str) -> str:
         """
         プレイヤー発言 user_text をログに追加し、
         現在の会話相手 Actor に発言させて、その内容を返す。
         """
+        _debug(f"proceed() user_text={repr(user_text)[:80]}")
         self._append_log("player", user_text)
 
         reply = ""
         actor = self.actors.get(self.partner_role)
         if actor is not None:
+            _debug(f"call Actor.speak() for partner_role={self.partner_role}")
             reply = actor.speak(self.conversation_log)
-            self._append_log(self.partner_role, reply)
+            _debug(f"Actor.speak() returned len={len(reply)}")
+            if reply:
+                self._append_log(self.partner_role, reply)
+        else:
+            _debug(f"No Actor found for partner_role={self.partner_role}")
 
         return reply
 
