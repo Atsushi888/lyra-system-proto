@@ -351,8 +351,45 @@ class AnswerTalker:
             if LYRA_DEBUG:
                 st.write("[DEBUG:AnswerTalker.speak] EmotionAI error:", str(e))
 
-        # 6) final text
-        final_text = composed.get("text") or judge_result.get("chosen_text") or ""
+        # 6) final text（フォールバック付き）
+        final_text = (composed.get("text") or "").strip()
+
+        need_fallback = (not final_text) or (composed.get("status") != "ok")
+        if need_fallback:
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG:AnswerTalker.speak] composer returned empty or error. "
+                    "status=", composed.get("status"),
+                    ", trying fallback from models / judge_result.",
+                )
+
+            # 6-1) models のどこかに text があれば、それを優先して採用
+            models_dict = self.llm_meta.get("models") or {}
+            fallback_text = ""
+            for name, info in models_dict.items():
+                t = (info or {}).get("text") or ""
+                if t.strip():
+                    fallback_text = t.strip()
+                    if LYRA_DEBUG:
+                        st.write(
+                            f"[DEBUG:AnswerTalker.speak] fallback_text from model='{name}', len={len(fallback_text)}"
+                        )
+                    break
+
+            # 6-2) それでも無ければ judge_result.chosen_text
+            if not fallback_text:
+                fallback_text = (judge_result.get("chosen_text") or "").strip()
+                if LYRA_DEBUG and fallback_text:
+                    st.write(
+                        "[DEBUG:AnswerTalker.speak] fallback_text from judge_result, len=",
+                        len(fallback_text),
+                    )
+
+            # 6-3) 本当に何も無い場合は固定メッセージ
+            if not fallback_text:
+                fallback_text = "……リセリアは少し考え込んでいるようです。"
+
+            final_text = fallback_text
 
         if LYRA_DEBUG:
             st.write(
