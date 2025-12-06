@@ -16,9 +16,16 @@ from actors.emotion_modes.context import JudgeSignal, get_default_selectors
 @dataclass
 class EmotionResult:
     """
-    フローリア（および将来のキャラ）自身の
-    「短期的な感情状態」を表すスナップショット。
+    フローリア／リセリア自身の「短期的な感情状態」を表すスナップショット。
     （1ターンごと / ComposerAI の最終返答ベース）
+
+    doki_level は 0〜4 を想定：
+
+      0 … ほぼフラット
+      1 … ちょっとトキメキ（片想い〜好意）
+      2 … かなり意識してる（付き合い始め）
+      3 … 人の目も気にならない（ゾッコン）
+      4 … エクストリーム：結婚前提でベタ惚れ
     """
     mode: str = "normal"        # "normal" / "erotic" / "debate" など
     affection: float = 0.0      # 好意・親しみ
@@ -27,71 +34,56 @@ class EmotionResult:
     anger: float = 0.0          # 怒り
     sadness: float = 0.0        # 悲しみ
     excitement: float = 0.0     # 期待・ワクワク
+
+    # ドキドキ系
+    doki_power: float = 0.0     # 0〜100想定（UI からの入力）
+    doki_level: int = 0         # 0〜4 段階
+
     raw_text: str = ""          # LLM の生返答（JSONそのもの or エラー）
 
-    # ---- SuperPack 試験運用フィールド（ドキドキ💓パワー） ----
-    doki_power: float = 0.0     # ドキドキ💓パワー 0.0〜100.0 想定
-    doki_level: int = 0         # ドキドキ段階 0〜3 くらい
-    meta: Dict[str, Any] = field(default_factory=dict)
-
-    # ----------------------------------------
-    # 辞書⇄オブジェクト 変換まわり
-    # ----------------------------------------
     def to_dict(self) -> Dict[str, Any]:
-        """
-        デバッグ／保存用の辞書化。
-        affection_with_doki などの派生値も含める。
-        """
-        data = asdict(self)
-        data["affection_with_doki"] = self.affection_with_doki
-        return data
+        return asdict(self)
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EmotionResult":
-        """
-        将来のセーブデータ復元用。
-        足りない項目はデフォルト値で補完する。
-        """
-        if not isinstance(data, dict):
-            return cls()
-
-        return cls(
-            mode=str(data.get("mode", "normal")),
-            affection=float(data.get("affection", 0.0)),
-            arousal=float(data.get("arousal", 0.0)),
-            tension=float(data.get("tension", 0.0)),
-            anger=float(data.get("anger", 0.0)),
-            sadness=float(data.get("sadness", 0.0)),
-            excitement=float(data.get("excitement", 0.0)),
-            raw_text=str(data.get("raw_text", "")),
-
-            doki_power=float(data.get("doki_power", 0.0)),
-            doki_level=int(data.get("doki_level", 0)),
-            meta=dict(data.get("meta") or {}),
-        )
-
-    # ----------------------------------------
-    # ドキドキ💓補正ロジック
-    # ----------------------------------------
     @property
     def affection_with_doki(self) -> float:
         """
-        ドキドキ💓パワーによる「ゲタ」を履かせた実効好感度。
-        いまは暫定的に doki_level ごとの固定ボーナスでシンプルに定義。
+        ドキドキ💓補正後の実効好感度。
 
-        - level 0: +0.0
-        - level 1: +0.15
-        - level 2: +0.35
-        - level 3: +0.60
+        - doki_power: 最大 +0.40 相当
+        - doki_level: 最大 +0.40 相当（0〜4 を 0.0〜0.4 に線形マップ）
 
-        ※将来的に SuperPack 側でチューニングしてよい前提。
+        → base_affection=0.4, doki_power=100, doki_level=4 なら
+          0.4 + 0.4 + 0.4 = 1.2 → 1.0 にクランプ、というイメージ。
         """
-        bonus_table = [0.0, 0.15, 0.35, 0.60]
-        idx = max(0, min(self.doki_level, len(bonus_table) - 1))
-        bonus = bonus_table[idx]
+        base = float(self.affection or 0.0)
 
-        base = max(0.0, min(1.0, self.affection))
-        return min(1.0, base + bonus)
+        # doki_power 0〜100 にクランプ
+        dp = float(self.doki_power or 0.0)
+        if dp < 0.0:
+            dp = 0.0
+        if dp > 100.0:
+            dp = 100.0
+
+        # doki_level 0〜4 にクランプ
+        try:
+            dl = int(self.doki_level)
+        except Exception:
+            dl = 0
+        if dl < 0:
+            dl = 0
+        if dl > 4:
+            dl = 4
+
+        # ボーナス計算（必要に応じてあとで調整可）
+        bonus_from_power = dp / 100.0 * 0.4      # 0.0〜0.4
+        bonus_from_level = (dl / 4.0) * 0.4      # 0.0〜0.4
+
+        val = base + bonus_from_power + bonus_from_level
+        if val < 0.0:
+            return 0.0
+        if val > 1.0:
+            return 1.0
+        return float(val)
 
 
 @dataclass
@@ -152,12 +144,7 @@ class LongTermEmotion:
 class EmotionAI:
     """
     ComposerAI の最終返答と MemoryAI の記憶コンテキスト・記憶レコードから、
-    フローリアの感情状態（短期・長期）を推定するクラス。
-
-    - analyze():          短期的な感情（EmotionResult）を推定
-    - update_long_term(): MemoryRecord 群から長期感情 LongTermEmotion を更新
-    - decide_judge_mode():短期＋長期の感情から judge_mode を決定
-                          （内部で Strategy クラス群に委譲）
+    キャラクターの感情状態（短期・長期）を推定するクラス。
     """
 
     def __init__(
@@ -191,7 +178,7 @@ class EmotionAI:
 
         system_prompt = """
 あなたは「感情解析専用 AI」です。
-以下の情報から、キャラクター『フローリア』本人の短期的な感情状態を推定してください。
+以下の情報から、キャラクター本人の短期的な感情状態を推定してください。
 
 必ず **JSON オブジェクトのみ** を出力してください。
 説明文やコメント、日本語の文章などは一切書かないでください。
@@ -208,9 +195,8 @@ JSON 形式は以下です：
   "excitement": 0.0〜1.0
 }
 """
-
         desc_lines: List[str] = []
-        desc_lines.append("=== Latest composed reply of Floria ===")
+        desc_lines.append("=== Latest composed reply ===")
         if source_model:
             desc_lines.append(f"(source_model: {source_model})")
         desc_lines.append(final_text or "(empty)")
@@ -272,6 +258,9 @@ JSON 形式は以下です：
                 sadness=float(data.get("sadness", 0.0)),
                 excitement=float(data.get("excitement", 0.0)),
                 raw_text=text,
+                # doki_power / doki_level は UI 側から上書きされる前提なのでここでは 0 初期化
+                doki_power=0.0,
+                doki_level=0,
             )
             self.last_short_result = res
             return res
@@ -294,18 +283,18 @@ JSON 形式は以下です：
         system_prompt = """
 あなたは「長期感情解析専用 AI」です。
 
-以下に、キャラクター『フローリア』に関する重要な記憶の一覧があります。
-それぞれの記憶は、フローリアの人生や対人関係に影響を与えています。
+以下に、キャラクターに関する重要な記憶の一覧があります。
+それぞれの記憶は、そのキャラクターの人生や対人関係に影響を与えています。
 
 仕事は以下です：
 
-1. 記憶から「フローリアが世界全体をどう感じているか」を推定し、
+1. 記憶から「世界全体をどう感じているか」を推定し、
    global_mood として 0.0〜1.0 の数値で表してください。
    例: hope, loneliness, despair, calmness など（ラベルは自由ですが英単語で）
 
-2. 記憶から「フローリアが特定の人物に対してどのような感情を抱いているか」を推定し、
+2. 記憶から「特定の人物に対してどのような感情を抱いているか」を推定し、
    relations として 0.0〜1.0 の数値で表してください。
-   - キーは短い英語ID（例: "traveler", "black_knight", "priestess" など）にしてください。
+   - キーは短い英語ID（例: "traveler", "black_knight", "priestess" など）。
    - 各人物について、以下のフィールドを出力してください：
        affection, trust, anger, fear, sadness, jealousy, attraction
 
@@ -329,7 +318,7 @@ JSON 形式は以下です：
 }
 """
         lines: List[str] = []
-        lines.append("=== Important memories of Floria ===")
+        lines.append("=== Important memories ===")
 
         for idx, rec in enumerate(memory_records, start=1):
             summary = getattr(rec, "summary", None)
@@ -449,9 +438,6 @@ JSON 形式は以下です：
         """
         短期感情（EmotionResult）＋長期感情（self.long_term）から、
         JudgeAI3 に渡すべき judge_mode を決定する。
-
-        - 長期感情がまだ空の段階では、短期感情の mode をそのまま採用
-        - それ以降は JudgeSignal を作り、Strategy 群に判定を委譲
         """
         # 対象となる短期感情を決める
         if emotion is None:
@@ -466,7 +452,6 @@ JSON 形式は以下です：
             and (not self.long_term.relations)
             and self.long_term.last_updated_round == 0
         ):
-            # erotic 判定が出ているのに normal に潰される問題はここで防ぐ
             return emotion.mode or "normal"
 
         # 2) 長期側の代表値をざっくり抽出
