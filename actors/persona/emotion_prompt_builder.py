@@ -6,14 +6,24 @@ from typing import Any, Dict, List, Optional
 
 def build_emotion_based_system_prompt(
     *,
+    persona: Any,
     base_system_prompt: str,
     emotion_override: Optional[Dict[str, Any]] = None,
     mode_current: str = "normal",
 ) -> str:
     """
-    - 既存の system prompt（キャラクター説明など）に
-      affection / doki 情報をヘッダとして付け足した完全版 system_prompt を返す。
-    - 「何も情報がない」ケースでも安全に動作する。
+    既存の system prompt（キャラクター説明など）に
+    affection / doki 情報をヘッダとして付け足した完全版 system_prompt を返す。
+
+    - persona:
+        elf_riseria_da_silva_ja.Persona などの Persona インスタンス。
+        build_emotion_control_guideline(...) を実装していれば、それを優先して使う。
+    - base_system_prompt:
+        Persona 由来の元 system prompt。
+    - emotion_override:
+        MixerAI から渡される emotion/world_state 情報。
+    - mode_current:
+        judge_mode など（"normal" / "erotic" ...）。
     """
     emotion_override = emotion_override or {}
     world_state = emotion_override.get("world_state") or {}
@@ -30,7 +40,7 @@ def build_emotion_based_system_prompt(
     # zone は現状はプレースホルダ（将来チューニング用）
     zone = "auto"
 
-    # doki_level 0–4 を言語化
+    # doki_level 0–4 をざっくり言語化（メタ表示用）
     if doki_level >= 4:
         rel_stage = "エクストリーム：結婚を前提にベタ惚れしているレベル。未来を強く意識している。"
     elif doki_level == 3:
@@ -55,8 +65,70 @@ def build_emotion_based_system_prompt(
         ts = f"{time_slot} / {time_str}" if time_slot and time_str else (time_slot or time_str)
         location_lines.append(f"- 時間帯は「{ts}」。")
 
-    # 口調ガイドラインは doki_level に応じて少し変える
+    # -----------------------------
+    # 口調・距離感ガイドライン本体
+    #   1) Persona が build_emotion_control_guideline を持っていればそれを優先
+    #   2) なければデフォルト実装にフォールバック
+    # -----------------------------
+    guideline: str = ""
+
+    if hasattr(persona, "build_emotion_control_guideline"):
+        try:
+            guideline = persona.build_emotion_control_guideline(
+                affection_with_doki=affection,
+                doki_level=doki_level,
+                mode_current=mode_current,
+            )
+        except Exception:
+            # persona 側で何かあっても落とさずデフォルトへ
+            guideline = ""
+
+    if not guideline:
+        guideline = _build_default_guideline(
+            affection_with_doki=affection,
+            doki_level=doki_level,
+            mode_current=mode_current,
+        )
+
+    # -----------------------------
+    # ヘッダ本体（メタ情報 + ガイドライン）
+    # -----------------------------
+    header_lines: List[str] = []
+
+    header_lines.append("[感情・関係性プロファイル]")
+    header_lines.append(
+        f"- 実効好感度 (affection_with_doki): {affection:.2f} "
+        f"(zone={zone}, doki_level={doki_level}, doki_power={doki_power})"
+    )
+    header_lines.append(f"- 関係ステージ: {rel_stage}")
+    if location_lines:
+        header_lines.extend(location_lines)
+
+    header_lines.append("")  # 空行
+    # guideline 側の先頭/末尾の空行はここでトリム
+    guideline = guideline.strip("\n")
+    header_block = "\n".join(header_lines) + "\n\n" + guideline + "\n"
+
+    if base_system_prompt:
+        new_system_prompt = base_system_prompt.rstrip() + "\n\n" + header_block + "\n"
+    else:
+        new_system_prompt = header_block + "\n"
+
+    return new_system_prompt
+
+
+def _build_default_guideline(
+    *,
+    affection_with_doki: float,
+    doki_level: int,
+    mode_current: str,
+) -> str:
+    """
+    Persona 側に build_emotion_control_guideline() が無い場合に使う
+    デフォルトの口調・距離感ガイドライン。
+    """
     guideline_lines: List[str] = []
+    guideline_lines.append("[口調・距離感のガイドライン]")
 
     if doki_level >= 4:
         guideline_lines.extend(
@@ -98,34 +170,11 @@ def build_emotion_based_system_prompt(
         )
 
     guideline_lines.append(
-        "3) いずれの場合も、キャラクターとして一貫性のある口調と感情表現で返答してください。"
+        "9) いずれの場合も、キャラクターとして一貫性のある口調と感情表現で返答してください。"
         " 不自然に過剰なベタベタさではなく、その場の状況に合った自然な甘さと距離感を大切にしてください。"
     )
 
-    # ヘッダ本体
-    header_lines: List[str] = []
-
-    header_lines.append("[感情・関係性プロファイル]")
-    header_lines.append(
-        f"- 実効好感度 (affection_with_doki): {affection:.2f} (zone={zone}, doki_level={doki_level})"
-    )
-    header_lines.append(f"- 関係ステージ: {rel_stage}")
-    if location_lines:
-        header_lines.extend(location_lines)
-
-    header_lines.append("")  # 空行
-    header_lines.append("[口調・距離感のガイドライン]")
-    guideline_lines = [line.rstrip() for line in guideline_lines]
-    header_lines.extend(guideline_lines)
-
-    header_block = "\n".join(header_lines)
-
-    if base_system_prompt:
-        new_system_prompt = base_system_prompt.rstrip() + "\n\n" + header_block + "\n"
-    else:
-        new_system_prompt = header_block + "\n"
-
-    return new_system_prompt
+    return "\n".join(guideline_lines)
 
 
 def replace_system_prompt(
