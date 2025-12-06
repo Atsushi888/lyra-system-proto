@@ -2,142 +2,67 @@
 
 from __future__ import annotations
 from typing import List, Dict, Any
-import os
 
 import streamlit as st
 
+from personas.persona_floria_ja import Persona
 from actors.answer_talker import AnswerTalker
-
-# 環境変数 LYRA_DEBUG=1 で簡易デバッグログを有効化
-LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
 
 
 class Actor:
-    def __init__(self, name: str, persona: Any) -> None:
-        """
-        name  : "floria" / "riseria" など、キャラクターID用途
-        persona : Persona クラスインスタンス（フローリア用でもリセリア用でもOK）
-        """
+    def __init__(self, name: str, persona: Persona) -> None:
         self.name = name
         self.persona = persona
 
-        # LLMRouterはもう使わない。AnswerTalker内部で自動的にLLMManager/Routerへ接続
+        # LLMRouterはもう使わない。AnswerTalker内部で自動的にLLMManager/Routerへ接続する
         self.answer_talker = AnswerTalker(persona=self.persona)
 
-    # --------------------------------------------------
-    # 会話ログからプレイヤーの最新発言を抽出
-    # --------------------------------------------------
-    @staticmethod
-    def _extract_latest_user_text(conversation_log: List[Dict[str, Any]]) -> str:
+    def speak(self, conversation_log: List[Dict[str, str]]) -> str:
         """
-        conversation_log から、最後のプレイヤー発話を取り出す。
-
-        ログのフォーマット差異に耐えるため、
-        - role == "player" / "user" を優先
-        - テキストキーは "content" 優先 → なければ "text"
-        として拾う。
+        - conversation_log から最新の player 発言を取り出し
+        - Persona に messages を作らせ
+        - AnswerTalker で LLM パイプラインを回す
+        - もし最終返答が空だった場合は、フェイルセーフで「とりあえず何かしゃべる」
         """
-        for entry in reversed(conversation_log):
-            role = entry.get("role") or entry.get("speaker") or ""
-            if role in ("player", "user"):
-                return entry.get("content") or entry.get("text") or ""
-        return ""
-
-    # --------------------------------------------------
-    # Persona による messages 構築
-    # --------------------------------------------------
-    def _build_messages(self, conversation_log: List[Dict[str, Any]], user_text: str) -> List[Dict[str, str]]:
-        """
-        Persona 側に build_messages() があればそれを呼び出し、
-        失敗したときは user_text だけを使ったフォールバックを行う。
-        """
-        messages: List[Dict[str, str]] = []
-
-        if hasattr(self.persona, "build_messages"):
-            try:
-                # 新仕様: conversation_log まるごと渡す
-                messages = self.persona.build_messages(conversation_log)
-                if LYRA_DEBUG:
-                    st.write(
-                        f"[DEBUG:Actor.{self.name}] persona.build_messages(conversation_log) "
-                        f"→ len={len(messages)}"
-                    )
-                return messages
-            except TypeError:
-                # 旧仕様: user_text だけを受け取る版へのフォールバック
-                try:
-                    messages = self.persona.build_messages(user_text)
-                    if LYRA_DEBUG:
-                        st.write(
-                            f"[DEBUG:Actor.{self.name}] persona.build_messages(user_text) "
-                            f"(fallback) → len={len(messages)}"
-                        )
-                    return messages
-                except Exception as e:
-                    if LYRA_DEBUG:
-                        st.write(
-                            f"[DEBUG:Actor.{self.name}] persona.build_messages error: {e}"
-                        )
-
-        # ---- フォールバック（最低限の system + user）----
-        if LYRA_DEBUG:
-            st.write(
-                f"[DEBUG:Actor.{self.name}] build_messages fallback path (simple system+user)."
-            )
-
-        system_prompt = ""
-        if hasattr(self.persona, "get_system_prompt"):
-            try:
-                system_prompt = self.persona.get_system_prompt()
-            except Exception:
-                system_prompt = ""
-
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        if user_text:
-            messages.append({"role": "user", "content": user_text})
-
-        return messages
-
-    # --------------------------------------------------
-    # メイン入口
-    # --------------------------------------------------
-    def speak(self, conversation_log: List[Dict[str, Any]]) -> str:
-        """
-        会話システムから呼ばれるメイン関数。
-
-        conversation_log:
-            CouncilManager 側で管理している [ { role, text/content, ... }, ... ]
-        """
-        if LYRA_DEBUG:
-            st.write(
-                f"[DEBUG:Actor.{self.name}] speak() called. "
-                f"log_len={len(conversation_log)}"
-            )
 
         # プレイヤーの最新発言を取得
-        user_text = self._extract_latest_user_text(conversation_log)
+        user_text = ""
+        for entry in reversed(conversation_log):
+            if entry.get("role") == "player":
+                user_text = entry.get("content", "")
+                break
 
-        if LYRA_DEBUG:
-            st.write(
-                f"[DEBUG:Actor.{self.name}] latest user_text = {repr(user_text)[:120]}"
-            )
+        # ===== DEBUG: 入力ログ =====
+        debug_prefix = f"[DEBUG:Actor] {getattr(self, 'name', 'Actor')} "
+        st.write(
+            f"{debug_prefix}speak() called. "
+            f"user_text.len={len(user_text)}, log_len={len(conversation_log)}"
+        )
 
-        # Persona に messages を作らせる（新旧両方のシグネチャに対応）
-        messages = self._build_messages(conversation_log, user_text)
+        # Persona に messages を作らせる
+        try:
+            messages = self.persona.build_messages(user_text)
+        except TypeError:
+            # もし将来 build_messages(conversation_log) 仕様になっていた場合の保険
+            st.write(f"{debug_prefix}build_messages(user_text) TypeError → conversation_log で再試行")
+            messages = self.persona.build_messages(conversation_log)
 
-        if LYRA_DEBUG:
-            st.write(
-                f"[DEBUG:Actor.{self.name}] messages built. len={len(messages)}"
-            )
+        st.write(f"{debug_prefix}messages built. len={len(messages)}")
 
         # AnswerTalker によるLLMパイプライン処理
         final_reply = self.answer_talker.speak(messages, user_text=user_text)
+        st.write(f"{debug_prefix}AnswerTalker.speak() returned. final_reply.len={len(final_reply)}")
 
-        if LYRA_DEBUG:
-            st.write(
-                f"[DEBUG:Actor.{self.name}] final_reply len={len(final_reply)}, "
-                f"preview={repr(final_reply[:200])}"
+        # ===== フェイルセーフ =====
+        safe_reply = (final_reply or "").strip()
+        if not safe_reply:
+            st.warning(
+                f"{debug_prefix}final_reply is empty. Fallback message will be used."
+            )
+            # 会話が完全に死ぬのを防ぐための暫定セリフ
+            safe_reply = (
+                "あっ……ごめんなさい、ちょっと考え込んじゃってました。"
+                "もう一度だけ、ゆっくり聞かせていただけますか？"
             )
 
-        return final_reply
+        return safe_reply
