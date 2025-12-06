@@ -14,6 +14,7 @@ from actors.emotion_ai import EmotionAI, EmotionResult
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
+from actors.persona.affection_prompt_utils import build_emotion_header
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 
@@ -187,7 +188,9 @@ class AnswerTalker:
     ) -> List[Dict[str, str]]:
         """
         - 既存 messages から system prompt を探す
-        - Persona 情報 + emotion_override で上書きした system_prompt を生成
+        - Persona 情報 + emotion_override から EmotionResult を組み立て、
+          build_emotion_header() で感情ヘッダを生成
+        - base system_prompt の末尾に感情ヘッダを結合
         - messages の先頭 system を差し替え（なければ先頭に追加）
         - 生成した system_prompt を llm_meta["system_prompt_used"] に保存
         """
@@ -197,7 +200,7 @@ class AnswerTalker:
 
         # 既存 system prompt を取得
         base_system_prompt = ""
-        system_index = None
+        system_index: Optional[int] = None
         for idx, m in enumerate(messages):
             if m.get("role") == "system":
                 base_system_prompt = m.get("content", "") or ""
@@ -211,108 +214,90 @@ class AnswerTalker:
             except Exception:
                 pass
 
-        # なければ空からでも良い
-        world_state = emotion_override.get("world_state") or {}
-        scene_emotion = emotion_override.get("scene_emotion") or {}
-        emotion = emotion_override.get("emotion") or {}
+        # world_state / scene_emotion は llm_meta 側に格納している前提
+        world_state = self.llm_meta.get("world_state", {}) or {}
+        scene_emotion = self.llm_meta.get("scene_emotion", {}) or {}
 
-        # affection は doki 補正後を優先
-        affection = float(emotion.get("affection_with_doki", emotion.get("affection", 0.0)))
-        doki_power = int(emotion.get("doki_power", 0) or 0)
-        doki_level = int(emotion.get("doki_level", 0) or 0)
+        # MixerAI からの emotion_override → EmotionResult にマッピング
+        emotion_obj: Optional[EmotionResult] = None
+        if emotion_override:
+            try:
+                emotion_obj = EmotionResult(
+                    mode=str(emotion_override.get("mode", "normal") or "normal"),
+                    affection=float(emotion_override.get("affection", 0.0) or 0.0),
+                    arousal=float(emotion_override.get("arousal", 0.0) or 0.0),
+                    tension=float(emotion_override.get("tension", 0.0) or 0.0),
+                    anger=float(emotion_override.get("anger", 0.0) or 0.0),
+                    sadness=float(emotion_override.get("sadness", 0.0) or 0.0),
+                    excitement=float(emotion_override.get("excitement", 0.0) or 0.0),
+                    doki_power=float(emotion_override.get("doki_power", 0.0) or 0.0),
+                    doki_level=int(emotion_override.get("doki_level", 0) or 0),
+                    raw_text="(from MixerAI override)",
+                )
+            except Exception as e:
+                if LYRA_DEBUG:
+                    st.write(
+                        "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
+                        "EmotionResult build error:",
+                        e,
+                    )
+                emotion_obj = None
 
-        # ザックリとしたラベル
-        if affection >= 0.9:
-            aff_label = "強い恋心（ほぼ告白寸前のレベル）"
-        elif affection >= 0.7:
-            aff_label = "はっきりとした好意（明らかに特別扱いしているレベル）"
-        elif affection >= 0.4:
-            aff_label = "穏やかな好意（友好的〜少し気になっている程度）"
-        else:
-            aff_label = "まだ大きな感情変化はない（普通〜やや好意寄り）"
+        # Persona 共通ユーティリティから感情ヘッダを生成
+        emotion_header = ""
+        try:
+            emotion_header = build_emotion_header(
+                persona=self.persona,
+                emotion=emotion_obj,
+                world_state=world_state,
+                scene_emotion=scene_emotion,
+            ) or ""
+        except Exception as e:
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
+                    "build_emotion_header error:",
+                    e,
+                )
+            emotion_header = ""
 
-        # ドキドキの説明
-        if doki_level >= 3:
-            doki_label = "鼓動が速く、視線や距離感に敏感になっている高揚状態"
-        elif doki_level == 2:
-            doki_label = "少し緊張しつつも、相手を意識してしまう状態"
-        elif doki_level == 1:
-            doki_label = "心のどこかで相手を気にしている軽いときめき"
-        else:
-            doki_label = "特別な高鳴りはないが、落ち着いた会話ができる状態"
+        # base_system_prompt + emotion_header を結合
+        new_system_prompt = base_system_prompt or ""
+        if emotion_header:
+            if new_system_prompt:
+                new_system_prompt = new_system_prompt.rstrip() + "\n\n" + emotion_header
+            else:
+                new_system_prompt = emotion_header
 
-        # 場所と時間はあれば一応説明に含める
-        loc_player = world_state.get("locations", {}).get("player")
-        time_slot = world_state.get("time", {}).get("slot")
-        time_str = world_state.get("time", {}).get("time_str")
-
-        location_hint_lines: List[str] = []
-        if loc_player:
-            location_hint_lines.append(f"- 現在の舞台は「{loc_player}」です。")
-        if time_slot or time_str:
-            ts = f"{time_slot} / {time_str}" if time_slot and time_str else (time_slot or time_str)
-            location_hint_lines.append(f"- 時間帯は「{ts}」です。")
-
-        location_hint = "\n".join(location_hint_lines)
-
-        # override 指示文
-        override_lines = [
-            "[Lyra-System Emotion Override 指示]",
-            f"- 現在の感情モード: {mode_current}",
-            f"- 好感レベル (affection_with_doki): {affection:.2f}",
-            f"  → 解釈: {aff_label}",
-            f"- 一時的なドキドキ状態 (doki_power: {doki_power}, doki_level: {doki_level})",
-            f"  → 解釈: {doki_label}",
-        ]
-        if location_hint:
-            override_lines.append(location_hint)
-
-        override_lines.append(
-            "- 上記の好意・ドキドキ状態をセリフのトーン・距離感・表情描写に必ず反映してください。"
-        )
-        override_lines.append(
-            "- ただしキャラクター設定と世界観から逸脱しない範囲で、"
-            "『今はかなりデレ寄り』であることが分かるように、"
-            "行間や仕草・言い回しでしっかり表現してください。"
-        )
-
-        # mode が erotic の場合は、表現方針だけ少し追記（R18には踏み込まない）
-        if str(mode_current) == "erotic":
-            override_lines.append(
-                "- mode=erotic の場合も、直接的な描写は避け、"
-                "甘いロマンス寄りの表現や、少し大胆なスキンシップの匂わせまでに留めてください。"
-            )
-
-        override_block = "\n".join(override_lines)
-
-        if base_system_prompt:
-            new_system_prompt = base_system_prompt.rstrip() + "\n\n" + override_block + "\n"
-        else:
-            new_system_prompt = override_block + "\n"
-
-        # llm_meta に保存（AnswerTalkerView でそのまま表示される想定）
+        # llm_meta に保存（AnswerTalkerView で参照）
         self.llm_meta["system_prompt_used"] = new_system_prompt
+
+        # system が一切ない & new_system_prompt も空なら、そのまま返す
+        if system_index is None and not new_system_prompt:
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
+                    "no system prompt and no emotion_header → messages unchanged."
+                )
+            return messages
 
         # messages の先頭 system を差し替え / 追加
         new_messages = list(messages)
+        system_payload = {
+            "role": "system",
+            "content": new_system_prompt,
+        }
+
         if system_index is not None:
-            new_messages[system_index] = {
-                "role": "system",
-                "content": new_system_prompt,
-            }
+            new_messages[system_index] = system_payload
         else:
-            new_messages.insert(
-                0,
-                {
-                    "role": "system",
-                    "content": new_system_prompt,
-                },
-            )
+            new_messages.insert(0, system_payload)
 
         if LYRA_DEBUG:
             st.write(
                 "[DEBUG:AnswerTalker._inject_emotion_into_system_prompt] "
-                f"system_index={system_index}, len(new_system_prompt)={len(new_system_prompt)}"
+                f"system_index={system_index}, "
+                f"len(new_system_prompt)={len(new_system_prompt)}"
             )
 
         return new_messages
