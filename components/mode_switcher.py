@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 from typing import Dict, Protocol, Any
-
 import streamlit as st
 
 from auth.roles import Role
 
-from views.game_view import GameView
-from views.user_view import UserView
-from views.backstage_view import BackstageView
+from views.user_view import UserView          # いまは未使用でも残しておく
 from views.private_view import PrivateView
 from views.council_view import CouncilView
 from views.llm_manager_view import create_llm_manager_view
@@ -18,19 +15,46 @@ from views.emotion_control_view import create_emotion_control_view
 from views.persona_editor_view import create_persona_editor_view
 from views.scene_changer_view import create_scene_changer_view
 from views.narrator_manager_view import create_narrator_manager_view
-from views.scene_manager_view import SceneManagerView   # 追加済み
-from views.dokipower_control_view import create_dokipower_control_view  # ★ 新規追加
+from views.scene_manager_view import SceneManagerView
+from views.dokipower_control_view import create_dokipower_control_view
+from views.user_settings_view import create_user_settings_view  # ★ 新規 UserSettings 用
 
 
 class View(Protocol):
     def render(self) -> None: ...
 
 
+def _resolve_view(view_or_factory: Any) -> View:
+    """
+    factory関数 / クラス / インスタンス の違いを吸収して
+    安全に View を返すユーティリティ。
+
+    - factory関数        → そのまま呼ぶ
+    - クラス（type）     → インスタンス化
+    - 生成済みインスタンス → そのまま返す
+    """
+    try:
+        # factory関数
+        if callable(view_or_factory) and not isinstance(view_or_factory, type):
+            v = view_or_factory()
+            return v
+
+        # Viewクラス → new()
+        if isinstance(view_or_factory, type):
+            return view_or_factory()
+
+        # 生成済みインスタンス
+        return view_or_factory
+
+    except Exception as e:
+        st.error(f"Viewの生成でエラー: {type(e).__name__}: {e}")
+        raise
+
+
 class ModeSwitcher:
     LABELS: Dict[str, str] = {
-        "PLAY":          "🎮 ゲームモード",
         "USER":          "🎛️ ユーザー設定（LLM）",
-        "BACKSTAGE":     "🧠 AIリプライシステム",
+        "USERSETTINGS":  "💻 ユーザー設定（その他）",
         "PRIVATE":       "⚙️ （※非公開※）",
         "COUNCIL":       "🗣 会談システム（β）",
         "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",
@@ -39,37 +63,32 @@ class ModeSwitcher:
         "SCENE":         "🚶‍♀️ シーン移動",
         "NARRATOR":      "📝 Narrator Debug",
         "SCENEMGR":      "🌏 Scene Emotion Manager",
-        "DOKIPOWER":     "💓 ドキドキパワー調整",   # ★ 追加
+        "DOKIPOWER":     "💓 ドキドキパワー調整",
     }
 
-    def __init__(self, *, default_key: str = "PLAY", session_key: str = "view_mode") -> None:
+    def __init__(self, *, default_key: str = "USER", session_key: str = "view_mode") -> None:
         self.default_key = default_key
         self.session_key = session_key
 
         self.routes: Dict[str, Dict[str, Any]] = {
-            "PLAY": {
-                "label": self.LABELS["PLAY"],
-                "view": GameView(),
-                "min_role": Role.USER,
-            },
             "USER": {
                 "label": self.LABELS["USER"],
                 "view": create_llm_manager_view,
                 "min_role": Role.USER,
             },
-            "BACKSTAGE": {
-                "label": self.LABELS["BACKSTAGE"],
-                "view": BackstageView(),
-                "min_role": Role.ADMIN,
+            "USERSETTINGS": {   # ★ 新規ルート
+                "label": self.LABELS["USERSETTINGS"],
+                "view": create_user_settings_view,
+                "min_role": Role.USER,
             },
             "PRIVATE": {
                 "label": self.LABELS["PRIVATE"],
-                "view": PrivateView(),
+                "view": PrivateView,
                 "min_role": Role.ADMIN,
             },
             "COUNCIL": {
                 "label": self.LABELS["COUNCIL"],
-                "view": CouncilView(),
+                "view": CouncilView,
                 "min_role": Role.ADMIN,
             },
             "ANSWERTALKER": {
@@ -97,12 +116,12 @@ class ModeSwitcher:
                 "view": create_narrator_manager_view,
                 "min_role": Role.ADMIN,
             },
-            "SCENEMGR": {   # 既存ルート
+            "SCENEMGR": {
                 "label": self.LABELS["SCENEMGR"],
-                "view": SceneManagerView(),
+                "view": SceneManagerView,
                 "min_role": Role.ADMIN,
             },
-            "DOKIPOWER": {   # ★ 新ルート
+            "DOKIPOWER": {
                 "label": self.LABELS["DOKIPOWER"],
                 "view": create_dokipower_control_view,
                 "min_role": Role.ADMIN,
@@ -136,7 +155,12 @@ class ModeSwitcher:
         for key in visible_keys:
             label = self.routes[key]["label"]
             disabled = (key == cur)
-            if st.sidebar.button(label, use_container_width=True, disabled=disabled, key=f"mode_{key}"):
+            if st.sidebar.button(
+                label,
+                use_container_width=True,
+                disabled=disabled,
+                key=f"mode_{key}",
+            ):
                 st.session_state[self.session_key] = key
                 st.rerun()
 
@@ -151,9 +175,5 @@ class ModeSwitcher:
         st.subheader(self.routes[cur]["label"])
 
         view_or_factory: Any = self.routes[cur]["view"]
-        if callable(view_or_factory):
-            view: View = view_or_factory()
-        else:
-            view = view_or_factory  # type: ignore[assignment]
-
+        view: View = _resolve_view(view_or_factory)
         view.render()
