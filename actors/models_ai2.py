@@ -93,6 +93,7 @@ class ModelsAI2:
         *,
         mode_current: str = "normal",
         emotion_override: Optional[Dict[str, Any]] = None,
+        reply_length_mode: str = "auto",
     ) -> Dict[str, Any]:
         """
         Parameters
@@ -105,7 +106,8 @@ class ModelsAI2:
             プリセット切り替えに使いたい場合はここで参照可能。
         emotion_override:
             MixerAI から渡された感情オーバーライド情報（任意）。
-            ここでは logging 用にそのまま結果に混ぜるだけ。
+        reply_length_mode:
+            UserSettings 由来の「発話の長さモード」。現状はロギング用途。
         """
 
         results: Dict[str, Any] = {}
@@ -135,6 +137,7 @@ class ModelsAI2:
                     "error": None,
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
+                    "reply_length_mode": reply_length_mode,
                 }
 
             except Exception as e:
@@ -148,6 +151,7 @@ class ModelsAI2:
                     "error": str(e),
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
+                    "reply_length_mode": reply_length_mode,
                 }
 
         return results
