@@ -86,8 +86,17 @@ class AnswerTalker:
         llm_meta.setdefault("world_state", {})
         llm_meta.setdefault("scene_emotion", {})
         llm_meta.setdefault("emotion_override", {})
-        llm_meta.setdefault("system_prompt_used", "")
+        llm_meta.setdefault("system_prompt_used", {})
         llm_meta.setdefault("emotion_model_snapshot", {})
+
+        # ★ 文章量モード（UserSettings 由来）
+        length_mode = str(
+            self.state.get("reply_length_mode")
+            or llm_meta.get("reply_length_mode")
+            or "auto"
+        )
+        llm_meta.setdefault("reply_length_mode", length_mode)
+        self.state["reply_length_mode"] = length_mode
 
         # Persona 由来のスタイルヒント（旧 Persona クラス経由のデフォルト）
         if "composer_style_hint" not in llm_meta:
@@ -161,22 +170,34 @@ class AnswerTalker:
         messages: List[Dict[str, str]],
         mode_current: str = "normal",
         emotion_override: Optional[Dict[str, Any]] = None,
+        *,
+        length_mode: Optional[str] = None,
     ) -> None:
         if not messages:
             if LYRA_DEBUG:
                 st.write("[DEBUG:AnswerTalker.run_models] messages is empty. skip.")
             return
 
+        # length_mode が明示されなければ、llm_meta / state から拾う
+        if not length_mode:
+            length_mode = str(
+                self.state.get("reply_length_mode")
+                or self.llm_meta.get("reply_length_mode")
+                or "auto"
+            )
+
         if LYRA_DEBUG:
             st.write(
                 f"[DEBUG:AnswerTalker.run_models] start: "
-                f"len(messages)={len(messages)}, mode_current={mode_current}"
+                f"len(messages)={len(messages)}, mode_current={mode_current}, "
+                f"length_mode={length_mode}"
             )
 
         results = self.models_ai.collect(
             messages,
             mode_current=mode_current,
             emotion_override=emotion_override,
+            reply_length_mode=length_mode,
         )
         self.llm_meta["models"] = results
         self.state["llm_meta"] = self.llm_meta
@@ -232,8 +253,17 @@ class AnswerTalker:
         self.llm_meta["judge_mode"] = mode_current
         self.state["judge_mode"] = mode_current
 
+        # 0.1) reply_length_mode 決定（UserSettings → llm_meta）
+        length_mode = str(
+            self.state.get("reply_length_mode")
+            or self.llm_meta.get("reply_length_mode")
+            or "auto"
+        )
+        self.llm_meta["reply_length_mode"] = length_mode
+
         if LYRA_DEBUG:
             st.write(f"[DEBUG:AnswerTalker.speak] judge_mode(current) = {mode_current}")
+            st.write(f"[DEBUG:AnswerTalker.speak] reply_length_mode = {length_mode}")
 
         # 1) MemoryAI.build_memory_context
         try:
@@ -265,8 +295,7 @@ class AnswerTalker:
                 emotion_override,
             )
 
-        # 1.6) system_prompt に emotion_override を織り込む
-        # 既存の system prompt を取得（なければ Persona 側から取得）
+        # 1.6) system_prompt に emotion_override ＋ length_mode を織り込む
         base_system_prompt = ""
         for m in messages:
             if m.get("role") == "system":
@@ -285,6 +314,7 @@ class AnswerTalker:
                 base_system_prompt=base_system_prompt,
                 emotion_override=emotion_override,
                 mode_current=mode_current,
+                length_mode=length_mode,
             )
         else:
             # 念のためのフォールバック：何も加工しない
@@ -330,6 +360,7 @@ class AnswerTalker:
             messages_for_models,
             mode_current=mode_current,
             emotion_override=emotion_override,
+            length_mode=length_mode,
         )
 
         # 3) JudgeAI3
@@ -354,9 +385,6 @@ class AnswerTalker:
                 ", len(chosen_text) =",
                 len(judge_result.get("chosen_text") or ""),
             )
-
-        # 3.5) Composer 用 dev_force_model（開発中は Gemini 固定も可）
-        # self.llm_meta["dev_force_model"] = "gemini"
 
         # 4) ComposerAI
         try:
