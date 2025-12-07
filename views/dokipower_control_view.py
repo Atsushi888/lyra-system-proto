@@ -26,8 +26,8 @@ class DokiPowerControlView:
     def render(self) -> None:
         st.header(self.TITLE)
         st.caption(
-            "ドキドキ💓パワーと感情値を手動で調整し、"
-            "MixerAI などから参照するためのデバッグ用パネルです。"
+            "ドキドキ💓パワー・長期的な関係度（relationship）・ばけばけ度（masking）と、"
+            "基礎的な感情値を手動で調整し、MixerAI などから参照するためのデバッグ用パネルです。"
         )
         self.controller.render()
 
