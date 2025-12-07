@@ -7,6 +7,7 @@ import json
 
 from actors.emotion_ai import EmotionResult
 from actors.emotion_levels import affection_to_level
+from actors.emotion.emotion_state import relationship_stage_from_level
 
 
 class PersonaBase:
@@ -18,6 +19,7 @@ class PersonaBase:
     - messages 構築ヘルパ
     - emotion_profiles を使った好意ラベル / ドキドキガイド
     - EmotionResult / emotion_override からのヘッダ組み立て
+    - relationship_level / masking_degree（ばけばけ度）の解釈
 
     ── をすべてここに集約する。
     """
@@ -248,6 +250,12 @@ class PersonaBase:
         """
         emotion_override を受け取り、system_prompt に感情ヘッダを付け足したものを返す。
         （元々 emotion_prompt_builder にあった責務を PersonaBase に移管）
+
+        ここで扱う主な値:
+          - affection_with_doki … ドキドキ補正後の実効好感度
+          - doki_level          … その場の高揚段階（0〜4）
+          - relationship_level  … 長期的な関係の深さ（0〜100）
+          - masking_degree      … ばけばけ度（0〜1）
         """
         emotion_override = emotion_override or {}
         world_state = emotion_override.get("world_state") or {}
@@ -258,11 +266,23 @@ class PersonaBase:
         affection = float(
             emotion.get("affection_with_doki", emotion.get("affection", 0.0)) or 0.0
         )
-        doki_power = int(emotion.get("doki_power", 0) or 0)
+        doki_power = float(emotion.get("doki_power", 0.0) or 0.0)
         doki_level = int(emotion.get("doki_level", 0) or 0)
 
-        # zone は将来拡張用
-        zone = "auto"
+        # affection_zone があればそれを zone として使う（なければ auto）
+        zone = str(emotion.get("affection_zone", "auto") or "auto")
+
+        # relationship / masking（ばけばけ度）
+        relationship_level = float(
+            emotion.get("relationship_level", emotion.get("relationship", 0.0)) or 0.0
+        )
+        relationship_stage = str(emotion.get("relationship_stage") or "")
+        if not relationship_stage and relationship_level > 0.0:
+            relationship_stage = relationship_stage_from_level(relationship_level)
+
+        masking_degree = float(
+            emotion.get("masking_degree", emotion.get("masking", 0.0)) or 0.0
+        )
 
         # world_state から舞台情報
         loc_player = (world_state.get("locations") or {}).get("player")
@@ -301,17 +321,54 @@ class PersonaBase:
                 mode_current=mode_current,
             )
 
+        # ばけばけ度が高い場合の注意書き（表情を抑える）
+        masking_note = ""
+        if masking_degree >= 0.7:
+            masking_note = (
+                "※ 現在、表情コントロール（ばけばけ度）が高いため、"
+                "内心の恋愛感情や高揚をあえて抑え、"
+                "外見上は一段階落ち着いたトーンで振る舞ってください。"
+            )
+        elif masking_degree >= 0.3:
+            masking_note = (
+                "※ 表情コントロール（ばけばけ度）が中程度のため、"
+                "強すぎるデレは少し抑えつつ、"
+                "さりげない甘さがにじむ程度に留めてください。"
+            )
+
         # ヘッダ組み立て
         header_lines: List[str] = []
         header_lines.append("[感情・関係性プロファイル]")
         header_lines.append(
             f"- 実効好感度 (affection_with_doki): {affection:.2f} "
-            f"(zone={zone}, doki_level={doki_level}, doki_power={doki_power})"
+            f"(zone={zone}, doki_level={doki_level}, doki_power={doki_power:.1f})"
         )
         if affection_label:
             header_lines.append(f"- 好意の解釈: {affection_label}")
+
+        if relationship_level > 0.0:
+            header_lines.append(
+                f"- 関係レベル (relationship_level): {relationship_level:.1f} / 100"
+            )
+            if relationship_stage:
+                header_lines.append(f"- 関係ステージ: {relationship_stage}")
+
+        if masking_degree > 0.0:
+            header_lines.append(
+                f"- 表情コントロール（ばけばけ度）: {masking_degree:.2f} "
+                "(0=素直 / 1=完全に平静を装う)"
+            )
+
         if location_lines:
             header_lines.extend(location_lines)
+
+        # ドキドキと relationship の意味の違いを一行だけ補足
+        header_lines.append(
+            "- 備考: ドキドキ💓はその場の高揚感、relationship_level は長期的な信頼・絆の指標です。"
+        )
+
+        if masking_note:
+            header_lines.append(masking_note)
 
         header_lines.append("")
         guideline = (guideline or "").strip("\n")
