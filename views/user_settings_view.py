@@ -36,4 +36,5 @@ def create_user_settings_view() -> UserSettingsView:
     """
     ModeSwitcher から呼び出すためのファクトリ関数。
     """
+        # typo防止のため単純にインスタンスを返すだけ
     return UserSettingsView()
