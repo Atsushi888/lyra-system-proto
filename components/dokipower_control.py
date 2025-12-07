@@ -22,17 +22,23 @@ def _get_state() -> Dict[str, Any]:
             "affection": 0.5,
             "arousal": 0.3,
             "doki_power": 0.0,
-            "doki_level": 0,  # 0〜4
+            "doki_level": 0,          # 0〜4
+            "relationship_level": 20,  # 長期的な関係の深さ（0〜100）
+            "masking_level": 30,       # ばけばけ度（0〜100）
         }
     return st.session_state[SESSION_KEY]
 
 
 class DokiPowerController:
     """
-    ドキドキ💓パワーと EmotionResult を手動調整するためのコントローラ。
+    ドキドキ💓パワーと EmotionResult ＋長期関係度／ばけばけ度を
+    手動調整するためのコントローラ。
 
-    - affection / arousal / doki_power / doki_level をスライダーで操作
-    - 「適用」で EmotionResult を session_state["mixer_debug_emotion"] に書き込み
+    - affection / arousal / doki_power / doki_level
+    - relationship_level / masking_level
+      をスライダーで操作
+    - 「適用」で EmotionResult を session_state["mixer_debug_emotion"] に書き込み、
+      かつ emotion_manual_controls を session_state["emotion_manual_controls"] に書き込む。
       → MixerAI などがここを読めば、即「効き目」を確認できる。
     """
 
@@ -77,11 +83,38 @@ class DokiPowerController:
             step=0.05,
         )
 
+        # ===== 長期関係度 & ばけばけ度 =====
+        st.subheader("長期関係度 & ばけばけ度")
+
+        relationship_level = st.slider(
+            "relationship_level（長期的な関係の深さ・0〜100）",
+            0, 100,
+            int(state.get("relationship_level", 20)),
+            help=(
+                "0 = ほぼ他人 / 20〜39 = 先輩後輩・友達 "
+                "/ 40〜59 = 両想い手前〜安定しつつある恋人候補 "
+                "/ 60〜79 = 事実上の恋人 "
+                "/ 80〜100 = 夫婦同然・家族レベル"
+            ),
+        )
+
+        masking_level = st.slider(
+            "masking_level（ばけばけ度：感情を“平静”に見せるうまさ・0〜100）",
+            0, 100,
+            int(state.get("masking_level", 30)),
+            help=(
+                "0 = 感情ダダ漏れ / 20〜39 = やや表に出やすい "
+                "/ 40〜59 = そこそこ隠せる "
+                "/ 60〜79 = よほどのことがなければ表に出ない "
+                "/ 80〜100 = かなりの役者。内心は悟らせない。"
+            ),
+        )
+
         # ===== ドキドキパワー =====
-        st.subheader("ドキドキ💓パワー")
+        st.subheader("ドキドキ💓パワー（その場の高揚感）")
 
         doki_power = st.slider(
-            "doki_power（0〜100）",
+            "doki_power（0〜100：目の前にしたときの一時的な胸の高鳴り）",
             0.0, 100.0,
             float(state.get("doki_power", 0.0)),
             step=1.0,
@@ -144,8 +177,9 @@ class DokiPowerController:
         }
         st.write("現在の好感度レベル:", level_label_map.get(level, level))
 
-        # ===== 適用／リセット =====
         st.markdown("---")
+
+        # ===== 適用／リセット =====
         col_apply, col_reset = st.columns(2)
 
         with col_apply:
@@ -156,13 +190,24 @@ class DokiPowerController:
                     "arousal": arousal,
                     "doki_power": doki_power,
                     "doki_level": doki_level,
+                    "relationship_level": relationship_level,
+                    "masking_level": masking_level,
                 }
                 self._set_state(new_state)
 
-                # MixerAI などが読む用のキー
+                # MixerAI などが読む用の EmotionResult
                 st.session_state["mixer_debug_emotion"] = emo.to_dict()
+
+                # ★ relationship / doki / masking の手動パラメータ
+                st.session_state["emotion_manual_controls"] = {
+                    "relationship_level": int(relationship_level),
+                    "doki_power": float(doki_power),
+                    "masking_level": int(masking_level),
+                }
+
                 st.success(
-                    "EmotionResult を session_state['mixer_debug_emotion'] に保存しました。"
+                    "EmotionResult を session_state['mixer_debug_emotion'] に、"
+                    "手動パラメータを session_state['emotion_manual_controls'] に保存しました。"
                 )
 
         with col_reset:
@@ -173,6 +218,16 @@ class DokiPowerController:
                     "arousal": 0.3,
                     "doki_power": 0.0,
                     "doki_level": 0,
+                    "relationship_level": 20,
+                    "masking_level": 30,
                 }
                 self._set_state(init_state)
-                st.info("ドキドキ💓パワーと感情値を初期状態に戻しました。")
+
+                # 手動パラメータも初期化
+                st.session_state["emotion_manual_controls"] = {
+                    "relationship_level": 20,
+                    "doki_power": 0.0,
+                    "masking_level": 30,
+                }
+
+                st.info("ドキドキ💓パワー / 感情値 / 手動パラメータを初期状態に戻しました。")
