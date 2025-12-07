@@ -18,6 +18,8 @@ class ComposerAI:
       - ただし llm_manager が存在する場合、Refiner を任意で発動可能
       - dev_force_model があれば最優先
       - world_state（場所・時刻・距離・同伴状態）を軽く整形ロジックに反映
+      - reply_length_mode（short/normal/long/story）は
+        主に system_prompt と Refiner へのヒントとして利用
     """
 
     def __init__(
@@ -60,6 +62,7 @@ class ComposerAI:
         judge: Dict[str, Any] = llm_meta.get("judge") or {}
         world_state: Dict[str, Any] = llm_meta.get("world_state") or {}
         scene_emotion: Dict[str, Any] = llm_meta.get("scene_emotion") or {}
+        reply_length_mode: str = str(llm_meta.get("reply_length_mode") or "auto")
 
         dev_force_model: str = str(llm_meta.get("dev_force_model") or "").strip()
 
@@ -128,6 +131,7 @@ class ComposerAI:
             "refiner_used": False,
             "refiner_status": "pending" if self.llm_manager else "skipped",
             "refiner_error": "",
+            "reply_length_mode": reply_length_mode,
         }
 
         return self._maybe_refine(result, llm_meta)
@@ -306,12 +310,30 @@ class ComposerAI:
             raise RuntimeError("llm_manager is None")
 
         style_hint = str(llm_meta.get("style_hint") or "")
+        length_mode = str(llm_meta.get("reply_length_mode") or "auto").lower()
 
+        # 基本ポリシー
         system_prompt = (
             "あなたは日本語の文章スタイリストです。\n"
             "意味や内容を変えず、文体を整えて自然で読みやすい日本語にしてください。\n"
-            "文章量を大きく変えないでください。\n"
         )
+
+        # 長さモード別のヒント
+        if length_mode == "short":
+            system_prompt += (
+                "文章量は可能な限りコンパクトに保ち、2〜3文程度に収まるよう意識してください。\n"
+                "不要な言い回しや重複を削り、簡潔にまとめてください。\n"
+            )
+        elif length_mode in ("long", "story"):
+            system_prompt += (
+                "文章量は元のテキストと同程度か、少しだけ厚くして構いませんが、"
+                "分量が元の文章のおよそ2倍を超えないようにしてください。\n"
+                "情景や感情のニュアンスを自然な範囲で補っても構いません。\n"
+            )
+        else:
+            system_prompt += (
+                "文章量を大きく変えないでください。長さはだいたい元のテキストと同程度に保ってください。\n"
+            )
 
         if style_hint:
             system_prompt += (
