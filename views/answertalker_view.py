@@ -10,12 +10,7 @@ import streamlit as st
 from auth.roles import Role  # いまは未使用だが将来の拡張用に残しておく
 from actors.actor import Actor
 from actors.answer_talker import AnswerTalker
-from personas.persona_floria_ja import Persona  # いまはフローリア固定
-
-
-class View(Protocol):
-    def render(self) -> None:
-        ...
+from actors.persona.persona_classes.persona_riseria_ja import Persona
 
 
 # 環境変数でデバッグモードを切り替え
