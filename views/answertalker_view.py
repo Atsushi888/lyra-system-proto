@@ -31,8 +31,12 @@ class AnswerTalkerView:
     TITLE = "🧩 AnswerTalker（AI統合テスト）"
 
     def __init__(self) -> None:
+        # --- プレイヤー名（UserSettings 由来）を取得 ---
+        player_name = st.session_state.get("player_name", "アツシ")
+
         # Actor と AnswerTalker を初期化
-        persona = Persona()
+        # Persona には player_name を渡しておく
+        persona = Persona(player_name=player_name)
         self.actor = Actor("floria", persona)
 
         # ★ Streamlit の state を AnswerTalker に明示的に渡す
@@ -47,6 +51,14 @@ class AnswerTalkerView:
 
     def render(self) -> None:
         st.header(self.TITLE)
+
+        # 現在のユーザー設定の軽い表示（任意・デバッグ補助）
+        player_name = st.session_state.get("player_name", "アツシ")
+        reply_length_mode = st.session_state.get("reply_length_mode", "auto")
+        st.caption(
+            f"現在のプレイヤー名: **{player_name}**  /  "
+            f"発話長さモード: **{reply_length_mode}**"
+        )
 
         st.info(
             "この画面では、Actor に紐づく AnswerTalker が保持している llm_meta の内容 "
