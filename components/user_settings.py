@@ -16,13 +16,15 @@ def _get_default_settings() -> Dict[str, Any]:
     """
     return {
         "player_name": "アツシ",
-        "reply_length_mode": "auto",  # "auto" / "short" / "normal" / "long" / "story"
+        # "auto" / "short" / "normal" / "long" / "story"
+        "reply_length_mode": "auto",
     }
 
 
 def _ensure_state() -> Dict[str, Any]:
     """
     session_state 内に user_settings が無ければ初期化して返す。
+    あわせて、よく使う値はトップレベルにもミラーしておく。
     """
     if SESSION_KEY not in st.session_state:
         st.session_state[SESSION_KEY] = _get_default_settings()
@@ -31,7 +33,16 @@ def _ensure_state() -> Dict[str, Any]:
         current = dict(_get_default_settings())
         current.update(st.session_state[SESSION_KEY] or {})
         st.session_state[SESSION_KEY] = current
-    return st.session_state[SESSION_KEY]
+
+    settings: Dict[str, Any] = st.session_state[SESSION_KEY]
+
+    # 他モジュールが直接参照しやすいよう、トップレベルにも置いておく
+    st.session_state.setdefault("player_name", settings.get("player_name", "アツシ"))
+    st.session_state.setdefault(
+        "reply_length_mode", settings.get("reply_length_mode", "auto")
+    )
+
+    return settings
 
 
 class UserSettings:
@@ -138,5 +149,6 @@ class UserSettings:
 
         st.caption(
             "※ プレイヤー名は、新しく生成される Persona から順次反映されます。\n"
-            "※ 発話の長さモードは、今後 AnswerTalker / Persona 側から system_prompt や Composer に反映される想定です。"
+            "※ 発話の長さモードは、AnswerTalker / Persona / Composer 側から "
+            "system_prompt と最終テキストに反映されます。"
         )
