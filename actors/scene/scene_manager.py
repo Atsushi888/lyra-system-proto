@@ -1,4 +1,3 @@
-# actors/scene/scene_manager.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -29,6 +28,86 @@ DIM_JA_LABELS: Dict[str, str] = {
     "sadness":    "sadness（悲しみ）",
     "excitement": "excitement（期待・ワクワク）",
 }
+
+
+# ==========================================================
+# ★ 追加: 相手キャラ名の取得 & Council リセットユーティリティ
+# ==========================================================
+def _get_partner_display_name() -> str:
+    """
+    相手として設定されている Persona から名前を参照。
+    取得できなければ『リセリア』を返す。
+    """
+    default_name = "リセリア"
+
+    try:
+        llm_meta = st.session_state.get("llm_meta") or {}
+        persona = llm_meta.get("persona") or {}
+        profile = persona.get("profile") or {}
+        name = (
+            profile.get("public_name")
+            or persona.get("display_name")
+            or default_name
+        )
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    except Exception:
+        pass
+
+    return default_name
+
+
+def _reset_council_state(world_before: Dict[str, Any],
+                         world_after: Dict[str, Any]) -> None:
+    """
+    world_state の「プレイヤー/相手の場所・時間」に変化があれば、
+    Council 系の状態を Round0 相当にリセットする。
+    """
+    def _extract(ws: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(ws, dict):
+            ws = {}
+        loc = ws.get("locations") or {}
+        if not isinstance(loc, dict):
+            loc = {}
+        t = ws.get("time") or {}
+        if not isinstance(t, dict):
+            t = {}
+        return {
+            "player": loc.get("player"),
+            "partner": loc.get("floria"),  # world_state 内キーは従来どおり "floria"
+            "slot": t.get("slot"),
+            "time_str": t.get("time_str"),
+        }
+
+    before_core = _extract(world_before)
+    after_core = _extract(world_after)
+
+    if before_core == after_core:
+        # 場所・時間の何も変化がなければ何もしない
+        return
+
+    # CouncilManager インスタンスがあれば reset() を呼ぶ
+    mgr = st.session_state.get("council_manager")
+    if mgr is not None and hasattr(mgr, "reset"):
+        try:
+            mgr.reset()
+        except Exception:
+            pass
+
+    # 汎用的なセッションキーも初期化
+    st.session_state["council_history"] = []
+    st.session_state["council_round"] = 0
+
+    # 必要なら他のキーもここに追加していける
+    # 例:
+    # st.session_state["council_state"] = {}
+    # st.session_state["council_mode"] = "normal"
+
+    try:
+        st.toast("場所／時間の変更を検知 → Council 表示をリセットしました。")
+    except Exception:
+        # toast が使えない環境でも死なないように
+        st.info("場所／時間の変更を検知 → Council 表示をリセットしました。")
 
 
 @dataclass
@@ -271,6 +350,9 @@ class SceneManager:
         if not self.time_slots or not self.locations:
             self._init_default()
 
+        # ★ 相手キャラ表示名（Persona → 取れなければ「リセリア」）
+        partner_name = _get_partner_display_name()
+
         scene_ai = SceneAI(state=st.session_state)
         world = scene_ai.get_world_state()
         locs = world.get("locations", {})
@@ -296,7 +378,8 @@ class SceneManager:
         cols = st.columns([2, 2, 1])
         with cols[0]:
             st.write(f"プレイヤー: **{player_loc}**")
-            st.write(f"フローリア: **{floria_loc}**")
+            # ★ ラベルを相手名に差し替え
+            st.write(f"{partner_name}: **{floria_loc}**")
         with cols[1]:
             slot_spec = self.time_slots.get(current_slot, {})
             st.write(
@@ -368,33 +451,36 @@ class SceneManager:
                 val = float(dest_emo.get(dim, 0.0))
                 st.write(f"- {label}: {val:+.2f}")
 
-        if st.button("✨ この条件でプレイヤーを移動する", type="primary", key="sm_do_move_player"):
+        if st.button("✨ この条件でプレイヤーを移動する",
+                     type="primary",
+                     key="sm_do_move_player"):
+            world_before = world
             scene_ai.move_player(
                 dest_loc,
                 time_slot=dest_slot,
                 time_str=dest_time_str,
             )
+            world_after = scene_ai.get_world_state()
 
-            # 会談システムがあれば Round0 からやり直し
-            mgr = st.session_state.get("council_manager")
-            if mgr is not None and hasattr(mgr, "reset"):
-                mgr.reset()
+            # ★ 場所／時間が変わった場合のみ Council をリセット
+            _reset_council_state(world_before, world_after)
 
-            st.success("プレイヤーを移動し、会談システムをリセットしました。")
+            st.success("プレイヤーを移動しました。")
             st.rerun()
 
         st.markdown("---")
 
-        # === ②' フローリア移動プラン ===
-        st.markdown("### 🧚‍♀️ フローリア移動プラン")
+        # === ②' 相手（リセリア）移動プラン ===
+        st.markdown(f"### 🧚‍♀️ {partner_name} 移動プラン")
 
-        with st.expander("フローリアの現在位置と移動先", expanded=False):
+        # ★ 選択 UI は expander 内、ボタンは expander の外に出す
+        with st.expander(f"{partner_name} の現在位置と移動先", expanded=False):
             colf1, colf2 = st.columns([2, 2])
             with colf1:
                 st.write(f"現在位置: **{floria_loc}**")
             with colf2:
                 dest_loc_floria = st.selectbox(
-                    "フローリアの移動先",
+                    f"{partner_name} の移動先",
                     options=list(self.locations.keys()),
                     index=list(self.locations.keys()).index(floria_loc)
                     if floria_loc in self.locations
@@ -402,15 +488,17 @@ class SceneManager:
                     key="sm_move_dest_loc_floria",
                 )
 
-            if st.button("✨ この条件でフローリアを移動する", key="sm_do_move_floria"):
-                scene_ai.move_floria(dest_loc_floria)
+        # ★ ボタンは expander の外（普通に見える位置）
+        label_move_partner = f"✨ この条件で{partner_name}を移動する"
+        if st.button(label_move_partner, key="sm_do_move_floria"):
+            world_before = world
+            scene_ai.move_floria(dest_loc_floria)
+            world_after = scene_ai.get_world_state()
 
-                mgr = st.session_state.get("council_manager")
-                if mgr is not None and hasattr(mgr, "reset"):
-                    mgr.reset()
+            _reset_council_state(world_before, world_after)
 
-                st.success("フローリアの現在地を更新し、会談システムをリセットしました。")
-                st.rerun()
+            st.success(f"{partner_name} の現在地を更新しました。")
+            st.rerun()
 
         st.markdown("---")
 
