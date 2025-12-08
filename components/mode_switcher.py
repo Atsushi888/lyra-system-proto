@@ -1,4 +1,3 @@
-# components/mode_switcher.py
 from __future__ import annotations
 
 from typing import Dict, Protocol, Any
@@ -13,7 +12,7 @@ from views.llm_manager_view import create_llm_manager_view
 from views.answertalker_view import create_answertalker_view
 from views.emotion_control_view import create_emotion_control_view
 from views.persona_editor_view import create_persona_editor_view
-from views.scene_changer_view import create_scene_changer_view
+# from views.scene_changer_view import create_scene_changer_view  # ← 封印
 from views.narrator_manager_view import create_narrator_manager_view
 from views.scene_manager_view import SceneManagerView
 from views.dokipower_control_view import create_dokipower_control_view
@@ -60,7 +59,7 @@ class ModeSwitcher:
         "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",
         "EMOTION":       "💓 感情オーバーライド",
         "PERSONA":       "🖋️ キャラ設定（Persona）",
-        "SCENE":         "🚶‍♀️ シーン移動",
+        # "SCENE":         "🚶‍♀️ シーン移動",  # ← 旧 scene_changer 用ラベルは削除
         "NARRATOR":      "📝 Narrator Debug",
         "SCENEMGR":      "🌏 Scene Emotion Manager",
         "DOKIPOWER":     "💓 ドキドキパワー調整",
@@ -106,11 +105,11 @@ class ModeSwitcher:
                 "view": create_persona_editor_view,
                 "min_role": Role.ADMIN,
             },
-            "SCENE": {
-                "label": self.LABELS["SCENE"],
-                "view": create_scene_changer_view,
-                "min_role": Role.ADMIN,
-            },
+            # "SCENE": {
+            #     "label": self.LABELS["SCENE"],
+            #     "view": create_scene_changer_view,
+            #     "min_role": Role.ADMIN,
+            # },
             "NARRATOR": {
                 "label": self.LABELS["NARRATOR"],
                 "view": create_narrator_manager_view,
