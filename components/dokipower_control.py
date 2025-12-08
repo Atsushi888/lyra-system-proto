@@ -74,7 +74,6 @@ class DokiPowerController:
         # ===== 基本感情 =====
         st.subheader("基本感情値")
 
-        # 1行ずつ縦並びで: mode → affection → arousal
         mode = st.selectbox(
             "mode",
             options=["normal", "erotic", "debate"],
@@ -126,11 +125,42 @@ class DokiPowerController:
             ),
         )
 
-        # ===== 周囲状況（人目の有無） =====
+        # ===== ドキドキパワー =====
+        st.subheader("ドキドキ💓パワー（その場の高揚感）")
+
+        doki_power = st.slider(
+            "doki_power（0〜100：目の前にしたときの一時的な胸の高鳴り）",
+            0.0, 100.0,
+            float(state.get("doki_power", 0.0)),
+            step=1.0,
+        )
+
+        # しきい値から自動レベル判定（手動で上書き可：デバッグ用途）
+        auto_level = 0
+        if doki_power >= 85:
+            auto_level = 4
+        elif doki_power >= 60:
+            auto_level = 3
+        elif doki_power >= 40:
+            auto_level = 2
+        elif doki_power >= 20:
+            auto_level = 1
+
+        st.caption(
+            f"自動レベル判定（暫定）: {auto_level} "
+            "（20/40/60/85 付近で 1/2/3/4）"
+        )
+
+        doki_level = st.slider(
+            "doki_level（0〜4：段階インデックス・手動上書き可）",
+            0, 4,
+            int(state.get("doki_level", auto_level)),
+        )
+
+        # ===== 周囲状況（人目の有無） ※ドキドキの直下へ移動 =====
         st.subheader("周囲の状況（人目の有無）")
 
         current_party_mode = str(state.get("party_mode", "alone") or "alone").lower()
-        # "alone" / "private" → 二人きり、それ以外 → 周囲に人がいる
         initial_index = 0 if current_party_mode in ("alone", "private") else 1
 
         people_choice = st.radio(
@@ -155,43 +185,6 @@ class DokiPowerController:
             party_mode = "both"
 
         st.caption(f"デバッグ用 party_mode: {party_mode!r}")
-
-        # ===== ドキドキパワー =====
-        st.subheader("ドキドキ💓パワー（その場の高揚感）")
-
-        doki_power = st.slider(
-            "doki_power（0〜100：目の前にしたときの一時的な胸の高鳴り）",
-            0.0, 100.0,
-            float(state.get("doki_power", 0.0)),
-            step=1.0,
-        )
-
-        # しきい値から自動レベル判定（手動で上書き可：デバッグ用途）
-        # 0 … ほぼフラット
-        # 1 … ちょっとトキメキ
-        # 2 … かなり意識してる
-        # 3 … ゾッコン
-        # 4 … エクストリーム（結婚前提レベル）
-        auto_level = 0
-        if doki_power >= 85:
-            auto_level = 4
-        elif doki_power >= 60:
-            auto_level = 3
-        elif doki_power >= 40:
-            auto_level = 2
-        elif doki_power >= 20:
-            auto_level = 1
-
-        st.caption(
-            f"自動レベル判定（暫定）: {auto_level} "
-            "（20/40/60/85 付近で 1/2/3/4）"
-        )
-
-        doki_level = st.slider(
-            "doki_level（0〜4：段階インデックス・手動上書き可）",
-            0, 4,
-            int(state.get("doki_level", auto_level)),
-        )
 
         # ===== EmotionResult を構築（スライダー値ベースのプレビュー） =====
         emo = EmotionResult(
