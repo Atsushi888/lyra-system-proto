@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 
 from actors.emotion_ai import EmotionResult
-from actors.emotion_levels import affection_to_level
+from actors.emotion.emotion_levels import affection_to_level
 from actors.emotion.emotion_state import relationship_stage_from_level
 
 
