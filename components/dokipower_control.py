@@ -6,7 +6,7 @@ from typing import Dict, Any
 import streamlit as st
 
 from actors.emotion_ai import EmotionResult
-from actors.emotion_levels import affection_to_level
+from actors.emotion.emotion_levels import affection_to_level
 
 
 SESSION_KEY = "dokipower_state"
