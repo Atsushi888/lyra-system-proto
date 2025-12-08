@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+from actors.emotion.emotion_levels import affection_to_level
 
 
 # =========================================
@@ -79,10 +81,6 @@ def calc_relationship_level_from_affection(
     """
     長期 affection（0〜1）から relationship_level（0〜100）を計算する。
 
-    - affection_long_term: 記憶ベースで平滑化された affection_with_doki
-    - current_level: 直前の relationship_level（0〜100）
-    - alpha: 反応の速さ（0〜1）。大きいほど最新値に寄せる。
-
     単純に
         target = affection_long_term * 100
         new = (1 - alpha) * current_level + alpha * target
@@ -135,3 +133,168 @@ def calc_masking_degree(
         base -= 0.1
 
     return max(0.0, min(1.0, base))
+
+
+# =========================================
+# EmotionState 本体
+# =========================================
+
+@dataclass
+class EmotionState:
+    """
+    MixerAI が統合した「最終的な感情状態」を保持するクラス。
+
+    - EmotionAI の短期結果（llm_meta["emotion"]）
+    - 長期状態（llm_meta["emotion_long_term"] などから将来拡張）
+    - UI / デバッグ用の上書き（doki スライダー等）
+
+    をまとめて 1 つの dict に正規化し、
+    PersonaBase / AnswerTalker / Viewer から参照しやすくする。
+    """
+
+    # 短期ベース
+    affection: float = 0.0
+    affection_with_doki: float = 0.0
+    affection_zone: str = "auto"   # low / mid / high / extreme / auto
+    doki_power: float = 0.0
+    doki_level: int = 0
+    mode: str = "normal"           # "normal" / "erotic" など
+
+    # 長期関係
+    relationship_level: float = 0.0    # 0〜100
+    relationship_stage: str = ""       # acquaintance / friendly / ...
+
+    # ばけばけ度（0=素直 / 1=完全に平静を装う）
+    masking_degree: float = 0.0
+
+    # この状態がどこ由来か（debug_dokipower / manual / auto 等）
+    source: str = "auto"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    # -----------------------------------------
+    # 統合ロジック
+    # -----------------------------------------
+    @classmethod
+    def from_sources(
+        cls,
+        *,
+        base: Optional[Dict[str, Any]] = None,
+        long_term: Optional[Dict[str, Any]] = None,
+        manual: Optional[Dict[str, Any]] = None,
+        debug: Optional[Dict[str, Any]] = None,
+        source_hint: str = "auto",
+    ) -> "EmotionState":
+        """
+        MixerAI から呼ばれるファクトリ。
+
+        優先度:
+          debug > manual > base
+
+        - base: EmotionAI.analyze() の結果（EmotionResult.to_dict 相当）
+        - long_term: EmotionAI.update_long_term() の結果（将来拡張用）
+        - manual: 将来のUI手動調整用（現時点では未使用）
+        - debug: dokipower_control など、強制上書き用
+        """
+        # -----------------------------
+        # どのソースを主として使うか
+        # -----------------------------
+        src: Dict[str, Any] = {}
+        if isinstance(debug, dict) and debug:
+            src = debug
+            src_origin = "debug_dokipower"
+        elif isinstance(manual, dict) and manual:
+            src = manual
+            src_origin = "manual"
+        elif isinstance(base, dict) and base:
+            src = base
+            src_origin = source_hint or "auto"
+        else:
+            src_origin = "auto"
+
+        # -----------------------------
+        # affection / doki 関連
+        # -----------------------------
+        aff_raw = float(src.get("affection", 0.0) or 0.0)
+        # affection_with_doki があれば優先
+        aff_with_doki = float(
+            src.get("affection_with_doki", src.get("affection", 0.0)) or 0.0
+        )
+        aff_with_doki = max(0.0, min(1.0, aff_with_doki))
+
+        doki_power = float(src.get("doki_power", 0.0) or 0.0)
+        try:
+            doki_level = int(src.get("doki_level", 0) or 0)
+        except Exception:
+            doki_level = 0
+        doki_level = max(0, min(4, doki_level))
+
+        mode = str(src.get("mode") or "normal")
+
+        # affection_zone（JSON 側で計算済みがあれば尊重）
+        zone = str(src.get("affection_zone") or "").strip()
+        if not zone:
+            zone = affection_to_level(aff_with_doki)
+
+        # -----------------------------
+        # relationship_level / stage
+        # -----------------------------
+        # base 側にすでにあればそれを信頼
+        rl_from_src = float(src.get("relationship_level", 0.0) or 0.0)
+
+        # long_term 側に明示的な level があれば、補助的に利用
+        rl_from_lt = 0.0
+        if isinstance(long_term, dict):
+            try:
+                rl_from_lt = float(long_term.get("relationship_level", 0.0) or 0.0)
+            except Exception:
+                rl_from_lt = 0.0
+
+        relationship_level = rl_from_src
+        if relationship_level <= 0.0 and rl_from_lt > 0.0:
+            relationship_level = rl_from_lt
+
+        # どちらにも無ければ、affection からざっくり推定
+        if relationship_level <= 0.0 and aff_with_doki > 0.0:
+            relationship_level = calc_relationship_level_from_affection(
+                affection_long_term=aff_with_doki,
+                current_level=0.0,
+                alpha=0.5,
+            )
+
+        # ステージ名
+        rel_stage = str(src.get("relationship_stage") or "").strip()
+        if not rel_stage and relationship_level > 0.0:
+            rel_stage = relationship_stage_from_level(relationship_level)
+
+        # -----------------------------
+        # masking_degree（ばけばけ度）
+        # -----------------------------
+        if "masking_degree" in src:
+            masking_degree = float(src.get("masking_degree") or 0.0)
+        elif "masking" in src:
+            masking_degree = float(src.get("masking") or 0.0)
+        else:
+            # world_state / party_mode はここではまだ見ていない。
+            # 場所ごとのマスク調整は PersonaBase 側で行う想定。
+            masking_degree = calc_masking_degree(
+                relationship_level=relationship_level,
+                party_mode="alone",
+                is_primary_partner=True,
+            )
+
+        masking_degree = max(0.0, min(1.0, masking_degree))
+
+        return cls(
+            affection=aff_raw,
+            affection_with_doki=aff_with_doki,
+            affection_zone=zone,
+            doki_power=doki_power,
+            doki_level=doki_level,
+            mode=mode,
+            relationship_level=relationship_level,
+            relationship_stage=rel_stage,
+            masking_degree=masking_degree,
+            source=src_origin,
+        )
