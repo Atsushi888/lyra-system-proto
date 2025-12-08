@@ -28,17 +28,24 @@ class EmotionResult:
       4 … エクストリーム：結婚前提でベタ惚れ
     """
     mode: str = "normal"        # "normal" / "erotic" / "debate" など
-    affection: float = 0.0      # 好意・親しみ
+    affection: float = 0.0      # 好意・親しみ（0.0〜1.0）
     arousal: float = 0.0        # 性的な高ぶり
     tension: float = 0.0        # 緊張・不安
     anger: float = 0.0          # 怒り
     sadness: float = 0.0        # 悲しみ
     excitement: float = 0.0     # 期待・ワクワク
 
-    # ドキドキ系
+    # ドキドキ系（一時的な高揚）
     doki_power: float = 0.0     # 0〜100想定（UI からの入力）
     doki_level: int = 0         # 0〜4 段階
 
+    # 関係性・ばけばけ系（Mixer / PersonaBase で利用）
+    relationship_stage: int = 0           # 0〜4（neutral〜engaged）
+    relationship_label: str = "neutral"   # "friends" など
+    relationship_level: float = 0.0       # 0〜100（長期的な深さ）
+    masking_degree: float = 0.0           # 0〜1（0=素直 / 1=完全に隠す）
+
+    # 生の LLM 出力
     raw_text: str = ""          # LLM の生返答（JSONそのもの or エラー）
 
     def to_dict(self) -> Dict[str, Any]:
@@ -258,9 +265,14 @@ JSON 形式は以下です：
                 sadness=float(data.get("sadness", 0.0)),
                 excitement=float(data.get("excitement", 0.0)),
                 raw_text=text,
-                # doki_power / doki_level は UI 側から上書きされる前提なのでここでは 0 初期化
+                # doki_power / doki_level / relationship_* / masking_*
+                # は UI や EmotionModel 側で上書きされる前提でここでは 0 初期化
                 doki_power=0.0,
                 doki_level=0,
+                relationship_stage=0,
+                relationship_label="neutral",
+                relationship_level=0.0,
+                masking_degree=0.0,
             )
             self.last_short_result = res
             return res
