@@ -1,4 +1,3 @@
-# actors/persona/persona_base.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -21,8 +20,8 @@ class PersonaBase:
     - EmotionResult / emotion_override からのヘッダ組み立て
     - relationship_level / masking_degree（ばけばけ度）の解釈
     - reply_length_mode（short/normal/long/story）の文章量ガイド
-
-    ── をすべてここに集約する。
+    - masking_defaults（persona JSON）＋ world_state に応じた
+      「二人きりデレ解禁／人前ではばけばけ抑制」の注釈
     """
 
     JSON_NAME: str = ""  # 継承クラス側で上書きする想定
@@ -217,6 +216,53 @@ class PersonaBase:
         return "\n".join(lines)
 
     # --------------------------------------------------
+    # masking_defaults（JSON）系
+    # --------------------------------------------------
+    def _get_masking_defaults(self) -> Dict[str, Any]:
+        """
+        persona JSON の masking_defaults セクションを返す。
+
+        期待構造（例）:
+          "masking_defaults": {
+            "masking_level": 0.5,
+            "masking_behavior": {
+              "unmasked_locations": ["home", "riseria_home", "club_animal"],
+              "masked_locations": ["school", "classroom", "hallway"],
+              "rules": {
+                "alone_bonus": "...",
+                "public_softening": "...",
+                "example_line": "……二人きりですね、{PLAYER_NAME}先輩…"
+              }
+            }
+          }
+        """
+        raw = self.raw.get("masking_defaults") or {}
+        if not isinstance(raw, dict):
+            return {}
+
+        behavior = raw.get("masking_behavior") or {}
+        if not isinstance(behavior, dict):
+            behavior = {}
+
+        # 正規化して返す
+        default_level = 0.0
+        try:
+            default_level = float(raw.get("masking_level", 0.0) or 0.0)
+        except Exception:
+            default_level = 0.0
+
+        unmasked = behavior.get("unmasked_locations", []) or []
+        masked = behavior.get("masked_locations", []) or []
+        rules = behavior.get("rules", {}) or {}
+
+        return {
+            "default_level": default_level,
+            "unmasked_locations": [str(x).lower() for x in unmasked],
+            "masked_locations": [str(x).lower() for x in masked],
+            "rules": rules,
+        }
+
+    # --------------------------------------------------
     # 長さモード（reply_length_mode）関連
     # --------------------------------------------------
     @staticmethod
@@ -317,16 +363,89 @@ class PersonaBase:
         masking_degree = float(
             emotion.get("masking_degree", emotion.get("masking", 0.0)) or 0.0
         )
+        if masking_degree < 0.0:
+            masking_degree = 0.0
+        if masking_degree > 1.0:
+            masking_degree = 1.0
 
         # world_state から舞台情報
         loc_player = (world_state.get("locations") or {}).get("player")
+        location_name = (
+            loc_player
+            or world_state.get("location_name")
+            or world_state.get("player_location")
+        )
         time_info = world_state.get("time") or {}
-        time_slot = time_info.get("slot")
+        time_slot = time_info.get("slot") or world_state.get("time_of_day")
         time_str = time_info.get("time_str")
 
+        # 二人きりかどうかの推定
+        party_mode = (
+            world_state.get("party_mode")
+            or (world_state.get("party") or {}).get("mode")
+        )
+        others_around = world_state.get("others_around")
+        is_alone = False
+        if party_mode == "alone":
+            is_alone = True
+        if others_around is False:
+            is_alone = True
+        if others_around is True:
+            is_alone = False
+
+        # masking_defaults による「場所ごとのばけばけ挙動」
+        masking_cfg = self._get_masking_defaults()
+        unmasked_locs = masking_cfg.get("unmasked_locations", [])
+        masked_locs = masking_cfg.get("masked_locations", [])
+
+        loc_key = str(location_name or "").lower()
+        is_unmasked_place = bool(
+            loc_key and any(tag in loc_key for tag in unmasked_locs)
+        )
+        is_masked_place = bool(
+            loc_key and any(tag in loc_key for tag in masked_locs)
+        )
+
+        # 場所に応じた説明用メモ
+        masking_env_note = ""
+        example_line = ""
+        rules = masking_cfg.get("rules") or {}
+        raw_example = rules.get("example_line")
+        if isinstance(raw_example, str) and raw_example.strip():
+            # {PLAYER_NAME} を実際の名前に差し替え
+            example_line = raw_example.replace("{PLAYER_NAME}", self.player_name)
+
+        # 「二人きり＋ばけばけ無効」かどうか
+        if is_unmasked_place:
+            # 自宅／リセ家／部室など → 常に素が出やすい場所
+            masking_env_note = (
+                "※ 現在は親しい相手とくつろげる場所にいるため、"
+                "表情コントロール（ばけばけ度）があってもほとんど働かず、"
+                "素直なデレや甘えがそのまま表に出て構いません。"
+            )
+            if example_line:
+                masking_env_note += f"\n  例: 「{example_line}」"
+        elif is_masked_place:
+            # 学校など人前になりやすい場所
+            if is_alone:
+                masking_env_note = (
+                    "※ 形式上は人目のある場所ですが、いまは実質二人きりなので、"
+                    "ばけばけ度はあまり気にせず素直な恋愛感情を見せて構いません。"
+                )
+                if example_line:
+                    masking_env_note += f"\n  例: 「{example_line}」"
+            else:
+                masking_env_note = (
+                    "※ ここは人目のある場所のため、"
+                    "ばけばけ度を意識して外見上は一段階落ち着いたトーンで振る舞ってください。"
+                    "内心のドキドキや恋愛感情は、仕草や視線、ささやかな言葉ににじませる程度に留めてください。"
+                )
+        # world_state が無い／マッチしない場合は env_note なし
+
+        # 舞台情報（場所・時間帯）
         location_lines: List[str] = []
-        if loc_player:
-            location_lines.append(f"- 現在の舞台は「{loc_player}」。")
+        if location_name:
+            location_lines.append(f"- 現在の舞台は「{location_name}」。")
         if time_slot or time_str:
             ts = (
                 f"{time_slot} / {time_str}"
@@ -355,7 +474,7 @@ class PersonaBase:
                 mode_current=mode_current,
             )
 
-        # ばけばけ度が高い場合の注意書き（表情を抑える）
+        # ばけばけ度数値に基づくデフォルト注意書き
         masking_note = ""
         if masking_degree >= 0.7:
             masking_note = (
@@ -369,6 +488,11 @@ class PersonaBase:
                 "強すぎるデレは少し抑えつつ、"
                 "さりげない甘さがにじむ程度に留めてください。"
             )
+
+        # ただし「自宅・リセ家・部室」や「学校でも二人きり」の場合は、
+        # 数値的なばけばけ度より環境優先で、masking_note を上書きする。
+        if masking_env_note:
+            masking_note = masking_env_note
 
         # 文章量ガイドライン
         length_guideline = self._build_length_guideline(length_mode)
@@ -463,7 +587,7 @@ class PersonaBase:
 
         return new_messages
 
-    # ---- EmotionResult → 「感情ヘッダ」（旧 affection_prompt_utils.build_emotion_header 相当） ----
+    # ---- EmotionResult → 「感情ヘッダ」（旧 API 互換） ----
 
     def build_emotion_header(
         self,
