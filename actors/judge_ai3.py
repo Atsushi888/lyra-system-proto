@@ -10,11 +10,11 @@ class JudgeAI3:
     複数 LLM の回答候補（models）から、
     「どのモデルのテキストを採用するか」を決める審判クラス。
 
-    v0.4 方針:
+    v0.4.1 方針:
       - models: { model_name: {"status": "ok", "text": "...", ...}, ... }
-      - 「好みの長さモード」に近いテキストを高評価
-        - preferred_length_mode: "auto" / "short" / "normal" / "long" / "story"
-      - auto/normal モードでは従来どおり「ユーザー発話長さ」も参照
+      - preferred_length_mode: "auto" / "short" / "normal" / "long" / "story"
+        - short/normal/long/auto … ターゲット長に近いものをスコアで選択
+        - story … とにかく「一番長いテキスト」を採用
       - 将来的に内容評価ロジックを足していけるように、スコア算出はメソッド分離
 
     run() の戻り値:
@@ -128,23 +128,39 @@ class JudgeAI3:
                 "candidates": [],
             }
 
-        best = max(candidates, key=lambda c: c["score"])
+        # status=ok かつ 非空テキスト のみを「使用可能候補」とみなす
+        usable: List[Dict[str, Any]] = [
+            c for c in candidates
+            if c["status"] == "ok" and c["text"]
+        ]
 
-        if best["score"] < 0:
+        if not usable:
             return {
                 "status": "error",
                 "error": "no_usable_candidate",
                 "chosen_model": "",
                 "chosen_text": "",
-                "reason": "all candidates had non-positive scores",
+                "reason": "no candidates had status=ok and non-empty text",
                 "candidates": candidates,
             }
+
+        # ------------------------------------------------------
+        # story モード: 一番長いテキストを採用する
+        # ------------------------------------------------------
+        if length_mode == "story":
+            best = max(usable, key=lambda c: c["length"])
+            selection_strategy = "story_max_length"
+        else:
+            # それ以外: スコア最大を採用する（スコアが同じなら先のもの）
+            best = max(usable, key=lambda c: c["score"])
+            selection_strategy = "length_score"
 
         chosen_model = best["name"]
         chosen_text = best["text"]
         chosen_len = best["length"]
 
         reason = (
+            f"selection={selection_strategy}, "
             f"preferred_length={target_len}, "
             f"length_mode={length_mode}, "
             f"user_length={user_len}, "
@@ -174,9 +190,7 @@ class JudgeAI3:
           - "normal" … 旧仕様ベース（気分屋オフ / ノイズ弱め）
           - "short"  … かなり短め固定
           - "long"   … 会話中心のロング
-          - "story"  … ミニシーン級のロング
-
-        単位は「文字数」を想定。
+          - "story"  … ミニシーン級ロング（※ story では選択時は「最大長優先」）
         """
 
         m = (length_mode or "auto").lower()
@@ -206,11 +220,12 @@ class JudgeAI3:
             return max(160, target)
 
         if m == "story":
-            # だいたい 380〜520 文字くらい（しっかり長め）
-            base = 450
-            noise = random.randint(-80, 80)
+            # 目安として 400〜600 文字を想定しておくが、
+            # 実際の選択は「一番長い候補」を使うのでここは参考値。
+            base = 500
+            noise = random.randint(-100, 100)
             target = base + noise
-            return max(280, target)
+            return max(300, target)
 
         if m == "normal":
             # 旧仕様をベースに、極端モードをオフにした版
