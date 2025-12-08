@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 import streamlit as st
 
 from actors.actor import Actor
-from personas.persona_floria_ja import Persona as FloriaPersona
+# from personas.persona_floria_ja import Persona as FloriaPersona
 from actors.persona.persona_classes.persona_riseria_ja import Persona as RiseriaPersona
 from actors.narrator_ai import NarratorAI
 from actors.narrator.narrator_manager import NarratorManager
@@ -15,41 +15,6 @@ from actors.scene_ai import SceneAI
 # ==========================================================
 # CouncilManager を取得するヘルパ
 # ==========================================================
-
-def get_or_create_council_actor() -> Actor:
-    """
-    互換性のためのヘルパ。
-    既存コードでは「フローリア前提」で Actor を取得しているので、
-    ここは従来どおりフローリア Actor を返す。
-    """
-    actor_key = "council_actor"
-
-    if actor_key not in st.session_state:
-        st.session_state[actor_key] = Actor(
-            name="フローリア",
-            persona=FloriaPersona(),
-        )
-
-    return st.session_state[actor_key]
-
-
-def get_or_create_floria_council_manager() -> "CouncilManager":
-    """
-    既存フローリア用の CouncilManager をセッションから取得（なければ作成）。
-    """
-    key = "council_manager_floria"
-
-    if key not in st.session_state:
-        floria_actor = Actor(name="フローリア", persona=FloriaPersona())
-        st.session_state[key] = CouncilManager(
-            partner=floria_actor,
-            partner_role="floria",
-            session_key="council_log_floria",
-        )
-
-    return st.session_state[key]
-
-
 def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "CouncilManager":
     """
     リセリアとの会話用 CouncilManager をセッションから取得（なければ作成）。
