@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from actors.emotion_ai import EmotionResult
-from actors.emotion_levels import affection_to_level
+from actors.emotion.emotion_levels import affection_to_level
 
 
 @dataclass
