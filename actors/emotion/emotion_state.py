@@ -2,238 +2,136 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
-
-from actors.emotion_levels import affection_to_level
+from typing import Any, Dict
 
 
-def _clamp(value: float, lo: float, hi: float) -> float:
-    if value < lo:
-        return lo
-    if value > hi:
-        return hi
-    return value
+# =========================================
+# 関係の長期状態（メモリベース）
+# =========================================
+
+@dataclass
+class EmotionLongTermState:
+    """
+    記憶ベースで積算された長期的な関係状態。
+    - affection_mean: 長期平均の affection_with_doki（0〜1）
+    - relationship_level: 0〜100 のスケール（ゲーム全体の“進行度”用）
+    - relationship_stage: テキスト向けのステージ名
+    - sample_count: 集計に使われた「記憶レコード」の概算数
+    """
+    affection_mean: float = 0.0
+    relationship_level: float = 0.0
+    relationship_stage: str = "acquaintance"
+    sample_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EmotionLongTermState":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            affection_mean=float(data.get("affection_mean", 0.0) or 0.0),
+            relationship_level=float(data.get("relationship_level", 0.0) or 0.0),
+            relationship_stage=str(data.get("relationship_stage") or "acquaintance"),
+            sample_count=int(data.get("sample_count", 0) or 0),
+        )
 
 
-def _clamp_int(value: int, lo: int, hi: int) -> int:
-    if value < lo:
-        return lo
-    if value > hi:
-        return hi
-    return value
-
+# =========================================
+# 関係レベル → ステージ名
+# =========================================
 
 def relationship_stage_from_level(level: float) -> str:
     """
-    relationship_level (0–100) から、人間可読なステージ説明を返す。
+    0〜100 の relationship_level を、ざっくりした段階ラベルに変換する。
 
-    ※ 仕様（暫定）：
-      0–9    : distant … まだほぼ他人
-      10–24  : acquaintance … 顔見知り〜知人
-      25–39  : friendly … 普通に話せる関係
-      40–59  : close_friend … 親友・大事な友人
-      60–69  : pre_lover … 事実上の恋人手前（周囲からはそう見える）
-      70–84  : lover_full … 完落ちの恋人ゾーン
-      85–100 : quasi_married … 夫婦未満・夫婦同然ゾーン
+    （ゲーム内的な意味合いイメージ）
+      0〜10   … acquaintance     : 知り合い〜顔見知り
+      10〜30  … friendly         : 友好的／それなりに仲良し
+      30〜60  … close_friends    : 親しい友人〜相棒
+      60〜85  … dating           : 恋人関係（ほぼ両想い）
+      85〜100 … soulmate         : 将来を真剣に考えている相手
     """
-    lv = _clamp(level, 0.0, 100.0)
+    x = max(0.0, min(100.0, level))
 
-    if lv >= 85.0:
-        return (
-            "quasi_married: 夫婦未満・夫婦同然のゾーン。"
-            "長期的な生活や家族としての未来を強く意識している。"
-        )
-    if lv >= 70.0:
-        return (
-            "lover_full: 恋人として完全に落ち着いているゾーン。"
-            "相互の信頼が非常に高く、多少の喧嘩では揺らがない。"
-        )
-    if lv >= 60.0:
-        return (
-            "pre_lover: 周囲からは恋人同士と見なされやすいが、"
-            "二人の中ではまだ『付き合っている』という言葉を"
-            "はっきり交わしていない、甘酸っぱい段階。"
-        )
-    if lv >= 40.0:
-        return (
-            "close_friend: 深く信頼し合う親友ゾーン。"
-            "どんな相談も打ち明けられるが、恋愛としてはまだ曖昧。"
-        )
-    if lv >= 25.0:
-        return (
-            "friendly: 普通に仲の良い友人ゾーン。"
-            "一緒にいて楽しいが、特別扱いはまだ少ない。"
-        )
-    if lv >= 10.0:
-        return (
-            "acquaintance: 顔見知り〜知人ゾーン。"
-            "必要なときに会話はするが、まだ距離感はある。"
-        )
-    return (
-        "distant: ほとんど関わりがない、またはまだ距離がある段階。"
-        "丁寧で形式的な対応が中心。"
-    )
+    if x >= 85.0:
+        return "soulmate"
+    if x >= 60.0:
+        return "dating"
+    if x >= 30.0:
+        return "close_friends"
+    if x >= 10.0:
+        return "friendly"
+    return "acquaintance"
 
 
-@dataclass
-class EmotionState:
+# =========================================
+# affection → relationship_level 変換
+# =========================================
+
+def calc_relationship_level_from_affection(
+    affection_long_term: float,
+    *,
+    current_level: float = 0.0,
+    alpha: float = 0.3,
+) -> float:
     """
-    MixerAI が統合した「そのターンの感情状態」の標準フォーマット。
+    長期 affection（0〜1）から relationship_level（0〜100）を計算する。
 
-    - affection / arousal 系 … 短期的な感情（従来の EmotionResult に近い）
-    - doki_power / doki_level … 好きな相手を前にした「高揚度」の指標（短期）
-    - relationship_level      … 長期的な関係の深さ（0〜100）
-    - masking_degree          … ばけばけ度。0=素直 / 1=完全に平静を装う
+    - affection_long_term: 記憶ベースで平滑化された affection_with_doki
+    - current_level: 直前の relationship_level（0〜100）
+    - alpha: 反応の速さ（0〜1）。大きいほど最新値に寄せる。
+
+    単純に
+        target = affection_long_term * 100
+        new = (1 - alpha) * current_level + alpha * target
+    という指数平滑のイメージ。
     """
+    a = max(0.0, min(1.0, affection_long_term))
+    target = a * 100.0
 
-    # 短期感情
-    mode: str = "normal"
-    affection: float = 0.0
-    arousal: float = 0.0
-    tension: float = 0.0
-    anger: float = 0.0
-    sadness: float = 0.0
-    excitement: float = 0.0
+    alpha = max(0.0, min(1.0, alpha))
+    new_level = (1.0 - alpha) * float(current_level) + alpha * target
+    return max(0.0, min(100.0, new_level))
 
-    # ドキドキ系
-    doki_power: float = 0.0  # 0〜100
-    doki_level: int = 0      # 0〜4
 
-    # 長期関係
-    relationship_level: float = 0.0  # 0〜100
-    relationship_stage: str = ""
+# =========================================
+# ばけばけ度（masking_degree）算出
+# =========================================
 
-    # ばけばけ度
-    masking_degree: float = 0.0      # 0.0〜1.0
+def calc_masking_degree(
+    *,
+    relationship_level: float,
+    party_mode: str = "alone",
+    is_primary_partner: bool = True,
+) -> float:
+    """
+    0〜1 の「表情コントロール度（ばけばけ度）」を返す。
 
-    # 派生値
-    affection_with_doki: float = 0.0
-    affection_zone: str = "low"      # low / mid / high / extreme
+    ざっくり方針:
+      - 基本は 0.0〜0.4 程度（あまり盛りすぎない）
+      - 人前（party_mode != "alone"）では少し高めにする
+      - まだ関係が浅い段階では、逆に“素直度”が下がるように少し上げる
 
-    # ソース情報（デバッグ用）
-    source: str = "auto"             # "auto" / "debug_dokipower" など
+    relationship_level が高く、人前でない & 本命相手 → ほぼ素直（0〜0.1）
+    """
+    rl = max(0.0, min(100.0, relationship_level))
 
-    # -----------------------------
-    # 生成ユーティリティ
-    # -----------------------------
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EmotionState":
-        """
-        dict（従来の EmotionResult.to_dict() や emotion_long_term）から生成。
-        未指定項目はデフォルト値。
-        """
-        d = dict(data or {})
+    # ベースライン：関係が深いほど素直になる（masking が下がる）
+    #  - rl=0   → base ≒ 0.4
+    #  - rl=100 → base ≒ 0.05
+    base = 0.4 - 0.35 * (rl / 100.0)
+    base = max(0.05, min(0.4, base))
 
-        mode = str(d.get("mode", "normal") or "normal")
+    # 人前かどうか
+    pm = (party_mode or "alone").lower()
+    if pm not in ("alone", "private"):
+        # クラスメイトがいる／公共空間など → ちょっと上乗せ
+        base += 0.25
 
-        affection = float(d.get("affection", 0.0) or 0.0)
-        arousal = float(d.get("arousal", 0.0) or 0.0)
-        tension = float(d.get("tension", 0.0) or 0.0)
-        anger = float(d.get("anger", 0.0) or 0.0)
-        sadness = float(d.get("sadness", 0.0) or 0.0)
-        excitement = float(d.get("excitement", 0.0) or 0.0)
+    # 本命相手なら、がんばって“素直寄り”に戻す
+    if is_primary_partner:
+        base -= 0.1
 
-        doki_power = float(d.get("doki_power", 0.0) or 0.0)
-        doki_level = _clamp_int(int(d.get("doki_level", 0) or 0), 0, 4)
-
-        # relationship は long_term 側や debug から入る想定
-        relationship_level = float(
-            d.get("relationship_level", d.get("relationship", 0.0)) or 0.0
-        )
-        relationship_level = _clamp(relationship_level, 0.0, 100.0)
-
-        relationship_stage = str(d.get("relationship_stage", "") or "")
-
-        masking_degree = float(
-            d.get("masking_degree", d.get("masking", 0.0)) or 0.0
-        )
-        masking_degree = _clamp(masking_degree, 0.0, 1.0)
-
-        # affection_with_doki は既存値を優先。無ければ簡易計算。
-        awd_raw = d.get("affection_with_doki", None)
-        if awd_raw is None:
-            # 簡易版：doki_power(0-100) を最大 +0.3 相当にスケーリング
-            bonus = _clamp(doki_power, 0.0, 100.0) / 100.0 * 0.3
-            affection_with_doki = _clamp(affection + bonus, 0.0, 1.0)
-        else:
-            affection_with_doki = _clamp(float(awd_raw or 0.0), 0.0, 1.0)
-
-        # affection_zone は従来ロジックに委ねる
-        affection_zone = d.get("affection_zone") or affection_to_level(
-            affection_with_doki
-        )
-
-        # source は後から上書きされることが多いので最低限
-        source = str(d.get("source", "auto") or "auto")
-
-        return cls(
-            mode=mode,
-            affection=affection,
-            arousal=arousal,
-            tension=tension,
-            anger=anger,
-            sadness=sadness,
-            excitement=excitement,
-            doki_power=doki_power,
-            doki_level=doki_level,
-            relationship_level=relationship_level,
-            relationship_stage=relationship_stage,
-            masking_degree=masking_degree,
-            affection_with_doki=affection_with_doki,
-            affection_zone=affection_zone,
-            source=source,
-        )
-
-    @classmethod
-    def from_sources(
-        cls,
-        *,
-        base: Optional[Dict[str, Any]] = None,
-        long_term: Optional[Dict[str, Any]] = None,
-        manual: Optional[Dict[str, Any]] = None,
-        debug: Optional[Dict[str, Any]] = None,
-        source_hint: str = "auto",
-    ) -> "EmotionState":
-        """
-        複数ソース（base / long_term / manual / debug）をマージして EmotionState を生成。
-
-        優先度（下から上に向かって上書き）:
-            long_term  <  base(EmotionAI)  <  manual  <  debug(dokipower)
-        """
-        merged: Dict[str, Any] = {}
-        for src in (long_term, base, manual, debug):
-            if isinstance(src, dict):
-                merged.update(src)
-
-        state = cls.from_dict(merged)
-
-        if debug:
-            state.source = "debug_dokipower"
-        else:
-            state.source = source_hint or "auto"
-
-        # relationship_stage が空ならここで補完
-        if not state.relationship_stage:
-            state.relationship_stage = relationship_stage_from_level(
-                state.relationship_level
-            )
-
-        # affection_zone も念のため更新
-        state.affection_zone = affection_to_level(state.affection_with_doki)
-
-        return state
-
-    # -----------------------------
-    # 出力
-    # -----------------------------
-    def to_dict(self) -> Dict[str, Any]:
-        """
-        MixerAI → emotion_override["emotion"] へ入れるための dict 形式。
-        従来の EmotionResult dict と互換性を保ちつつ、関係値も含める。
-        """
-        data = asdict(self)
-        # dataclass のキーのままで問題ないが、念のため zone も追加
-        if "affection_zone" not in data or not data["affection_zone"]:
-            data["affection_zone"] = affection_to_level(self.affection_with_doki)
-
-        return data
+    return max(0.0, min(1.0, base))
