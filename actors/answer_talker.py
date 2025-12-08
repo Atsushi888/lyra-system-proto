@@ -365,7 +365,15 @@ class AnswerTalker:
 
         # 3) JudgeAI3
         try:
-            judge_result = self.judge_ai.run(self.llm_meta.get("models", {}))
+            # UserSettings が session_state に書いた reply_length_mode を見る
+            length_mode = str(self.state.get("reply_length_mode", "auto") or "auto")
+            self.llm_meta["reply_length_mode"] = length_mode
+
+            judge_result = self.judge_ai.run(
+                self.llm_meta.get("models", {}),
+                user_text=user_text or "",
+                preferred_length_mode=length_mode,
+            )
         except Exception as e:
             judge_result = {
                 "status": "error",
@@ -373,9 +381,7 @@ class AnswerTalker:
                 "chosen_model": "",
                 "chosen_text": "",
                 "candidates": [],
-            }
-        self.llm_meta["judge"] = judge_result
-
+            }        self.llm_meta["judge"] = judge_result
         if LYRA_DEBUG:
             st.write(
                 "[DEBUG:AnswerTalker.speak] judge_result.status =",
