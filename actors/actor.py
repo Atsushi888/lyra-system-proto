@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 
 import streamlit as st
 
-from personas.persona_floria_ja import Persona
+# from personas.persona_floria_ja import Persona
 from actors.answer_talker import AnswerTalker
 
 
