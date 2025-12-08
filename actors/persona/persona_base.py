@@ -20,6 +20,7 @@ class PersonaBase:
     - emotion_profiles を使った好意ラベル / ドキドキガイド
     - EmotionResult / emotion_override からのヘッダ組み立て
     - relationship_level / masking_degree（ばけばけ度）の解釈
+    - reply_length_mode（short/normal/long/story）の文章量ガイド
 
     ── をすべてここに集約する。
     """
@@ -139,15 +140,6 @@ class PersonaBase:
     def get_affection_label(self, affection_with_doki: float) -> str:
         """
         affection_with_doki に対応する「好意の解釈」ラベルを JSON から取得。
-
-        JSON 例:
-          "emotion_profiles": {
-            "affection_labels": {
-              "0.9": "...",
-              "0.7": "...",
-              ...
-            }
-          }
         """
         profiles = self._get_emotion_profiles()
         labels = profiles.get("affection_labels", {}) or {}
@@ -185,18 +177,6 @@ class PersonaBase:
     ) -> str:
         """
         doki_level / mode に応じた「口調・距離感ガイドライン」を JSON から組み立て。
-
-        JSON 例:
-          "emotion_profiles": {
-            "doki_levels": {
-              "0": ["...", "..."],
-              "1": ["...", "..."],
-              ...
-            },
-            "mode_overrides": {
-              "erotic": ["...", "..."]
-            }
-          }
         """
         profiles = self._get_emotion_profiles()
         affection_labels = profiles.get("affection_labels", {}) or {}
@@ -237,6 +217,59 @@ class PersonaBase:
         return "\n".join(lines)
 
     # --------------------------------------------------
+    # 長さモード（reply_length_mode）関連
+    # --------------------------------------------------
+    @staticmethod
+    def _normalize_length_mode(mode: str) -> str:
+        m = (mode or "auto").lower()
+        if m not in ("auto", "short", "normal", "long", "story"):
+            return "auto"
+        return m
+
+    def _build_length_guideline(self, length_mode: str) -> str:
+        """
+        reply_length_mode に応じた「文章量ガイドライン」を返す。
+        auto の場合は空文字。
+        """
+        mode = self._normalize_length_mode(length_mode)
+        if mode == "auto":
+            return ""
+
+        lines: List[str] = []
+        lines.append("[文章量ガイドライン]")
+
+        if mode == "short":
+            lines.extend(
+                [
+                    "- 今回は短め（1〜2文程度）を目安にしてください。",
+                    "- 要点だけを簡潔に伝え、余計な前置きや長い独白は避けてください。",
+                ]
+            )
+        elif mode == "normal":
+            lines.extend(
+                [
+                    "- 通常の会話量（3〜5文程度）を目安にしてください。",
+                    "- 必要な感情描写は入れつつも、引き延ばしすぎないようにします。",
+                ]
+            )
+        elif mode == "long":
+            lines.extend(
+                [
+                    "- 会話中心で少し長め（5〜8文程度）を目安にしてください。",
+                    "- セリフを軸にしながら、仕草や視線などの描写も適度に加えてください。",
+                ]
+            )
+        elif mode == "story":
+            lines.extend(
+                [
+                    "- その場の情景や雰囲気も含めたミニシーン風の返答を目安にしてください。",
+                    "- セリフと地の文を組み合わせ、1つの場面として印象に残るように描写してください。",
+                ]
+            )
+
+        return "\n".join(lines)
+
+    # --------------------------------------------------
     # EmotionResult / emotion_override → system_prompt / header
     # --------------------------------------------------
 
@@ -246,16 +279,17 @@ class PersonaBase:
         base_system_prompt: str,
         emotion_override: Optional[Dict[str, Any]] = None,
         mode_current: str = "normal",
+        length_mode: str = "auto",
     ) -> str:
         """
-        emotion_override を受け取り、system_prompt に感情ヘッダを付け足したものを返す。
-        （元々 emotion_prompt_builder にあった責務を PersonaBase に移管）
+        emotion_override を受け取り、system_prompt に感情ヘッダ＋文章量ガイドラインを付け足したものを返す。
 
-        ここで扱う主な値:
+        主に扱う値:
           - affection_with_doki … ドキドキ補正後の実効好感度
           - doki_level          … その場の高揚段階（0〜4）
           - relationship_level  … 長期的な関係の深さ（0〜100）
           - masking_degree      … ばけばけ度（0〜1）
+          - length_mode         … 発話の長さモード（short/normal/long/story/auto）
         """
         emotion_override = emotion_override or {}
         world_state = emotion_override.get("world_state") or {}
@@ -336,6 +370,9 @@ class PersonaBase:
                 "さりげない甘さがにじむ程度に留めてください。"
             )
 
+        # 文章量ガイドライン
+        length_guideline = self._build_length_guideline(length_mode)
+
         # ヘッダ組み立て
         header_lines: List[str] = []
         header_lines.append("[感情・関係性プロファイル]")
@@ -359,10 +396,16 @@ class PersonaBase:
                 "(0=素直 / 1=完全に平静を装う)"
             )
 
+        # 長さモードも一行だけ明示しておく
+        header_lines.append(
+            f"- 発話の長さモード: {self._normalize_length_mode(length_mode)} "
+            "(short/normal/long/story/auto)"
+        )
+
         if location_lines:
             header_lines.extend(location_lines)
 
-        # ドキドキと relationship の意味の違いを一行だけ補足
+        # ドキドキと relationship の違い
         header_lines.append(
             "- 備考: ドキドキ💓はその場の高揚感、relationship_level は長期的な信頼・絆の指標です。"
         )
@@ -370,9 +413,19 @@ class PersonaBase:
         if masking_note:
             header_lines.append(masking_note)
 
-        header_lines.append("")
-        guideline = (guideline or "").strip("\n")
-        header_block = "\n".join(header_lines) + "\n\n" + guideline + "\n"
+        # ブロック連結
+        blocks: List[str] = []
+        blocks.append("\n".join(header_lines))
+
+        guideline = (guideline or "").strip()
+        if guideline:
+            blocks.append(guideline)
+
+        length_guideline = (length_guideline or "").strip()
+        if length_guideline:
+            blocks.append(length_guideline)
+
+        header_block = "\n\n".join(blocks) + "\n"
 
         if base_system_prompt:
             new_system_prompt = base_system_prompt.rstrip() + "\n\n" + header_block + "\n"
@@ -421,9 +474,7 @@ class PersonaBase:
         """
         EmotionResult + world_state から
         LLM 用の「感情・関係性ヘッダテキスト」を構築する。
-
-        ※ サブクラス側が build_emotion_header_hint() を実装していれば
-           そちらが完全オーバーライドとして優先される。
+        （古い API 互換用。新規は build_emotion_based_system_prompt を推奨）
         """
         if emotion is None:
             return ""
