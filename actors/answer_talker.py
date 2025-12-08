@@ -381,7 +381,8 @@ class AnswerTalker:
                 "chosen_model": "",
                 "chosen_text": "",
                 "candidates": [],
-            }        self.llm_meta["judge"] = judge_result
+            }        
+            self.llm_meta["judge"] = judge_result
         if LYRA_DEBUG:
             st.write(
                 "[DEBUG:AnswerTalker.speak] judge_result.status =",
