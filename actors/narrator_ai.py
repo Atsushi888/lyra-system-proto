@@ -85,15 +85,6 @@ class NarratorAI:
         if not isinstance(party, dict):
             party = {}
 
-        # 追加: 場所情報（周囲の人の有無など）
-        place = ws.get("place") or {}
-        if not isinstance(place, dict):
-            place = {}
-
-        # has_people_around / crowd_level がなければ安全なデフォルトを入れる
-        has_people_around = bool(place.get("has_people_around", False))
-        crowd_level = place.get("crowd_level") or "unknown"  # "none" / "few" / "normal" / "crowded" / "unknown"
-
         weather = ws.get("weather", "clear")
 
         player_loc = locs.get("player", "プレイヤーの部屋")
@@ -120,9 +111,6 @@ class NarratorAI:
             "time_slot": time_slot,
             "time_str": time_str,
             "weather": weather,
-            # 追加: 周囲の人の有無・混み具合
-            "has_people_around": has_people_around,
-            "crowd_level": crowd_level,
         }
 
     # ============================================================
@@ -148,8 +136,6 @@ class NarratorAI:
         time_str = snap["time_str"]
         weather = snap["weather"]
         partner_name = self.partner_name
-        has_people_around = snap.get("has_people_around", False)
-        crowd_level = snap.get("crowd_level", "unknown")
 
         player_profile = player_profile or {}
         partner_state = floria_state or {}
@@ -164,24 +150,21 @@ class NarratorAI:
         }
         time_of_day_jp = slot_label_map.get(time_slot, time_slot)
 
-        # 混雑度の日本語ヒント（あくまでナレ用のテキストヒント）
-        if not has_people_around or crowd_level in ("none", "empty"):
-            people_hint = "ほとんど人影はなく、周囲は静かです。"
-            people_line = "周囲の利用者: ほとんどいない（静か）。"
-        else:
-            if crowd_level == "few":
-                people_hint = "ちらほらと他の利用者がいて、それぞれ静かに過ごしています。"
-                people_line = "周囲の利用者: 数人いる（やや静か）。"
-            elif crowd_level == "crowded":
-                people_hint = "多くの人が行き交い、にぎやかな雰囲気です。"
-                people_line = "周囲の利用者: 多い（ややにぎやか）。"
-            else:  # "normal" または "unknown"
-                people_hint = "適度に人の気配があり、落ち着いたにぎわいがあります。"
-                people_line = "周囲の利用者: 適度にいる（落ち着いたにぎわい）。"
+        # ====== 共通で入れたい「モブ義務」説明文 ======
+        # ・完全な二人きり禁止
+        # ・公共の場では、周囲の他者・気配・音を最低1文以上描写
+        mob_rule = """
+- この場所がプール・食堂・教室・廊下・中庭など「公共の場／共有スペース」の場合、
+  主役の二人だけの空間として描写してはいけません。
+  必ず、周囲にいる他の利用者・生徒・監視員などの
+  「動き・姿・声・物音・視線」いずれかを最低1文以上、背景として描写してください。
+- たとえ人数が少なく静かな時間帯であっても、
+  「誰もいない完全な貸し切り」にはしないでください。
+""".strip()
 
         if party_mode == "alone":
             # ===== プレイヤー一人きりバージョン =====
-            system = """
+            system = f"""
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
 - プレイヤーキャラクターが一人きりでいる状況の「ラウンド0」の導入文を書きます。
@@ -190,8 +173,7 @@ class NarratorAI:
 - プレイヤーや他キャラクターのセリフは一切書かない（台詞は禁止）。
 - このシーンの相手キャラクター（例: フローリアやリセリア）はこの場にいません。
   本文中にその相手キャラクターの名前や存在を出してはいけません。
-- 周囲に他の利用者や通行人がいるかどうかが指定されている場合は、
-  その「人の有無」や雰囲気を必ず1文以上でさりげなく描写してください。
+{mob_rule}
 - 最後の1文には、プレイヤーがこれから誰かに会ったり、行動を起こしたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
@@ -204,21 +186,20 @@ world_state: {ws}
 - 現在地: {player_loc}
 - 時刻帯: {time_of_day_jp}（slot={time_slot}, time={time_str}）
 - 天候: {weather}
-- {people_line}
-- 説明的なヒント: {people_hint}
-- 現在この場にいるのはプレイヤーだけです。相手キャラクター（{partner_name}）は別の場所にいます。
+- 周囲の利用者・通行人: 多少はいるが静かで、プレイヤーに直接関わってはいません。
+- 現在この場にいるのはプレイヤーだけです（物語の主役として）。相手キャラクター（{partner_name}）は別の場所にいます。
 
 [要件]
 上記の状況にふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
 - プレイヤーの一人きりの空気感や、これから何かが起こりそうな予感を描写してください。
-- 周囲に他の人がいる場合は、その気配や距離感を1文以上で自然に織り込んでください。
+- 背景として、周囲にいる他の利用者や、そこから伝わる気配・物音を少なくとも1文は描写してください。
 - 相手キャラクター（{partner_name}）の名前や存在には一切触れないでください。
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
 
         else:
             # ===== プレイヤー＋相手キャラクター同伴バージョン =====
-            system = """
+            system = f"""
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
 - プレイヤーと「相手キャラクター」（例: フローリアやリセリア）が、
@@ -226,9 +207,7 @@ world_state: {ws}
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーや相手キャラクターのセリフは一切書かない（台詞は禁止）。
 - 二人の距離感や空気、これから会話が始まりそうな雰囲気をさりげなく示してください。
-- 周囲に他の利用者や通行人がいるかどうかが指定されている場合は、
-  「二人だけの世界」になり過ぎないように、その人々の気配や動きも自然に描写してください。
-  （ただしモブの描写は控えめにし、あくまで主役はプレイヤーと相手キャラクターです。）
+{mob_rule}
 - 最後の1文には、プレイヤーが何か話しかけたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
@@ -241,8 +220,7 @@ world_state: {ws}
 - 現在地: {player_loc}
 - 時刻帯: {time_of_day_jp}（slot={time_slot}, time={time_str}）
 - 天候: {weather}
-- 周囲の利用者: {people_line}
-- 説明的なヒント: {people_hint}
+- 周囲の利用者・通行人: ほとんどいないが、完全な貸し切りではなく、少数の人影や気配があります。
 - 相手キャラクター名: {partner_name}
 - {partner_name} の雰囲気・感情: {partner_mood}
 - プレイヤーと {partner_name} は、今この場所で一緒にいますが、まだ一言も会話を交わしていません。
@@ -250,7 +228,8 @@ world_state: {ws}
 [要件]
 上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
 - プレイヤーと {partner_name} の距離感や、これから会話が始まりそうな空気感を中心に描写してください。
-- 周囲に他の人がいる設定であれば、その気配やプール（あるいは場所）の雰囲気も1文以上で自然に描写してください。
+- その際、この場所が共有スペースであるなら、周囲にいる他の利用者の存在や気配（水をかく音、足音、小さな話し声など）を、
+  少なくとも1文は背景描写として入れてください。二人きりの空間として描いてはいけません。
 - プレイヤーや {partner_name} のセリフは書かないでください（地の文のみ）。
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
