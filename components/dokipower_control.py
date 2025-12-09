@@ -58,7 +58,6 @@ class DokiPowerController:
         # ===== 基本感情 =====
         st.subheader("基本感情値")
 
-        # 1行ずつ縦並びで: mode → affection → arousal
         mode = st.selectbox(
             "mode",
             options=["normal", "erotic", "debate"],
@@ -121,11 +120,6 @@ class DokiPowerController:
         )
 
         # しきい値から自動レベル判定（手動で上書き可：デバッグ用途）
-        # 0 … ほぼフラット
-        # 1 … ちょっとトキメキ
-        # 2 … かなり意識してる
-        # 3 … ゾッコン
-        # 4 … エクストリーム（結婚前提レベル）
         auto_level = 0
         if doki_power >= 85:
             auto_level = 4
@@ -147,7 +141,7 @@ class DokiPowerController:
             int(state.get("doki_level", auto_level)),
         )
 
-        # ===== 周囲の状況（ここを DokiPower セクションの直下に配置） =====
+        # ===== 周囲の状況 =====
         st.subheader("周囲の状況")
 
         surrounding = st.radio(
@@ -174,6 +168,21 @@ class DokiPowerController:
         st.markdown("---")
         st.subheader("現在の EmotionResult（スライダー値プレビュー）")
         st.json(emo.to_dict())
+
+        # ★ ここで「環境ステータス」を明示的に表示する
+        st.markdown("#### 環境ステータス（このコントローラ固有の情報）")
+        human_surround = "二人きり" if surrounding == "two_alone" else "他にも人がいる"
+        st.write(f"- 周囲の状況: **{human_surround}**  (`{surrounding}`)")
+        st.write(f"- relationship_level（プレビュー）: **{relationship_level}**")
+        st.write(
+            f"- masking_level（スライダー値）: **{masking_level}** "
+            f"→ EmotionResult.masking_degree = **{masking_level / 100.0:.2f}**"
+        )
+
+        # すでに適用済みの emotion_manual_controls も見えるようにする
+        manual = st.session_state.get("emotion_manual_controls")
+        with st.expander("適用済み emotion_manual_controls の中身を見る", expanded=False):
+            st.json(manual or {"status": "まだ『適用』ボタンが押されていません。"})
 
         # ドキドキ補正後の好感度＆レベル表示
         aff_with_doki = getattr(emo, "affection_with_doki", emo.affection)
