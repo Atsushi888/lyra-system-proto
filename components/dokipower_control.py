@@ -23,7 +23,7 @@ def _get_state() -> Dict[str, Any]:
             "affection": 0.5,
             "arousal": 0.3,
             "doki_power": 0.0,
-            "doki_level": 0,          # 0〜4
+            "doki_level": 0,           # 0〜4
             "relationship_level": 20,  # 長期的な関係の深さ（0〜100）
             "masking_level": 30,       # ばけばけ度（0〜100）
             "environment": "alone",    # "alone" / "with_others"
@@ -145,7 +145,7 @@ class DokiPowerController:
             int(state.get("doki_level", auto_level)),
         )
 
-        # ===== 周囲の状況（party_mode 相当） =====
+        # ===== 周囲の状況（環境フラグ） =====
         env_default = state.get("environment", "alone")
         if env_default not in ("alone", "with_others"):
             env_default = "alone"
@@ -157,6 +157,11 @@ class DokiPowerController:
             format_func=lambda k: "二人きり (alone)" if k == "alone" else "他にも人がいる (with_others)",
             horizontal=True,
         )
+
+        # environment → others_present（world_state 用）にマッピング
+        # - alone        → others_present = False（完全二人きり）
+        # - with_others  → others_present = True（周囲に他の生徒たちがいる）
+        others_present_bool = True if environment == "with_others" else False
 
         # ===== EmotionResult を構築（スライダー値ベースのプレビュー） =====
         emo = EmotionResult(
@@ -212,6 +217,9 @@ class DokiPowerController:
         )
 
         st.markdown(f"- 周囲の状況: {env_label}")
+        st.markdown(
+            f"- world_state.others_present に渡す予定の値: **{others_present_bool}**"
+        )
         st.markdown(f"- relationship_level（プレビュー）: **{relationship_level}**")
         st.markdown(
             f"- masking_level（スライダー値） = **{masking_level}** → "
@@ -241,12 +249,19 @@ class DokiPowerController:
                 # MixerAI などが読む用の EmotionResult
                 st.session_state["mixer_debug_emotion"] = emo.to_dict()
 
-                # 手動パラメータ本体
+                # 手動パラメータ本体（Emotion/Mixer/Scene 共通で読めるよう others_present も含める）
                 st.session_state["emotion_manual_controls"] = {
                     "relationship_level": int(relationship_level),
                     "doki_power": float(doki_power),
                     "masking_level": int(masking_level),
                     "environment": environment,
+                    # ★ 新規：world_state 向けの外野フラグ
+                    "others_present": others_present_bool,
+                }
+
+                # ★ 将来 SceneAI 側で world_state にミラーするためのフックも用意しておく
+                st.session_state["world_state_manual_controls"] = {
+                    "others_present": others_present_bool,
                 }
 
                 # 成功メッセージより「即反映」を優先して強制リラン
@@ -271,15 +286,25 @@ class DokiPowerController:
                     del st.session_state["emotion_manual_controls"]
                 if "mixer_debug_emotion" in st.session_state:
                     del st.session_state["mixer_debug_emotion"]
+                if "world_state_manual_controls" in st.session_state:
+                    del st.session_state["world_state_manual_controls"]
 
                 st.rerun()
 
         st.markdown("---")
 
-        # ===== 現在の emotion_manual_controls（グループ外・常時表示） =====
-        st.subheader("現在の emotion_manual_controls（Mixer が読む値）")
+        # ===== 現在の emotion_manual_controls（常時表示） =====
+        st.subheader("現在の emotion_manual_controls（Mixer / Scene が読む値）")
         manual = st.session_state.get("emotion_manual_controls")
         if manual is None:
             st.info("まだ『適用』ボタンが押されていません。")
         else:
             st.json(manual)
+
+        # ===== world_state_manual_controls の可視化 =====
+        st.subheader("現在の world_state_manual_controls（world_state 用フラグ）")
+        ws_manual = st.session_state.get("world_state_manual_controls")
+        if ws_manual is None:
+            st.caption("※ まだ world_state_manual_controls は設定されていません。")
+        else:
+            st.json(ws_manual)
