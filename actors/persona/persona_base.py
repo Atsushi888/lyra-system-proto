@@ -5,8 +5,11 @@ from pathlib import Path
 import json
 
 from actors.emotion_ai import EmotionResult
-from actors.emotion.emotion_levels import affection_to_level
-from actors.emotion.emotion_state import relationship_stage_from_level
+from actors.persona.build_default_guideline import build_default_guideline
+from actors.persona.build_emotion_based_system_prompt_core import (
+    build_emotion_based_system_prompt_core,
+)
+from actors.persona.build_emotion_header import build_emotion_header_core
 
 
 class PersonaBase:
@@ -306,266 +309,16 @@ class PersonaBase:
     ) -> str:
         """
         emotion_override を受け取り、system_prompt に感情ヘッダ＋文章量ガイドラインを付け足したものを返す。
+
+        実装本体は actors/persona/build_emotion_based_system_prompt_core.py に分離。
         """
-        emotion_override = emotion_override or {}
-        world_state = emotion_override.get("world_state") or {}
-        scene_emotion = emotion_override.get("scene_emotion") or {}
-        emotion = emotion_override.get("emotion") or {}
-
-        # affection は doki 補正後を優先
-        affection = float(
-            emotion.get("affection_with_doki", emotion.get("affection", 0.0)) or 0.0
+        return build_emotion_based_system_prompt_core(
+            persona=self,
+            base_system_prompt=base_system_prompt,
+            emotion_override=emotion_override,
+            mode_current=mode_current,
+            length_mode=length_mode,
         )
-        doki_power = float(emotion.get("doki_power", 0.0) or 0.0)
-        doki_level = int(emotion.get("doki_level", 0) or 0)
-
-        # affection_zone があればそれを zone として使う（なければ auto）
-        zone = str(emotion.get("affection_zone", "auto") or "auto")
-
-        # relationship / masking（ばけばけ度）
-        relationship_level = float(
-            emotion.get("relationship_level", emotion.get("relationship", 0.0)) or 0.0
-        )
-        relationship_stage = str(emotion.get("relationship_stage") or "")
-        if not relationship_stage and relationship_level > 0.0:
-            relationship_stage = relationship_stage_from_level(relationship_level)
-
-        masking_degree = float(
-            emotion.get("masking_degree", emotion.get("masking", 0.0)) or 0.0
-        )
-        if masking_degree < 0.0:
-            masking_degree = 0.0
-        if masking_degree > 1.0:
-            masking_degree = 1.0
-
-        # world_state から舞台情報
-        loc_player = (world_state.get("locations") or {}).get("player")
-        location_name = (
-            loc_player
-            or world_state.get("location_name")
-            or world_state.get("player_location")
-        )
-        time_info = world_state.get("time") or {}
-        time_slot = time_info.get("slot") or world_state.get("time_of_day")
-        time_str = time_info.get("time_str")
-
-        # 二人きりかどうかの推定
-        party_mode = (
-            world_state.get("party_mode")
-            or (world_state.get("party") or {}).get("mode")
-        )
-        others_around = world_state.get("others_around")
-        is_alone = False
-        if party_mode == "alone":
-            is_alone = True
-        if others_around is False:
-            is_alone = True
-        if others_around is True:
-            is_alone = False
-
-        # masking_defaults による「場所ごとのばけばけ挙動」
-        masking_cfg = self._get_masking_defaults()
-        unmasked_locs = masking_cfg.get("unmasked_locations", [])
-        masked_locs = masking_cfg.get("masked_locations", [])
-        rules = masking_cfg.get("rules") or {}
-
-        loc_key = str(location_name or "").lower()
-        is_unmasked_place = bool(
-            loc_key and any(tag in loc_key for tag in unmasked_locs)
-        )
-        is_masked_place = bool(
-            loc_key and any(tag in loc_key for tag in masked_locs)
-        )
-
-        # 場所に応じた説明用メモ
-        masking_env_note = ""
-        example_line = ""
-        raw_example = rules.get("example_line")
-        if isinstance(raw_example, str) and raw_example.strip():
-            example_line = raw_example.replace("{PLAYER_NAME}", self.player_name)
-
-        alone_rule = rules.get("alone_bonus")
-        public_rule = rules.get("public_softening")
-
-        # 「二人きり＋ばけばけ無効」かどうか
-        if is_unmasked_place:
-            # 自宅／リセ家／部室など → 常に素が出やすい場所
-            base_note = (
-                "※ 現在は親しい相手とくつろげる場所にいるため、"
-                "表情コントロール（ばけばけ度）があってもほとんど働かず、"
-                "素直なデレや甘えがそのまま表に出て構いません。"
-            )
-            if isinstance(alone_rule, str) and alone_rule.strip():
-                base_note = alone_rule.strip()
-            masking_env_note = base_note
-            if example_line:
-                masking_env_note += f"\n  例: 「{example_line}」"
-        elif is_masked_place:
-            if is_alone:
-                # 学校などでも「実質二人きり」
-                base_note = (
-                    "※ 形式上は人目のある場所ですが、いまは実質二人きりなので、"
-                    "ばけばけ度はあまり気にせず素直な恋愛感情を見せて構いません。"
-                )
-                if isinstance(alone_rule, str) and alone_rule.strip():
-                    base_note = alone_rule.strip()
-                masking_env_note = base_note
-                if example_line:
-                    masking_env_note += f"\n  例: 「{example_line}」"
-            else:
-                # 学校＋他人あり → ここで一番強く絞る
-                base_note = (
-                    "※ ここは人目のある場所で、周囲には他の学生や人々がいます。"
-                    "ばけばけ度を強めに意識し、外見上は『大切な先輩と仲の良い後輩』"
-                    "程度に見えるよう振る舞ってください。"
-                    "結婚や同棲を連想させる台詞、露骨なイチャつき、"
-                    "公衆の面前での恋人らしいボディタッチや囁きは避けてください。"
-                    "内心の恋愛感情や高揚は、視線・間・ささやかな言い回しに"
-                    "にじませる程度に留めてください。"
-                    "必ず背景に、周囲の生徒の会話や足音など、"
-                    "『他人の気配』が分かる描写を一文以上含めてください。"
-                    "以下の口調ガイドラインで示される甘さよりも、"
-                    "『いま人目がある』という事実を最優先してください。"
-                )
-                if isinstance(public_rule, str) and public_rule.strip():
-                    # public_softening に persona 固有の説明があれば優先して使う
-                    base_note = public_rule.strip()
-                    # その後にこちらの追加ルールを足す
-                    base_note += (
-                        "\n※ さらに、結婚や同棲を連想させる台詞や、"
-                        "あからさまな恋人ムーブは人前では控えてください。"
-                        "周囲の人々の気配が分かる描写を一文は入れ、"
-                        "『公の場である』ことを忘れないでください。"
-                    )
-                masking_env_note = base_note
-        # world_state が無い／マッチしない場合は env_note なし
-
-        # 舞台情報（場所・時間・周囲の人）
-        location_lines: List[str] = []
-        if location_name:
-            location_lines.append(f"- 現在の舞台は「{location_name}」。")
-        if time_slot or time_str:
-            ts = (
-                f"{time_slot} / {time_str}"
-                if time_slot and time_str
-                else (time_slot or time_str)
-            )
-            location_lines.append(f"- 時間帯は「{ts}」。")
-
-        people_note = ""
-        if others_around is True and not is_alone:
-            people_note = (
-                "- 周囲には他の生徒や人々もおり、会話や足音などの気配が常にあります。"
-                "完全な二人きりではないことを忘れないでください。"
-            )
-        elif is_alone:
-            people_note = "- いまは実質的に二人きりで、近くに第三者はいません。"
-
-        if people_note:
-            location_lines.append(people_note)
-
-        # 好意ラベル（あれば）
-        affection_label = self.get_affection_label(affection)
-
-        # ガイドライン本体（JSON 優先 / 未設定なら簡易デフォルト）
-        try:
-            guideline = self.build_emotion_control_guideline(
-                affection_with_doki=affection,
-                doki_level=doki_level,
-                mode_current=mode_current,
-            )
-        except Exception:
-            guideline = ""
-
-        if not guideline:
-            guideline = self._build_default_guideline(
-                affection_with_doki=affection,
-                doki_level=doki_level,
-                mode_current=mode_current,
-            )
-
-        # ばけばけ度数値に基づくデフォルト注意書き
-        masking_note = ""
-        if masking_degree >= 0.7:
-            masking_note = (
-                "※ 現在、表情コントロール（ばけばけ度）が高いため、"
-                "内心の恋愛感情や高揚をあえて抑え、"
-                "外見上は一段階落ち着いたトーンで振る舞ってください。"
-            )
-        elif masking_degree >= 0.3:
-            masking_note = (
-                "※ 表情コントロール（ばけばけ度）が中程度のため、"
-                "強すぎるデレは少し抑えつつ、"
-                "さりげない甘さがにじむ程度に留めてください。"
-            )
-
-        # 環境情報があれば、数値ベースの注意より優先して上書き
-        if masking_env_note:
-            masking_note = masking_env_note
-
-        # 文章量ガイドライン
-        length_guideline = self._build_length_guideline(length_mode)
-
-        # ヘッダ組み立て
-        header_lines: List[str] = []
-        header_lines.append("[感情・関係性プロファイル]")
-        header_lines.append(
-            f"- 実効好感度 (affection_with_doki): {affection:.2f} "
-            f"(zone={zone}, doki_level={doki_level}, doki_power={doki_power:.1f})"
-        )
-        if affection_label:
-            header_lines.append(f"- 好意の解釈: {affection_label}")
-
-        if relationship_level > 0.0:
-            header_lines.append(
-                f"- 関係レベル (relationship_level): {relationship_level:.1f} / 100"
-            )
-            if relationship_stage:
-                header_lines.append(f"- 関係ステージ: {relationship_stage}")
-
-        if masking_degree > 0.0:
-            header_lines.append(
-                f"- 表情コントロール（ばけばけ度）: {masking_degree:.2f} "
-                "(0=素直 / 1=完全に平静を装う)"
-            )
-
-        # 長さモードも一行だけ明示しておく
-        header_lines.append(
-            f"- 発話の長さモード: {self._normalize_length_mode(length_mode)} "
-            "(short/normal/long/story/auto)"
-        )
-
-        if location_lines:
-            header_lines.extend(location_lines)
-
-        # ドキドキと relationship の違い
-        header_lines.append(
-            "- 備考: ドキドキ💓はその場の高揚感、relationship_level は長期的な信頼・絆の指標です。"
-        )
-
-        if masking_note:
-            header_lines.append(masking_note)
-
-        # ブロック連結
-        blocks: List[str] = []
-        blocks.append("\n".join(header_lines))
-
-        guideline = (guideline or "").strip()
-        if guideline:
-            blocks.append(guideline)
-
-        length_guideline = (length_guideline or "").strip()
-        if length_guideline:
-            blocks.append(length_guideline)
-
-        header_block = "\n\n".join(blocks) + "\n"
-
-        if base_system_prompt:
-            new_system_prompt = base_system_prompt.rstrip() + "\n\n" + header_block + "\n"
-        else:
-            new_system_prompt = header_block + "\n"
-
-        return new_system_prompt
 
     def replace_system_prompt(
         self,
@@ -608,115 +361,15 @@ class PersonaBase:
         EmotionResult + world_state から
         LLM 用の「感情・関係性ヘッダテキスト」を構築する。
         （古い API 互換用。新規は build_emotion_based_system_prompt を推奨）
+
+        実装本体は actors/persona/build_emotion_header.py に分離。
         """
-        if emotion is None:
-            return ""
-
-        world_state = world_state or {}
-        scene_emotion = scene_emotion or {}
-
-        # 1) サブクラス完全オーバーライドがあれば優先
-        if hasattr(self, "build_emotion_header_hint"):
-            try:
-                custom = self.build_emotion_header_hint(
-                    emotion=emotion,
-                    world_state=world_state,
-                    scene_emotion=scene_emotion,
-                )
-                if isinstance(custom, str) and custom.strip():
-                    return custom.strip()
-            except Exception:
-                pass
-
-        # 2) Persona プロファイルから係数取得
-        aff_gain = 1.0
-        doki_bias = 0.0
-        try:
-            prof = self.get_emotion_profile() or {}
-            aff_gain = float(prof.get("affection_gain", 1.0) or 1.0)
-            doki_bias = float(prof.get("doki_bias", 0.0) or 0.0)
-        except Exception:
-            pass
-
-        # 3) affection_with_doki * gain を 0〜1 にクランプ
-        base_aff = float(getattr(emotion, "affection", 0.0) or 0.0)
-        aff_with_doki_raw = float(
-            getattr(emotion, "affection_with_doki", base_aff) or base_aff
+        return build_emotion_header_core(
+            persona=self,
+            emotion=emotion,
+            world_state=world_state,
+            scene_emotion=scene_emotion,
         )
-        aff = max(0.0, min(1.0, aff_with_doki_raw * aff_gain))
-
-        # 4) doki_level 0〜4 + bias → [0,4] クランプ
-        try:
-            dl_raw = int(getattr(emotion, "doki_level", 0) or 0)
-        except Exception:
-            dl_raw = 0
-        dl = int(round(dl_raw + doki_bias))
-        if dl < 0:
-            dl = 0
-        if dl > 4:
-            dl = 4
-
-        # 5) affection のゾーン（low/mid/high/extreme）
-        aff_zone = affection_to_level(aff)
-
-        # 6) 好意ラベル（あれば）
-        affection_label = self.get_affection_label(aff)
-
-        # 7) world_state → 環境ヒント
-        location = (
-            world_state.get("location_name")
-            or world_state.get("player_location")
-            or (world_state.get("locations") or {}).get("player")
-        )
-        time_slot = (
-            world_state.get("time_slot")
-            or world_state.get("time_of_day")
-            or (world_state.get("time") or {}).get("slot")
-        )
-
-        scene_hint_parts: List[str] = []
-        if location:
-            scene_hint_parts.append(f"いま二人は『{location}』付近にいます。")
-        if time_slot:
-            scene_hint_parts.append(f"時間帯は『{time_slot}』頃です。")
-        scene_hint = " ".join(scene_hint_parts).strip()
-
-        # 8) ガイドライン（JSON 優先 / なければ簡易デフォルト）
-        try:
-            guideline_text = self.build_emotion_control_guideline(
-                affection_with_doki=aff,
-                doki_level=dl,
-                mode_current=getattr(emotion, "mode", "normal"),
-            )
-        except Exception:
-            guideline_text = ""
-
-        if not guideline_text:
-            guideline_lines = [
-                "[口調・距離感のガイドライン]",
-                "1) 特別な感情プロファイルが未設定のため、通常時と同様のトーンで話してください。",
-                "2) 相手への基本的な信頼や好意は感じられるように、やわらかな言葉選びを心がけてください。",
-            ]
-            guideline_text = "\n".join(guideline_lines)
-
-        guideline_text = guideline_text.strip("\n")
-
-        # 9) ヘッダ構築
-        header_lines: List[str] = []
-        header_lines.append("【感情・関係性プロファイル】")
-        header_lines.append(
-            f"- 実効好感度（affection_with_doki）: {aff:.2f} "
-            f"(zone={aff_zone}, doki_level={dl})"
-        )
-        if affection_label:
-            header_lines.append(f"- 好意の解釈: {affection_label}")
-        if scene_hint:
-            header_lines.append(f"- 環境: {scene_hint}")
-
-        header_lines.append("")
-        header_block = "\n".join(header_lines)
-
-        return header_block + "\n\n" + guideline_text + "\n"
 
     # --------------------------------------------------
     # デフォルトのガイドライン（JSON 無し時のフォールバック）
@@ -728,51 +381,12 @@ class PersonaBase:
         doki_level: int,
         mode_current: str,
     ) -> str:
-        guideline_lines: List[str] = []
-        guideline_lines.append("[口調・距離感のガイドライン]")
-
-        if doki_level >= 4:
-            guideline_lines.extend(
-                [
-                    "1) 結婚を前提にした深い信頼と愛情を前提として、将来への期待がにじむトーンで話してください。",
-                    "2) さりげないスキンシップや将来の生活を匂わせる表現をセリフの中に1つ以上含めてください。",
-                    "3) 『ずっとそばにいたい』『本気で大事にしたい』と伝わるニュアンスを自然な描写で入れてください。",
-                ]
-            )
-        elif doki_level == 3:
-            guideline_lines.extend(
-                [
-                    "1) 強い好意と信頼が伝わる、親密で少し独占欲のにじむトーンで話してください。",
-                    "2) 距離が近いことや触れそうな距離感を意識した描写をセリフに混ぜてください。",
-                    "3) 相手の体調や気持ちを気遣う言葉を交えつつ、『あなたが大切』というニュアンスを含めてください。",
-                ]
-            )
-        elif doki_level == 2:
-            guideline_lines.extend(
-                [
-                    "1) 付き合い始めのような甘さと緊張感のバランスを意識しながら話してください。",
-                    "2) 視線・手の位置・距離感など、少しドキドキしそうな要素を描写に含めてください。",
-                    "3) からかい半分・本気半分のような、照れ混じりのセリフを入れても構いません。",
-                ]
-            )
-        elif doki_level == 1:
-            guideline_lines.extend(
-                [
-                    "1) 基本は丁寧で礼儀正しいが、ときどき素直な感情がこぼれるトーンで話してください。",
-                    "2) 相手を意識して少しだけ言葉に詰まったり、照れがにじむ描写を入れてください。",
-                ]
-            )
-        else:
-            guideline_lines.extend(
-                [
-                    "1) まだ大きな恋愛感情としては動いていないが、好感や信頼は感じられるフラットなトーンで話してください。",
-                    "2) 落ち着いた会話の中に、相手を気遣う一言をさりげなく入れてください。",
-                ]
-            )
-
-        guideline_lines.append(
-            "9) いずれの場合も、キャラクターとして一貫性のある口調と感情表現で返答してください。"
-            " 不自然に過剰なベタベタさではなく、その場の状況に合った自然な甘さと距離感を大切にしてください。"
+        """
+        互換性維持用ラッパー。
+        実装本体は actors/persona/build_default_guideline.py。
+        """
+        return build_default_guideline(
+            affection_with_doki=affection_with_doki,
+            doki_level=doki_level,
+            mode_current=mode_current,
         )
-
-        return "\n".join(guideline_lines)
