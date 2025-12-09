@@ -14,48 +14,31 @@ SESSION_KEY = "dokipower_state"
 def _get_state() -> Dict[str, Any]:
     """
     サイドウインドウ内のスライダー状態を session_state に保持。
-    途中で項目を増やしても既存セッションが壊れないよう、足りないキーだけ補完する。
     """
-    default_state: Dict[str, Any] = {
-        "mode": "normal",
-        "affection": 0.5,
-        "arousal": 0.3,
-        "doki_power": 0.0,
-        "doki_level": 0,          # 0〜4
-        "relationship_level": 20,  # 長期的な関係の深さ（0〜100）
-        "masking_level": 30,       # ばけばけ度（0〜100）
-        # ★ 周囲状況（人目の有無）: "alone" / "both" など
-        "party_mode": "alone",
-    }
-
     if SESSION_KEY not in st.session_state:
-        st.session_state[SESSION_KEY] = dict(default_state)
-        return st.session_state[SESSION_KEY]
-
-    state = st.session_state[SESSION_KEY]
-    if not isinstance(state, dict):
-        state = {}
-    # 足りないキーだけ補完
-    for k, v in default_state.items():
-        state.setdefault(k, v)
-
-    st.session_state[SESSION_KEY] = state
-    return state
+        st.session_state[SESSION_KEY] = {
+            "mode": "normal",
+            "affection": 0.5,
+            "arousal": 0.3,
+            "doki_power": 0.0,
+            "doki_level": 0,          # 0〜4
+            "relationship_level": 20,  # 長期的な関係の深さ（0〜100）
+            "masking_level": 30,       # ばけばけ度（0〜100）
+        }
+    return st.session_state[SESSION_KEY]
 
 
 class DokiPowerController:
     """
-    ドキドキ💓パワーと EmotionResult ＋長期関係度／ばけばけ度／周囲状況を
+    ドキドキ💓パワーと EmotionResult ＋長期関係度／ばけばけ度を
     手動調整するためのコントローラ。
 
     - affection / arousal / doki_power / doki_level
     - relationship_level / masking_level
-    - party_mode（"alone" / "both" など、人目の有無）
-      をスライダー／ラジオで操作
-
-    「適用」で EmotionResult を session_state["mixer_debug_emotion"] に書き込み、
-    かつ emotion_manual_controls を session_state["emotion_manual_controls"] に書き込む。
-      → MixerAI / EmotionState などがここを読めば、即「効き目」を確認できる。
+      をスライダーで操作
+    - 「適用」で EmotionResult を session_state["mixer_debug_emotion"] に書き込み、
+      かつ emotion_manual_controls を session_state["emotion_manual_controls"] に書き込む。
+      → MixerAI などがここを読めば、即「効き目」を確認できる。
     """
 
     def __init__(self, *, session_key: str = SESSION_KEY) -> None:
@@ -74,6 +57,7 @@ class DokiPowerController:
         # ===== 基本感情 =====
         st.subheader("基本感情値")
 
+        # 1行ずつ縦並びで: mode → affection → arousal
         mode = st.selectbox(
             "mode",
             options=["normal", "erotic", "debate"],
@@ -136,6 +120,11 @@ class DokiPowerController:
         )
 
         # しきい値から自動レベル判定（手動で上書き可：デバッグ用途）
+        # 0 … ほぼフラット
+        # 1 … ちょっとトキメキ
+        # 2 … かなり意識してる
+        # 3 … ゾッコン
+        # 4 … エクストリーム（結婚前提レベル）
         auto_level = 0
         if doki_power >= 85:
             auto_level = 4
@@ -157,35 +146,6 @@ class DokiPowerController:
             int(state.get("doki_level", auto_level)),
         )
 
-        # ===== 周囲状況（人目の有無） ※ドキドキの直下へ移動 =====
-        st.subheader("周囲の状況（人目の有無）")
-
-        current_party_mode = str(state.get("party_mode", "alone") or "alone").lower()
-        initial_index = 0 if current_party_mode in ("alone", "private") else 1
-
-        people_choice = st.radio(
-            "いまのリセリアと先輩の状況",
-            options=[0, 1],
-            index=initial_index,
-            format_func=lambda idx: (
-                "二人きり（誰も見ていない／個室など）" if idx == 0
-                else "周囲に人がいる（教室・廊下・街中など）"
-            ),
-            help=(
-                "ばけばけ度テスト用の人目スイッチ。\n"
-                "二人きり: party_mode='alone' 扱い（素直寄り）。\n"
-                "周囲に人: party_mode='both' 扱い（人前 → デレ控えめ）。"
-            ),
-        )
-
-        if people_choice == 0:
-            party_mode = "alone"
-        else:
-            # SceneAI._calc_party_mode で出てくる「一緒にいる」状態に合わせて "both" を使用
-            party_mode = "both"
-
-        st.caption(f"デバッグ用 party_mode: {party_mode!r}")
-
         # ===== EmotionResult を構築（スライダー値ベースのプレビュー） =====
         emo = EmotionResult(
             mode=mode,
@@ -193,6 +153,9 @@ class DokiPowerController:
             arousal=arousal,
             doki_power=doki_power,
             doki_level=doki_level,
+            # ★ ここでスライダー値を反映させる
+            relationship_level=float(relationship_level),
+            masking_degree=float(masking_level) / 100.0,
         )
 
         st.markdown("---")
@@ -231,38 +194,22 @@ class DokiPowerController:
                     "doki_level": doki_level,
                     "relationship_level": relationship_level,
                     "masking_level": masking_level,
-                    "party_mode": party_mode,
                 }
                 self._set_state(new_state)
 
-                # MixerAI などが読む用の EmotionResult + party_mode_hint
-                debug_emo = emo.to_dict()
-                debug_emo["party_mode_hint"] = party_mode
-                st.session_state["mixer_debug_emotion"] = debug_emo
+                # MixerAI などが読む用の EmotionResult
+                st.session_state["mixer_debug_emotion"] = emo.to_dict()
 
-                # ★ relationship / doki / masking / party_mode の手動パラメータ
+                # ★ relationship / doki / masking の手動パラメータ
                 st.session_state["emotion_manual_controls"] = {
                     "relationship_level": int(relationship_level),
                     "doki_power": float(doki_power),
                     "masking_level": int(masking_level),
-                    "party_mode": party_mode,
                 }
-
-                # world_state.party.mode もデバッグ用に上書き
-                ws = st.session_state.get("world_state") or {}
-                if not isinstance(ws, dict):
-                    ws = {}
-                party = ws.get("party") or {}
-                if not isinstance(party, dict):
-                    party = {}
-                party["mode"] = party_mode
-                ws["party"] = party
-                st.session_state["world_state"] = ws
 
                 st.success(
                     "EmotionResult を session_state['mixer_debug_emotion'] に、"
-                    "手動パラメータを session_state['emotion_manual_controls'] に保存しました。\n"
-                    f"world_state['party']['mode'] も {party_mode!r} に設定しました。"
+                    "手動パラメータを session_state['emotion_manual_controls'] に保存しました。"
                 )
 
         with col_reset:
@@ -275,7 +222,6 @@ class DokiPowerController:
                     "doki_level": 0,
                     "relationship_level": 20,
                     "masking_level": 30,
-                    "party_mode": "alone",
                 }
                 self._set_state(init_state)
 
@@ -284,21 +230,6 @@ class DokiPowerController:
                     "relationship_level": 20,
                     "doki_power": 0.0,
                     "masking_level": 30,
-                    "party_mode": "alone",
                 }
 
-                # world_state.party.mode もリセット
-                ws = st.session_state.get("world_state") or {}
-                if not isinstance(ws, dict):
-                    ws = {}
-                party = ws.get("party") or {}
-                if not isinstance(party, dict):
-                    party = {}
-                party["mode"] = "alone"
-                ws["party"] = party
-                st.session_state["world_state"] = ws
-
-                st.info(
-                    "ドキドキ💓パワー / 感情値 / 手動パラメータ / party_mode "
-                    "を初期状態（二人きり）に戻しました。"
-                )
+                st.info("ドキドキ💓パワー / 感情値 / 手動パラメータを初期状態に戻しました。")
