@@ -90,10 +90,26 @@ class NarratorAI:
         player_loc = locs.get("player", "プレイヤーの部屋")
         partner_loc = locs.get(self.partner_role, player_loc)
 
-        party_mode = party.get("mode")
-        if not party_mode:
-            # 念のため自己判定
-            party_mode = "both" if player_loc == partner_loc else "alone"
+        # 「プレイヤーと相手キャラが同じ場所かどうか」
+        together_mode = "both" if player_loc == partner_loc else "alone"
+
+        # DokipowerControl などから渡されることを想定した
+        # 「周囲にモブがいるかどうか」のフラグを解釈する
+        raw_mode = str(party.get("mode") or "").strip()
+        with_others_flag = party.get("with_others")
+
+        if isinstance(with_others_flag, bool):
+            crowd_mode = "with_others" if with_others_flag else "alone"
+        elif raw_mode in ("alone", "with_others"):
+            crowd_mode = raw_mode
+        else:
+            # 明示フラグがない場合のフォールバック
+            # プールなど公共っぽい場所だけ「with_others」寄りに倒す
+            loc_str = str(player_loc)
+            if "プール" in loc_str or "pool" in loc_str:
+                crowd_mode = "with_others"
+            else:
+                crowd_mode = "alone"
 
         time_slot = t.get("slot", "morning")
         time_str = t.get("time_str", "07:30")
@@ -107,7 +123,11 @@ class NarratorAI:
             "partner_location": partner_loc,
             "partner_role": self.partner_role,
             "partner_name": self.partner_name,
-            "party_mode": party_mode,  # "both" or "alone"
+            # together_mode: プレイヤーと相手キャラが同じ場所かどうか
+            "party_mode": together_mode,  # "both" or "alone"
+            # crowd_mode: 周囲にモブがいるかどうか
+            # "alone" / "with_others"
+            "crowd_mode": crowd_mode,
             "time_slot": time_slot,
             "time_str": time_str,
             "weather": weather,
@@ -131,7 +151,8 @@ class NarratorAI:
         ws = snap["world_state"]
         player_loc = snap["player_location"]
         partner_loc = snap["partner_location"]
-        party_mode = snap["party_mode"]
+        party_mode = snap["party_mode"]          # together / alone（相手キャラとの同席）
+        crowd_mode = snap.get("crowd_mode", "alone")  # モブの有無
         time_slot = snap["time_slot"]
         time_str = snap["time_str"]
         weather = snap["weather"]
@@ -150,27 +171,46 @@ class NarratorAI:
         }
         time_of_day_jp = slot_label_map.get(time_slot, time_slot)
 
-        # ========================================================
-        # ロケーションに応じた「群衆ラベル」を決定
-        # 学園内なら「他の生徒たち」、それ以外は「他の利用者」
-        # ========================================================
-        loc_for_crowd = partner_loc or player_loc or ""
-        academy_keywords = [
-            "プール",
-            "訓練場",
-            "中庭",
-            "食堂",
-            "講堂",
-            "図書館",
-            "校舎",
-            "廊下",
-        ]
-        mob_label = "他の利用者"
-        if any(key in loc_for_crowd for key in academy_keywords):
-            mob_label = "他の生徒たち"
+        crowd_label = "二人きり（ほぼ無人）" if crowd_mode == "alone" else "他の生徒たちもいる"
 
+        # モブに関する追加要件テキスト（branch）
+        if crowd_mode == "alone":
+            mob_requirement_together = f"""
+- 周囲にはプレイヤーと{partner_name}以外の人影はありません。
+  モブキャラクターや第三者を登場させてはいけません。
+  「静まり返った」「ふたりきり」など、プライベートな空気感を強調してください。
+""".strip()
+            mob_requirement_solo = """
+- 周囲にはプレイヤー以外の人影はありません。
+  モブキャラクターや第三者を登場させてはいけません。
+  静かな一人きりの空気感を描写してください。
+""".strip()
+        else:
+            # crowd_mode == "with_others"
+            # 場所がプールなどの場合は、言い回しを「生徒たち」に寄せる
+            loc_str = str(player_loc)
+            if "プール" in loc_str or "pool" in loc_str or "training" in loc_str:
+                mob_noun = "他の生徒たち"
+            else:
+                mob_noun = "周囲の人々"
+
+            mob_requirement_together = f"""
+- 周囲には{mob_noun}（モブ）がいます。
+  「{mob_noun}が〜」「周囲の{mob_noun}が〜」のように、
+  背景としてのモブ描写を少なくとも1文含めてください。
+- ただし、会話の主役はあくまでプレイヤーと{partner_name}です。
+  モブに個別の名前を付けたり、長々と描写したりしないでください。
+""".strip()
+
+            mob_requirement_solo = f"""
+- 周囲には{mob_noun}（モブ）がいますが、
+  彼らはあくまで背景です。プレイヤーは一人きりで行動しています。
+- 「{mob_noun}が〜」といった表現を少なくとも1文含めてください。
+  ただし、モブに名前は付けず、短い描写に留めてください。
+""".strip()
+
+        # ===== 分岐 1: プレイヤー一人きり（相手キャラは別の場所） =====
         if party_mode == "alone":
-            # ===== プレイヤー一人きりバージョン =====
             system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
@@ -180,10 +220,10 @@ class NarratorAI:
 - プレイヤーや他キャラクターのセリフは一切書かない（台詞は禁止）。
 - このシーンの相手キャラクター（例: フローリアやリセリア）はこの場にいません。
   本文中にその相手キャラクターの名前や存在を出してはいけません。
-- 周囲に {mob_label} がいるか、ほとんどいないかといった「場の空気」をさりげなく描いてください。
-- 最後の1文には、プレイヤーがこれから誰かに会ったり、行動を起こしたくなるような、ささやかなフックを入れてください。
+- 最後の1文には、プレイヤーがこれから誰かに会ったり、行動を起こしたくなるような、
+  ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
-""".strip().format(mob_label=mob_label)
+""".strip()
 
             user = f"""
 [ワールド状態（内部表現）]
@@ -193,19 +233,19 @@ world_state: {ws}
 - 現在地: {player_loc}
 - 時刻帯: {time_of_day_jp}（slot={time_slot}, time={time_str}）
 - 天候: {weather}
-- 周囲の様子: {mob_label}の姿はまばらで、静かな空気が広がっています。
-- 現在この場にいるのはプレイヤーだけです。相手キャラクター（{partner_name}）は別の場所にいます。
+- 周囲の状況: {crowd_label}
+- 相手キャラクター({partner_name})は別の場所にいます。
 
 [要件]
 上記の状況にふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
-- プレイヤーの一人きりの空気感や、これから何かが起こりそうな予感を描写してください。
+- プレイヤーの心情や、一人きりの空気感、これから何かが起こりそうな予感を描写してください。
+{mob_requirement_solo}
 - 相手キャラクター（{partner_name}）の名前や存在には一切触れないでください。
-- 周囲には {mob_label} がいるかどうかが伝わるように、環境描写を1文以上入れてください。
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
 
+        # ===== 分岐 2: プレイヤー＋相手キャラクター同伴 =====
         else:
-            # ===== プレイヤー＋相手キャラクター同伴バージョン =====
             system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
@@ -214,11 +254,10 @@ world_state: {ws}
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーや相手キャラクターのセリフは一切書かない（台詞は禁止）。
 - 二人の距離感や空気、これから会話が始まりそうな雰囲気をさりげなく示してください。
-- 周囲に {mob_label} がいる設定なので、その存在が感じ取れる環境描写を1文は入れてください。
-  （ただし視線と意識の中心は常にプレイヤーと相手キャラクターです。）
-- 最後の1文には、プレイヤーが何か話しかけたくなるような、ささやかなフックを入れてください。
+- 最後の1文には、プレイヤーが何か話しかけたくなるような、
+  ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
-""".strip().format(mob_label=mob_label)
+""".strip()
 
             user = f"""
 [ワールド状態（内部表現）]
@@ -228,7 +267,7 @@ world_state: {ws}
 - 現在地: {player_loc}
 - 時刻帯: {time_of_day_jp}（slot={time_slot}, time={time_str}）
 - 天候: {weather}
-- 周囲の様子: {mob_label}がそれぞれ準備やウォームアップをしており、場の空気は静かだが完全な二人きりではありません。
+- 周囲の状況: {crowd_label}
 - 相手キャラクター名: {partner_name}
 - {partner_name} の雰囲気・感情: {partner_mood}
 - プレイヤーと {partner_name} は、今この場所で一緒にいますが、まだ一言も会話を交わしていません。
@@ -236,7 +275,7 @@ world_state: {ws}
 [要件]
 上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
 - プレイヤーと {partner_name} の距離感や、これから会話が始まりそうな空気感を中心に描写してください。
-- 周囲にいる {mob_label} の存在が自然に伝わるよう、環境描写を1文以上混ぜてください。
+{mob_requirement_together}
 - プレイヤーや {partner_name} のセリフは書かないでください（地の文のみ）。
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
@@ -293,10 +332,13 @@ world_state: {ws}
         player_loc = snap["player_location"]
         partner_loc = snap["partner_location"]
         party_mode = snap["party_mode"]
+        crowd_mode = snap.get("crowd_mode", "alone")
         time_slot = snap["time_slot"]
         time_str = snap["time_str"]
         weather = snap["weather"]
         partner_name = self.partner_name
+
+        crowd_label = "二人きり（ほぼ無人）" if crowd_mode == "alone" else "他の生徒たちもいる"
 
         system = """
 あなたは会話RPG「Lyra」のナレーション補助AIです。
@@ -315,6 +357,7 @@ world_state: {ws}
 
 [シーン要約]
 - パーティ状態: {party_mode}（"both"=プレイヤーと相手キャラが一緒, "alone"=プレイヤーだけ）
+- 周囲の状況: {crowd_label}
 - プレイヤーの現在地: {player_loc}
 - 相手キャラクター({partner_name})の現在地: {partner_loc}
 - 時刻帯: {time_slot}（time={time_str}）
@@ -356,8 +399,9 @@ world_state: {ws}
         """
         snap = self._get_scene_snapshot()
         party_mode = snap["party_mode"]
+        crowd_mode = snap.get("crowd_mode", "alone")
 
-        if party_mode == "alone":
+        if party_mode == "alone" and crowd_mode == "alone":
             speak = (
                 "この場には他に誰の気配もない。"
                 "あなたはしばし足を止め、静かな空気の中で次の出会いを待つことにした。"
@@ -418,14 +462,13 @@ world_state: {ws}
         """
         「周囲の様子を見る」。
         プレイヤー一人でも有効だが、
-        party_mode==alone の場合は「誰もいない静かな情景」を中心に描く。
+        crowd_mode==alone の場合は「誰もいない静かな情景」を中心に描く。
         """
         snap = self._get_scene_snapshot()
-        party_mode = snap["party_mode"]
+        crowd_mode = snap.get("crowd_mode", "alone")
         loc = snap["player_location"] or location_name
 
-        if party_mode == "alone":
-            # 一人のときは、静かなロケーション描写に寄せる
+        if crowd_mode == "alone":
             intent = f"{loc}の周囲の静かな様子を改めて見回す"
         else:
             intent = f"{loc}の周囲の様子を見回す"
