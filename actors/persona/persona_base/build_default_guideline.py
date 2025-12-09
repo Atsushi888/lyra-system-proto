@@ -1,4 +1,4 @@
-# actors/persona/build_default_guideline.py
+# actors/persona/persona_base/build_default_guideline.py
 from __future__ import annotations
 
 from typing import Dict, Any, Tuple
