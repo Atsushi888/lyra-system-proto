@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from actors.persona.persona_base import PersonaBase
+from actors.persona.persona_base.persona_base import PersonaBase
 
 
 class Persona(PersonaBase):
