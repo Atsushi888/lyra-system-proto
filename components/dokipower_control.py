@@ -12,6 +12,11 @@ from actors.emotion.emotion_state import relationship_stage_from_level
 
 SESSION_KEY = "dokipower_state"
 
+# 初期状態で使う「未適用」マーカー
+DEFAULT_MANUAL_CONTROLS = {
+    "status": "まだ '適用' ボタンが押されていません。"
+}
+
 
 def _get_state() -> Dict[str, Any]:
     """
@@ -28,6 +33,11 @@ def _get_state() -> Dict[str, Any]:
             "masking_level": 30,       # ばけばけ度（0〜100）
             "environment": "alone",    # "alone" / "with_others"
         }
+
+    # emotion_manual_controls もここで最低限の初期化だけしておく
+    if "emotion_manual_controls" not in st.session_state:
+        st.session_state["emotion_manual_controls"] = dict(DEFAULT_MANUAL_CONTROLS)
+
     return st.session_state[SESSION_KEY]
 
 
@@ -35,16 +45,6 @@ class DokiPowerController:
     """
     ドキドキ💓パワーと EmotionResult ＋長期関係度／ばけばけ度を
     手動調整するためのコントローラ（デバッグ用）。
-
-    - affection / arousal / doki_power / doki_level
-    - relationship_level / masking_level
-    - environment（alone / with_others）
-      をスライダーやラジオで操作
-
-    「✅ この値を Mixer デバッグ用に適用」で
-      - session_state["mixer_debug_emotion"]
-      - session_state["emotion_manual_controls"]
-    を上書きする。
     """
 
     def __init__(self, *, session_key: str = SESSION_KEY) -> None:
@@ -179,7 +179,7 @@ class DokiPowerController:
             masking_degree=float(masking_level) / 100.0,
         )
 
-        # relationship_level からステージ＆ラベルを計算して EmotionResult に反映
+        # relationship_level → stage / label を反映
         stage = relationship_stage_from_level(float(relationship_level))
         stage_to_label = {
             "acquaintance": "neutral",
@@ -188,7 +188,6 @@ class DokiPowerController:
             "dating": "lover",
             "soulmate": "soulmate",
         }
-        emo.relationship_level = float(relationship_level)
         emo.relationship_stage = stage
         emo.relationship_label = stage_to_label.get(stage, "neutral")
 
@@ -215,7 +214,7 @@ class DokiPowerController:
 
         st.markdown("---")
 
-        # ===== コントローラ自身の状況確認（手動パラメータのプレビュー） =====
+        # ===== コントローラ自身の状況確認 =====
         st.subheader("環境ステータス（このコントローラ固有の情報）")
 
         env_label = (
@@ -229,13 +228,14 @@ class DokiPowerController:
             f"EmotionResult.masking_degree = **{emo.masking_degree:.2f}**"
         )
 
+        # emotion_manual_controls の中身を確認
         with st.expander("適用済み emotion_manual_controls の中身を見る", expanded=False):
-            applied = st.session_state.get("emotion_manual_controls_applied", False)
-            manual = st.session_state.get("emotion_manual_controls")
-            if applied and isinstance(manual, dict):
+            manual = st.session_state.get("emotion_manual_controls", DEFAULT_MANUAL_CONTROLS)
+            if isinstance(manual, dict) and "status" not in manual:
+                # status キーが無ければ「適用済み」とみなす
                 st.json(manual)
             else:
-                st.json({"status": "まだ '適用' ボタンが押されていません。"})
+                st.json(DEFAULT_MANUAL_CONTROLS)
 
         st.markdown("---")
 
@@ -259,14 +259,13 @@ class DokiPowerController:
                 # MixerAI などが読む用の EmotionResult
                 st.session_state["mixer_debug_emotion"] = emo.to_dict()
 
-                # 手動パラメータ
+                # 手動パラメータ本体（status キーは付けない）
                 st.session_state["emotion_manual_controls"] = {
                     "relationship_level": int(relationship_level),
                     "doki_power": float(doki_power),
                     "masking_level": int(masking_level),
                     "environment": environment,
                 }
-                st.session_state["emotion_manual_controls_applied"] = True
 
                 st.success(
                     "EmotionResult を session_state['mixer_debug_emotion'] に、"
@@ -287,12 +286,7 @@ class DokiPowerController:
                 }
                 self._set_state(init_state)
 
-                st.session_state["emotion_manual_controls"] = {
-                    "relationship_level": 20,
-                    "doki_power": 0.0,
-                    "masking_level": 30,
-                    "environment": "alone",
-                }
-                st.session_state["emotion_manual_controls_applied"] = False
+                # 未適用マーカーに戻す
+                st.session_state["emotion_manual_controls"] = dict(DEFAULT_MANUAL_CONTROLS)
 
                 st.info("ドキドキ💓パワー / 感情値 / 手動パラメータを初期状態に戻しました。")
