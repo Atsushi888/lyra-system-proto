@@ -1,4 +1,3 @@
-# components/user_settings.py
 from __future__ import annotations
 
 from typing import Any, Dict
@@ -17,7 +16,8 @@ def _get_default_settings() -> Dict[str, Any]:
     return {
         "player_name": "アツシ",
         # "auto" / "short" / "normal" / "long" / "story"
-        "reply_length_mode": "auto",
+        # ★ デフォルトを story に変更
+        "reply_length_mode": "story",
     }
 
 
@@ -39,7 +39,7 @@ def _ensure_state() -> Dict[str, Any]:
     # 他モジュールが直接参照しやすいよう、トップレベルにも置いておく
     st.session_state.setdefault("player_name", settings.get("player_name", "アツシ"))
     st.session_state.setdefault(
-        "reply_length_mode", settings.get("reply_length_mode", "auto")
+        "reply_length_mode", settings.get("reply_length_mode", "story")
     )
 
     return settings
@@ -69,7 +69,7 @@ class UserSettings:
 
         # よく使うキーはトップレベルにもコピー
         player_name = new_settings.get("player_name") or "アツシ"
-        reply_length_mode = new_settings.get("reply_length_mode") or "auto"
+        reply_length_mode = new_settings.get("reply_length_mode") or "story"
 
         st.session_state["player_name"] = player_name
         st.session_state["reply_length_mode"] = reply_length_mode
@@ -80,7 +80,7 @@ class UserSettings:
         return self.settings.get("player_name", "アツシ")
 
     def get_reply_length_mode(self) -> str:
-        return self.settings.get("reply_length_mode", "auto")
+        return self.settings.get("reply_length_mode", "story")
 
     # --------- UI レンダリング ---------
 
@@ -109,9 +109,10 @@ class UserSettings:
             "long": "long（5〜8文程度）",
             "story": "story（ミニシーン風で少し長め）",
         }
-        current_mode = settings.get("reply_length_mode", "auto")
+        # ★ デフォルトも story に
+        current_mode = settings.get("reply_length_mode", "story")
         if current_mode not in mode_options:
-            current_mode = "auto"
+            current_mode = "story"
 
         idx = mode_options.index(current_mode)
 
