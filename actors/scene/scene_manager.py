@@ -98,15 +98,9 @@ def _reset_council_state(world_before: Dict[str, Any],
     st.session_state["council_history"] = []
     st.session_state["council_round"] = 0
 
-    # 必要なら他のキーもここに追加していける
-    # 例:
-    # st.session_state["council_state"] = {}
-    # st.session_state["council_mode"] = "normal"
-
     try:
         st.toast("場所／時間の変更を検知 → Council 表示をリセットしました。")
     except Exception:
-        # toast が使えない環境でも死なないように
         st.info("場所／時間の変更を検知 → Council 表示をリセットしました。")
 
 
@@ -378,7 +372,6 @@ class SceneManager:
         cols = st.columns([2, 2, 1])
         with cols[0]:
             st.write(f"プレイヤー: **{player_loc}**")
-            # ★ ラベルを相手名に差し替え
             st.write(f"{partner_name}: **{floria_loc}**")
         with cols[1]:
             slot_spec = self.time_slots.get(current_slot, {})
@@ -462,7 +455,6 @@ class SceneManager:
             )
             world_after = scene_ai.get_world_state()
 
-            # ★ 場所／時間が変わった場合のみ Council をリセット
             _reset_council_state(world_before, world_after)
 
             st.success("プレイヤーを移動しました。")
@@ -473,22 +465,22 @@ class SceneManager:
         # === ②' 相手（リセリア）移動プラン ===
         st.markdown(f"### 🧚‍♀️ {partner_name} 移動プラン")
 
-        # ★ 選択 UI は expander 内、ボタンは expander の外に出す
-        with st.expander(f"{partner_name} の現在位置と移動先", expanded=False):
-            colf1, colf2 = st.columns([2, 2])
-            with colf1:
-                st.write(f"現在位置: **{floria_loc}**")
-            with colf2:
-                dest_loc_floria = st.selectbox(
-                    f"{partner_name} の移動先",
-                    options=list(self.locations.keys()),
-                    index=list(self.locations.keys()).index(floria_loc)
-                    if floria_loc in self.locations
-                    else 0,
-                    key="sm_move_dest_loc_floria",
-                )
+        # ★ プレイヤーと同様に、現在位置＆移動先をグループ外に配置
+        colf1, colf2 = st.columns([2, 2])
+        with colf1:
+            st.write(f"現在位置: **{floria_loc}**")
+        with colf2:
+            dest_loc_floria = st.selectbox(
+                f"{partner_name} の移動先",
+                options=list(self.locations.keys()),
+                index=list(self.locations.keys()).index(floria_loc)
+                if floria_loc in self.locations
+                else 0,
+                key="sm_move_dest_loc_floria",
+            )
 
-        # ★ ボタンは expander の外（普通に見える位置）
+        # （必要なら、今後ここにプレビュー用の expander を追加してもOK）
+
         label_move_partner = f"✨ この条件で{partner_name}を移動する"
         if st.button(label_move_partner, key="sm_do_move_floria"):
             world_before = world
