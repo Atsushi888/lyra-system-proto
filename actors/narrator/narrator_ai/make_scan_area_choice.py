@@ -1,26 +1,23 @@
-# actors/narrator/narrator_ai/make_scan_area_choice.py
 from __future__ import annotations
 
-from typing import Dict, Any, TYPE_CHECKING
-
-from .types import NarrationChoice
+from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .narrator_ai import NarratorAI
 
 
 def make_scan_area_choice_impl(
-    self: "NarratorAI",
+    narrator: "NarratorAI",
+    *,
     location_name: str = "この場",
     world_state: Dict[str, Any] | None = None,
     floria_state: Dict[str, Any] | None = None,
-) -> NarrationChoice:
+) -> Tuple[str, str]:
     """
-    「周囲の様子を見る」。
-    プレイヤー一人でも有効だが、
-    party_mode==alone の場合は「誰もいない静かな情景」を中心に描く。
+    NarratorAI.make_scan_area_choice() の実装本体。
+    戻り値: (speak_text, 実際に使ったロケーション名)
     """
-    snap = self._get_scene_snapshot()  # type: ignore[attr-defined]
+    snap = narrator._get_scene_snapshot()
     party_mode = snap["party_mode"]
     loc = snap["player_location"] or location_name
 
@@ -30,11 +27,5 @@ def make_scan_area_choice_impl(
     else:
         intent = f"{loc}の周囲の様子を見回す"
 
-    speak = self._refine(intent_text=intent, label="scan_area")  # type: ignore[attr-defined]
-
-    return NarrationChoice(
-        kind="scan_area",
-        label="周囲の様子を見る",
-        speak_text=speak,
-        meta={"location": loc},
-    )
+    speak = narrator._refine(intent_text=intent, label="scan_area")
+    return speak, loc
