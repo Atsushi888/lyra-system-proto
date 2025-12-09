@@ -1,4 +1,4 @@
-# actors/narrator/narrator_ai/narrator_ai.py など
+# actors/narrator/narrator_ai/narrator_ai.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +8,11 @@ import streamlit as st
 
 from actors.narrator.narrator_manager import NarratorManager
 from actors.scene_ai import SceneAI
+
+# 分割した実装をインポート
+from .make_wait_choice import make_wait_choice_impl
+from .make_scan_area_choice import make_scan_area_choice_impl
+from .make_special_title_and_choice import make_special_title_and_choice_impl
 
 
 ChoiceKind = Literal["round0", "look_person", "scan_area", "wait", "special"]
@@ -42,7 +47,7 @@ class NarrationChoice:
 class NarratorAI:
     """
     プロンプト設計＋最終テキストの「意味づけ」担当。
-    LLM 呼び出し自体は NarratorManager に委譲する。
+    LLM 呼び出し自体は NarratorManager に丸投げする。
 
     partner_role / partner_name を受け取り、
     フローリア固定ではなく「相手キャラクター汎用」で動作する。
@@ -67,8 +72,7 @@ class NarratorAI:
         SceneAI 経由で world_state を取得し、
         Narrator 用の簡易ビューを作る。
 
-        互換性のため、戻り値には
-        - "floria_location"  も残しておくが、実体は partner の位置。
+        ※ 外野の有無は world_state["others_present"] (bool) を見る。
         """
         scene_ai = SceneAI(state=st.session_state)
         ws = scene_ai.get_world_state()
@@ -85,15 +89,6 @@ class NarratorAI:
         if not isinstance(party, dict):
             party = {}
 
-        # Dokipower / SceneEmotion / その他から crowd_mode を拾えるだけ拾う
-        crowd_mode = (
-            party.get("crowd_mode")
-            or ws.get("crowd_mode")
-            or ws.get("dokipower", {}).get("crowd_mode")
-            or ws.get("scene_emotion", {}).get("crowd_mode")
-            or "auto"
-        )
-
         weather = ws.get("weather", "clear")
 
         player_loc = locs.get("player", "プレイヤーの部屋")
@@ -107,6 +102,13 @@ class NarratorAI:
         time_slot = t.get("slot", "morning")
         time_str = t.get("time_str", "07:30")
 
+        # ★ 新規：世界共通の「外野いる？」フラグを参照
+        raw_others = ws.get("others_present", None)
+        if isinstance(raw_others, bool):
+            others_present: Optional[bool] = raw_others
+        else:
+            others_present = None  # None のときだけ旧仕様フォールバック
+
         return {
             "world_state": ws,
             "player_location": player_loc,
@@ -116,39 +118,40 @@ class NarratorAI:
             "partner_location": partner_loc,
             "partner_role": self.partner_role,
             "partner_name": self.partner_name,
-            "party_mode": party_mode,       # "both" or "alone"
-            "crowd_mode": crowd_mode,       # "auto" / "alone" / "with_others"
+            "party_mode": party_mode,  # "both" or "alone"
             "time_slot": time_slot,
             "time_str": time_str,
             "weather": weather,
+            "others_present": others_present,
         }
 
     # ------------------------------------------------------------
-    # crowd_mode に応じた説明文（Round0 用）
+    # 外野フラグを Round0 用説明文に変換
     # ------------------------------------------------------------
-    def _build_crowd_instruction_for_system(
+    def _build_others_instruction_for_round0(
         self,
-        crowd_mode: str,
+        others_present: Optional[bool],
         location_label: str,
     ) -> str:
         """
-        system_prompt に埋め込む「周囲の人の扱い」の指示文を、
-        DokipowerControl の crowd_mode に応じて切り替える。
+        world_state["others_present"] に応じて、
+        Round0 system_prompt に差し込む 1 行を返す。
         """
-        if crowd_mode == "alone":
-            # モブ完全禁止
+        if others_present is True:
+            # 外野あり（学園モブが欲しいケース）
             return (
-                f"- 周囲には他の生徒はいません。{location_label}は "
-                "プレイヤーと相手キャラクターの二人きりの静かな空間として描写してください。"
+                "- 周囲には他の生徒たちもいます。導入文の中で、"
+                "他の生徒たちの存在が自然に伝わる描写を 1 箇所以上入れてください。"
+                "ただしモブを主役にしたり、長い会話をさせたりはしないでください。"
             )
-        elif crowd_mode == "with_others":
-            # モブ必ず出す（ただし背景）
+        elif others_present is False:
+            # 完全二人きり
             return (
-                f"- 周囲には他の生徒たちもいますが、あくまで背景として軽く描写する程度にとどめ、"
-                "視点と感情の主役はプレイヤーと相手キャラクターになるようにしてください。"
+                "- 周囲には他の生徒はいません。"
+                f"{location_label}はプレイヤーと相手キャラクターだけの静かな空間として描写してください。"
             )
         else:
-            # auto（従来仕様）
+            # 旧仕様（何も指定されていないときだけ）
             return (
                 "- 周囲の人の有無は、学校の施設として不自然でない範囲で、"
                 "少数のモブがいるか、静かな二人きりかのどちらかとして描写してください。"
@@ -164,7 +167,7 @@ class NarratorAI:
         floria_state: Dict[str, Any] | None = None,
     ) -> List[Dict[str, str]]:
         """
-        Round0 用プロンプトを、パーティ状態と crowd_mode に応じて切り替える。
+        Round0 用プロンプトを、パーティ状態＋外野フラグで切り替える。
         - party_mode == "both"  : プレイヤー＋相手キャラが同じ場所にいる導入
         - party_mode == "alone" : プレイヤー一人きりの導入（相手キャラは本文に出さない）
         """
@@ -177,19 +180,11 @@ class NarratorAI:
         time_str = snap["time_str"]
         weather = snap["weather"]
         partner_name = self.partner_name
+        others_present: Optional[bool] = snap.get("others_present")
 
-        # DokipowerControl 側から crowd_mode が乗ってくる想定
-        crowd_mode = snap.get("crowd_mode", "auto")
-        # 念のため player_profile / floria_state 側も見る
         player_profile = player_profile or {}
-        floria_state = floria_state or {}
-        crowd_mode = (
-            player_profile.get("crowd_mode")
-            or floria_state.get("crowd_mode")
-            or crowd_mode
-        )
-
-        partner_mood = floria_state.get("mood", "少し緊張している")
+        partner_state = floria_state or {}
+        partner_mood = partner_state.get("mood", "少し緊張している")
 
         # スロット名をざっくりした日本語にマッピング（ヒント用）
         slot_label_map = {
@@ -200,13 +195,10 @@ class NarratorAI:
         }
         time_of_day_jp = slot_label_map.get(time_slot, time_slot)
 
-        # 場所ラベル（system の説明用）
-        location_label = player_loc
-
-        # crowd_mode に応じた一行の指示文
-        crowd_line = self._build_crowd_instruction_for_system(
-            crowd_mode=crowd_mode,
-            location_label=location_label,
+        # ★ ここで 1 行だけ外野に関するルールを生成
+        others_line = self._build_others_instruction_for_round0(
+            others_present=others_present,
+            location_label=player_loc,
         )
 
         if party_mode == "alone":
@@ -218,9 +210,7 @@ class NarratorAI:
 - プレイヤーは、これから誰かと出会ったり、話しかけたりする前の状態です。
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーや他キャラクターのセリフは一切書かない（台詞は禁止）。
-- このシーンの相手キャラクター（例: フローリアやリセリア）はこの場にいません。
-  本文中にその相手キャラクターの名前や存在を出してはいけません。
-{crowd_line}
+{others_line}
 - 最後の1文には、プレイヤーがこれから誰かに会ったり、行動を起こしたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
@@ -233,12 +223,10 @@ world_state: {ws}
 - 現在地: {player_loc}
 - 時刻帯: {time_of_day_jp}（slot={time_slot}, time={time_str}）
 - 天候: {weather}
-- 周囲の状況: crowd_mode={crowd_mode}
 
 [要件]
 上記の状況にふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
 - プレイヤーの一人きりの空気感や、これから何かが起こりそうな予感を描写してください。
-- 相手キャラクター（{partner_name}）の名前や存在には一切触れないでください。
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
 
@@ -252,7 +240,7 @@ world_state: {ws}
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーや相手キャラクターのセリフは一切書かない（台詞は禁止）。
 - 二人の距離感や空気、これから会話が始まりそうな雰囲気をさりげなく示してください。
-{crowd_line}
+{others_line}
 - 最後の1文には、プレイヤーが何か話しかけたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
@@ -268,7 +256,6 @@ world_state: {ws}
 - 相手キャラクター名: {partner_name}
 - {partner_name} の雰囲気・感情: {partner_mood}
 - プレイヤーと {partner_name} は、今この場所で一緒にいますが、まだ一言も会話を交わしていません。
-- 周囲の状況: crowd_mode={crowd_mode}
 
 [要件]
 上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
@@ -289,8 +276,8 @@ world_state: {ws}
         floria_state: Dict[str, Any],
     ) -> NarrationLine:
         """
-        world_state 引数は互換のため受け取るが、
-        実際には SceneAI 側の world_state を参照する。
+        ※ world_state 引数は互換のため受け取るが、
+           実際には SceneAI 側の world_state を参照する。
         """
         messages = self._build_round0_messages(
             world_state=world_state,
@@ -313,8 +300,129 @@ world_state: {ws}
         )
 
     # ============================================================
-    # ここから下は前と同じ（_build_action_messages / _refine /
-    # make_wait_choice / make_look_person_choice / make_scan_area_choice /
-    # make_special_title_and_choice）
+    # 行動整形（wait / look_person / scan_area / special）
     # ============================================================
-    # ……（ここは前バージョンをそのまま使ってOK）
+    def _build_action_messages(
+        self,
+        intent_text: str,
+        label: str,
+    ) -> List[Dict[str, str]]:
+        """
+        共通の「行動→地の文」Refiner 用プロンプト。
+        world_state は毎回 SceneAI から取得する。
+        """
+        snap = self._get_scene_snapshot()
+        ws = snap["world_state"]
+        player_loc = snap["player_location"]
+        partner_loc = snap["partner_location"]
+        party_mode = snap["party_mode"]
+        time_slot = snap["time_slot"]
+        time_str = snap["time_str"]
+        weather = snap["weather"]
+        partner_name = self.partner_name
+
+        system = """
+あなたは会話RPG「Lyra」のナレーション補助AIです。
+
+ユーザーが指定した「行動の意図」を、ライトノベル風の自然な日本語 1〜2 文に整えます。
+
+- 行動の意図（何をしたいか）は絶対に変えない。
+- 性的・暴力的な強度を勝手に盛らない。暗示レベルに留める。
+- 相手キャラクターなどのセリフは書かない。プレイヤー側の動きだけを書く。
+- 1〜2文以内に収める。
+""".strip()
+
+        user = f"""
+[ワールド状態（内部表現）]
+world_state: {ws}
+
+[シーン要約]
+- パーティ状態: {party_mode}（"both"=プレイヤーと相手キャラが一緒, "alone"=プレイヤーだけ）
+- プレイヤーの現在地: {player_loc}
+- 相手キャラクター({partner_name})の現在地: {partner_loc}
+- 時刻帯: {time_slot}（time={time_str}）
+- 天候: {weather}
+
+[行動の意図]
+「{intent_text}」
+
+上記の意図をそのまま維持したまま、ライトノベル風の地の文 1〜2 文に整えてください。
+出力は本文のみとし、余計な説明やラベルは書かないこと。
+""".strip()
+
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+    def _refine(self, intent_text: str, label: str) -> str:
+        messages = self._build_action_messages(intent_text, label=label)
+        return self.manager.run_task(
+            task_type="action",
+            label=label,
+            messages=messages,
+            mode_current="narrator_action",
+        )
+
+    # ============================================================
+    # 公開API: 救済用 Choice（実装は分割ファイル）
+    # ============================================================
+    def make_wait_choice(
+        self,
+        world_state: Dict[str, Any] | None = None,
+        floria_state: Dict[str, Any] | None = None,
+    ) -> NarrationChoice:
+        return make_wait_choice_impl(self, world_state=world_state, floria_state=floria_state)
+
+    def make_look_person_choice(
+        self,
+        actor_name: str = "フローリア",
+        actor_id: Optional[str] = None,
+        world_state: Dict[str, Any] | None = None,
+        floria_state: Dict[str, Any] | None = None,
+    ) -> NarrationChoice:
+        """
+        「相手の様子を伺う」。
+        プレイヤー一人（party_mode == "alone"）のときは、
+        そもそも相手がいない旨だけを返す。
+        """
+        snap = self._get_scene_snapshot()
+        party_mode = snap["party_mode"]
+
+        # 互換のためデフォルト値は "フローリア" だが、
+        # 別キャラがバインドされている場合はそちらを優先する。
+        if actor_name == "フローリア" and self.partner_name != "フローリア":
+            actor_name = self.partner_name
+
+        if party_mode == "alone":
+            speak = (
+                "周囲を見回してみるが、この場にあなた以外の人影はない。"
+                "様子をうかがう相手が現れるのを、もう少し待つしかなさそうだ。"
+            )
+        else:
+            intent = f"{actor_name}の様子をうかがう"
+            speak = self._refine(intent_text=intent, label="look_person")
+
+        return NarrationChoice(
+            kind="look_person",
+            label=f"{actor_name}の様子をうかがう",
+            speak_text=speak,
+            target_id=actor_id,
+            meta={"actor_name": actor_name},
+        )
+
+    def make_scan_area_choice(
+        self,
+        location_name: str = "この場",
+        world_state: Dict[str, Any] | None = None,
+        floria_state: Dict[str, Any] | None = None,
+    ) -> NarrationChoice:
+        return make_scan_area_choice_impl(self, location_name=location_name, world_state=world_state, floria_state=floria_state)
+
+    def make_special_title_and_choice(
+        self,
+        special_id: str,
+        world_state: Dict[str, Any] | None = None,
+        floria_state: Dict[str, Any] | None = None,
+    ) -> tuple[str, NarrationChoice]:
+        return make_special_title_and_choice_impl(self, special_id=special_id, world_state=world_state, floria_state=floria_state)
