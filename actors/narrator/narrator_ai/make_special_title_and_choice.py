@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING
+
+from .narrator_ai import NarrationChoice
 
 if TYPE_CHECKING:
-    # 型ヒント専用（実行時には import しない）
-    from .narrator_ai import NarratorAI, NarrationChoice
+    from .narrator_ai import NarratorAI
 
 
-def make_special_title_and_choice_impl(
+def build_special_title_and_choice(
     narrator: "NarratorAI",
     special_id: str,
     world_state: Dict[str, Any] | None = None,
     floria_state: Dict[str, Any] | None = None,
-) -> tuple[str, "NarrationChoice"]:
+) -> tuple[str, NarrationChoice]:
     """
-    スペシャルアクション用タイトルと Choice を構築する共通実装。
-
-    world_state は呼び出し側で SceneAI によって管理される想定。
+    スペシャルアクションは、プレイヤー単独でも実行可能。
+    world_state は NarratorAI 経由で取得したものを前提に Refine する。
     """
     if special_id == "touch_pillar":
         title = "古い石柱に手を触れる"
@@ -29,8 +29,6 @@ def make_special_title_and_choice_impl(
         intent = "胸の内の衝動に従い、特別な行動をひとつ取る"
 
     speak = narrator._refine(intent_text=intent, label=f"special:{special_id}")
-
-    from .narrator_ai import NarrationChoice
 
     choice = NarrationChoice(
         kind="special",
