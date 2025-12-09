@@ -192,7 +192,7 @@ class PersonaBase:
         doki_lines: List[str] = doki_levels.get(doki_key, []) or []
 
         # mode 別追加
-        mode_lines: List[str] = mode_overrides.get(str(mode_current), []) or []
+        mode_lines: List[str] = mode_overrides.get(str(mode_current), []) or {}
 
         lines: List[str] = []
         lines.append(f"[{self.display_name}用・口調と距離感ガイドライン]")
@@ -380,11 +380,10 @@ class PersonaBase:
         time_str = time_info.get("time_str")
 
         # 二人きりかどうかの推定
-        party_mode = (
-            world_state.get("party_mode")
-            or (world_state.get("party") or {}).get("mode")
-        )
+        party = world_state.get("party") or {}
+        party_mode = world_state.get("party_mode") or party.get("mode")
         others_around = world_state.get("others_around")
+
         is_alone = False
         if party_mode == "alone":
             is_alone = True
@@ -397,6 +396,7 @@ class PersonaBase:
         masking_cfg = self._get_masking_defaults()
         unmasked_locs = masking_cfg.get("unmasked_locations", [])
         masked_locs = masking_cfg.get("masked_locations", [])
+        rules = masking_cfg.get("rules") or {}
 
         loc_key = str(location_name or "").lower()
         is_unmasked_place = bool(
@@ -409,11 +409,19 @@ class PersonaBase:
         # 場所に応じた説明用メモ
         masking_env_note = ""
         example_line = ""
-        rules = masking_cfg.get("rules") or {}
         raw_example = rules.get("example_line")
         if isinstance(raw_example, str) and raw_example.strip():
             # {PLAYER_NAME} を実際の名前に差し替え
             example_line = raw_example.replace("{PLAYER_NAME}", self.player_name)
+
+        alone_bonus = (
+            rules.get("alone_bonus") if isinstance(rules.get("alone_bonus"), str) else ""
+        )
+        public_softening = (
+            rules.get("public_softening")
+            if isinstance(rules.get("public_softening"), str)
+            else ""
+        )
 
         # 「二人きり＋ばけばけ無効」かどうか
         if is_unmasked_place:
@@ -423,24 +431,40 @@ class PersonaBase:
                 "表情コントロール（ばけばけ度）があってもほとんど働かず、"
                 "素直なデレや甘えがそのまま表に出て構いません。"
             )
+            if not is_alone and public_softening:
+                # 家でも他人がいるケース
+                masking_env_note += f"\n  {public_softening}"
             if example_line:
                 masking_env_note += f"\n  例: 「{example_line}」"
         elif is_masked_place:
             # 学校など人前になりやすい場所
             if is_alone:
-                masking_env_note = (
-                    "※ 形式上は人目のある場所ですが、いまは実質二人きりなので、"
-                    "ばけばけ度はあまり気にせず素直な恋愛感情を見せて構いません。"
-                )
+                # 廊下など「形式上は公共だが実質二人きり」
+                if alone_bonus:
+                    masking_env_note = (
+                        "※ 形式上は人目のある場所ですが、いまは実質二人きりです。"
+                        f"{alone_bonus}"
+                    )
+                else:
+                    masking_env_note = (
+                        "※ 形式上は人目のある場所ですが、いまは実質二人きりなので、"
+                        "ばけばけ度はあまり気にせず素直な恋愛感情を見せて構いません。"
+                    )
                 if example_line:
                     masking_env_note += f"\n  例: 「{example_line}」"
             else:
-                masking_env_note = (
-                    "※ ここは人目のある場所のため、"
-                    "ばけばけ度を意識して外見上は一段階落ち着いたトーンで振る舞ってください。"
-                    "内心のドキドキや恋愛感情は、仕草や視線、ささやかな言葉ににじませる程度に留めてください。"
-                )
-        # world_state が無い／マッチしない場合は env_note なし
+                # 人前＋他人あり
+                if public_softening:
+                    masking_env_note = (
+                        "※ ここは人目のある場所で、周囲にも他の人々がいます。"
+                        f"{public_softening}"
+                    )
+                else:
+                    masking_env_note = (
+                        "※ ここは人目のある場所のため、"
+                        "ばけばけ度を意識して外見上は一段階落ち着いたトーンで振る舞ってください。"
+                        "内心のドキドキや恋愛感情は、仕草や視線、ささやかな言葉ににじませる程度に留めてください。"
+                    )
 
         # 舞台情報（場所・時間帯）
         location_lines: List[str] = []
@@ -453,6 +477,20 @@ class PersonaBase:
                 else (time_slot or time_str)
             )
             location_lines.append(f"- 時間帯は「{ts}」。")
+
+        # 周囲の人の状況メモ
+        others_note = ""
+        if is_alone:
+            others_note = (
+                "※ 現在は実質的に二人きりの状況です。"
+                "周囲の雑踏や他人の視線があっても、地の文では背景程度の扱いにとどめて構いません。"
+            )
+        elif others_around is True:
+            others_note = (
+                "※ 周囲には他の人々（生徒・客・通行人・店員など）がいる状況です。"
+                "地の文やセリフの中で、ときどき周囲の会話・足音・人の気配を描写し、"
+                "『完全な二人きりではない』空気を表現してください。"
+            )
 
         # 好意ラベル（あれば）
         affection_label = self.get_affection_label(affection)
@@ -520,6 +558,14 @@ class PersonaBase:
                 "(0=素直 / 1=完全に平静を装う)"
             )
 
+        # 周囲状況の一行要約
+        if is_alone:
+            header_lines.append("- 周囲の状況: 二人きり（alone）")
+        elif others_around is True:
+            header_lines.append("- 周囲の状況: 他にも人がいる（with_others）")
+        else:
+            header_lines.append("- 周囲の状況: 不明 / auto")
+
         # 長さモードも一行だけ明示しておく
         header_lines.append(
             f"- 発話の長さモード: {self._normalize_length_mode(length_mode)} "
@@ -536,6 +582,9 @@ class PersonaBase:
 
         if masking_note:
             header_lines.append(masking_note)
+
+        if others_note:
+            header_lines.append(others_note)
 
         # ブロック連結
         blocks: List[str] = []
