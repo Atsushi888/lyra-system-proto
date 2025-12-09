@@ -1,29 +1,28 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Dict, Any, Optional, TYPE_CHECKING
+
+from .narrator_ai import NarrationChoice
 
 if TYPE_CHECKING:
-    # 型ヒント専用（実行時には import しない）
-    from .narrator_ai import NarratorAI, NarrationChoice
+    from .narrator_ai import NarratorAI
 
 
-def make_wait_choice_impl(
+def build_wait_choice(
     narrator: "NarratorAI",
     world_state: Dict[str, Any] | None = None,
     floria_state: Dict[str, Any] | None = None,
-) -> "NarrationChoice":
+) -> NarrationChoice:
     """
-    「何もしない」救済アクションの共通実装。
-
-    - party_mode == "alone" のとき:
-        → その場には誰もおらず、静かに待つ描写を直接返す。
-    - それ以外:
-        → narrator._refine() を通してライトノベル調 1〜2文に整形する。
+    「何もしない」。
+    プレイヤー一人（party_mode == "alone"）かつ外野なしのときだけ
+    固定文にして、それ以外は Refiner に投げる。
     """
     snap = narrator._get_scene_snapshot()
     party_mode = snap["party_mode"]
+    others_present: bool = bool(snap.get("others_present", False))
 
-    if party_mode == "alone":
+    if party_mode == "alone" and not others_present:
         speak = (
             "この場には他に誰の気配もない。"
             "あなたはしばし足を止め、静かな空気の中で次の出会いを待つことにした。"
@@ -31,9 +30,6 @@ def make_wait_choice_impl(
     else:
         intent = "何もせず、しばらく黙って様子を見る"
         speak = narrator._refine(intent_text=intent, label="wait")
-
-    # 遅延インポートで循環参照を回避
-    from .narrator_ai import NarrationChoice
 
     return NarrationChoice(
         kind="wait",
