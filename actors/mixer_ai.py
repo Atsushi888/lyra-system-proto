@@ -76,10 +76,20 @@ class MixerAI:
     def _ensure_relationship_fields(emotion: Dict[str, Any]) -> None:
         """
         EmotionModel.sync_relationship_fields が通っていないケースでも、
-        最低限 relationship_level / stage / label / masking_degree を
-        補完できるようにするフォールバック。
+        最低限 relationship_level / relationship_stage / relationship_label /
+        masking_degree を補完できるようにするフォールバック。
+
+        - relationship_level : 0〜100 の float
+        - relationship_stage : 文字列ラベル
+            ("acquaintance" / "friendly" / "close_friends" /
+             "dating" / "soulmate")
+        - relationship_label : UI 向けの日本語ラベル
+        - masking_degree     : 0〜1 の float
+
+        ※ 旧仕様（0〜4 の数値ステージ）との互換も維持する。
         """
-        # 実効 affection
+
+        # --- affection → fallback 用 ---
         try:
             aff = float(
                 emotion.get("affection_with_doki", emotion.get("affection", 0.0)) or 0.0
@@ -92,54 +102,84 @@ class MixerAI:
         if aff > 1.0:
             aff = 1.0
 
-        # relationship_level
+        # --- relationship_level ---
         if "relationship_level" not in emotion:
             level = aff * 100.0
-            emotion["relationship_level"] = level
         else:
             try:
                 level = float(emotion.get("relationship_level", 0.0) or 0.0)
             except Exception:
                 level = aff * 100.0
 
-        # stage
-        if "relationship_stage" not in emotion:
-            if level >= 80.0:
-                stage = 4
-            elif level >= 60.0:
-                stage = 3
-            elif level >= 40.0:
-                stage = 2
-            elif level >= 20.0:
-                stage = 1
+        # clamp
+        if level < 0.0:
+            level = 0.0
+        if level > 100.0:
+            level = 100.0
+        emotion["relationship_level"] = level
+
+        # --- relationship_stage（内部ステージ名） ---
+        raw_stage = emotion.get("relationship_stage", None)
+        stage_name: str
+
+        if isinstance(raw_stage, (int, float)):
+            # 旧仕様: 0〜4 の数値インデックス
+            idx = int(raw_stage)
+            if idx <= 0:
+                stage_name = "acquaintance"
+            elif idx == 1:
+                stage_name = "friendly"
+            elif idx == 2:
+                stage_name = "close_friends"
+            elif idx == 3:
+                stage_name = "dating"
             else:
-                stage = 0
-            emotion["relationship_stage"] = stage
+                stage_name = "soulmate"
+        elif isinstance(raw_stage, str) and raw_stage.strip():
+            # 新仕様: すでに文字列ラベルが入っている場合はそのまま使う
+            stage_name = raw_stage.strip()
         else:
-            stage = int(emotion.get("relationship_stage", 0) or 0)
+            # 何もなければ relationship_level から推定
+            if level >= 85.0:
+                stage_name = "soulmate"
+            elif level >= 60.0:
+                stage_name = "dating"
+            elif level >= 30.0:
+                stage_name = "close_friends"
+            elif level >= 10.0:
+                stage_name = "friendly"
+            else:
+                stage_name = "acquaintance"
 
-        # label
-        if "relationship_label" not in emotion:
-            mapping = {
-                0: "neutral",
-                1: "friends",
-                2: "close_friends",
-                3: "dating",
-                4: "engaged",
+        emotion["relationship_stage"] = stage_name
+
+        # --- relationship_label（UI 向け日本語ラベル） ---
+        if not str(emotion.get("relationship_label", "")).strip():
+            jp_label_map = {
+                "acquaintance": "顔見知り〜クラスメイト",
+                "friendly": "仲の良い先輩後輩",
+                "close_friends": "親友〜両想い手前",
+                "dating": "恋人同士",
+                "soulmate": "将来を真剣に考える相手",
             }
-            emotion["relationship_label"] = mapping.get(stage, "neutral")
+            emotion["relationship_label"] = jp_label_map.get(
+                stage_name, stage_name
+            )
 
-        # masking_degree（関係が深いほど「隠さない」＝小さく）
-        if "masking_degree" not in emotion:
+        # --- masking_degree（関係が深いほど「隠さない」＝小さく） ---
+        if "masking_degree" in emotion:
             try:
-                lv = float(emotion.get("relationship_level", 0.0) or 0.0)
+                m = float(emotion.get("masking_degree", 0.0) or 0.0)
             except Exception:
-                lv = 0.0
-            if lv < 0.0:
-                lv = 0.0
-            if lv > 100.0:
-                lv = 100.0
-            masking = 1.0 - (lv / 100.0)
+                m = 0.0
+            if m < 0.0:
+                m = 0.0
+            if m > 1.0:
+                m = 1.0
+            emotion["masking_degree"] = m
+        else:
+            # 単純なフォールバック: 深いほど素直になる
+            masking = 1.0 - (level / 100.0)
             if masking < 0.0:
                 masking = 0.0
             if masking > 1.0:
@@ -160,7 +200,7 @@ class MixerAI:
             "scene_emotion": {...},
             "emotion": {...},            # EmotionResult.to_dict() 相当
             "emotion_long_term": {...}, # LongTermEmotion.to_dict() 相当
-            "emotion_source": "debug" | "auto",
+            "emotion_source": "debug" | "auto" | "none",
         }
         """
         llm_meta = self._get_llm_meta()
@@ -186,7 +226,7 @@ class MixerAI:
         if isinstance(debug_emo, dict) and debug_emo:
             emotion = dict(debug_emo)
             emotion_source = "debug"
-        elif isinstance(short_emo, dict):
+        elif isinstance(short_emo, dict) and short_emo:
             emotion = dict(short_emo)
             emotion_source = "auto"
         else:
@@ -209,8 +249,8 @@ class MixerAI:
         try:
             llm_meta["mixer_debug"] = {
                 "has_debug_emo": bool(debug_emo),
-                "has_short_emo": isinstance(short_emo, dict),
-                "has_long_term_emo": isinstance(long_term_emo, dict),
+                "has_short_emo": isinstance(short_emo, dict) and bool(short_emo),
+                "has_long_term_emo": isinstance(long_term_emo, dict) and bool(long_term_emo),
                 "emotion_source": emotion_source,
                 "override_keys": list(override.keys()),
                 "emotion_preview": {
