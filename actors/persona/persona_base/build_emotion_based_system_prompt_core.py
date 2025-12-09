@@ -154,15 +154,42 @@ def build_emotion_based_system_prompt_core(
         )
         location_lines.append(f"- 時間帯は「{ts}」。")
 
+    # ==========================================================
     # 周囲に他人がいるかどうかの一行（LLM にハッキリ伝える）
-    if others_around is True or party_mode in ("both", "others", "group"):
+    # 優先順位：
+    #   1) world_state["others_present"]（DokiPowerControl からの直指定）
+    #   2) environment / others_around / party_mode / is_alone の従来ロジック
+    # ==========================================================
+
+    others_present_flag: bool | None = None
+
+    # 1) world_state 側に others_present フラグがあればそれを最優先
+    if isinstance(world_state, dict) and "others_present" in world_state:
+        raw_flag = world_state.get("others_present")
+        if isinstance(raw_flag, bool):
+            others_present_flag = raw_flag
+
+    # 2) world_state にフラグが無い場合は従来ロジックにフォールバック
+    if others_present_flag is None:
+        if others_around is True or party_mode in ("others", "group"):
+            others_present_flag = True
+        elif is_alone:
+            others_present_flag = False
+        # party_mode == "both" だけど environment が不明なときは、
+        # 「二人きり」と見なすかどうかは好みだが、ここでは
+        # round0 / 会話両方の整合性を取るため False（＝二人きり）扱いにしておく。
+        elif party_mode == "both":
+            others_present_flag = False
+
+    # 3) 実際にプロンプトへ反映
+    if others_present_flag is True:
         location_lines.append(
             "- 周囲には他の学院生や利用者も数人います。"
             "完全な二人きりではないため、人前での振る舞いとして不自然にならない範囲で、"
             "控えめな甘さと距離感を保ってください。"
             "可能であれば、ナレーションや地の文の中で周囲の人々の存在や気配にも一言触れてください。"
         )
-    elif is_alone:
+    elif others_present_flag is False:
         location_lines.append(
             "- 現在、この場には実質的にあなたとリセリアだけがおり、二人きりの状況です。"
         )
