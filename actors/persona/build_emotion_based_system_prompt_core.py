@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from actors.persona.build_default_guideline import build_default_guideline
-
 
 def build_emotion_based_system_prompt_core(
     persona: Any,
@@ -15,16 +13,13 @@ def build_emotion_based_system_prompt_core(
     length_mode: str = "auto",
 ) -> str:
     """
-    PersonaBase.build_emotion_based_system_prompt の本体を外出ししたコア関数。
+    PersonaBase から呼び出されるコア実装。
 
-    引数 persona は PersonaBase 互換インスタンスを想定：
-      - player_name
-      - _get_masking_defaults()
-      - get_affection_label()
-      - build_emotion_control_guideline()
-      - _build_length_guideline()
-      - _normalize_length_mode()
-    などを持っている必要がある。
+    emotion_override を受け取り、system_prompt に
+    ・感情・関係性ヘッダ
+    ・ばけばけ度 / 環境に応じた注意書き
+    ・文章量ガイドライン
+    を付け足したテキストを返す。
     """
     emotion_override = emotion_override or {}
     world_state = emotion_override.get("world_state") or {}
@@ -47,7 +42,7 @@ def build_emotion_based_system_prompt_core(
     )
     relationship_stage = str(emotion.get("relationship_stage") or "")
     if not relationship_stage and relationship_level > 0.0:
-        # EmotionState を経由していない場合のフォールバック
+        # Persona 側のヘルパを利用
         from actors.emotion.emotion_state import relationship_stage_from_level
 
         relationship_stage = relationship_stage_from_level(relationship_level)
@@ -71,12 +66,27 @@ def build_emotion_based_system_prompt_core(
     time_slot = time_info.get("slot") or world_state.get("time_of_day")
     time_str = time_info.get("time_str")
 
-    # 二人きりかどうかの推定
+    # ==========================
+    # 周囲に他人がいるかどうか
+    # ==========================
     party_mode = (
         world_state.get("party_mode")
         or (world_state.get("party") or {}).get("mode")
     )
-    others_around = world_state.get("others_around")
+    others_around_flag = world_state.get("others_around")
+
+    # None / bool / 未設定をうまく吸収
+    if isinstance(others_around_flag, bool):
+        others_around: Optional[bool] = others_around_flag
+    else:
+        # party_mode から推定
+        if party_mode in ("both", "others", "group"):
+            others_around = True
+        elif party_mode == "alone":
+            others_around = False
+        else:
+            others_around = None
+
     is_alone = False
     if party_mode == "alone":
         is_alone = True
@@ -91,12 +101,8 @@ def build_emotion_based_system_prompt_core(
     masked_locs = masking_cfg.get("masked_locations", [])
 
     loc_key = str(location_name or "").lower()
-    is_unmasked_place = bool(
-        loc_key and any(tag in loc_key for tag in unmasked_locs)
-    )
-    is_masked_place = bool(
-        loc_key and any(tag in loc_key for tag in masked_locs)
-    )
+    is_unmasked_place = bool(loc_key and any(tag in loc_key for tag in unmasked_locs))
+    is_masked_place = bool(loc_key and any(tag in loc_key for tag in masked_locs))
 
     # 場所に応じた説明用メモ
     masking_env_note = ""
@@ -134,7 +140,9 @@ def build_emotion_based_system_prompt_core(
             )
     # world_state が無い／マッチしない場合は env_note なし
 
+    # ==========================
     # 舞台情報（場所・時間帯）
+    # ==========================
     location_lines: List[str] = []
     if location_name:
         location_lines.append(f"- 現在の舞台は「{location_name}」。")
@@ -145,6 +153,19 @@ def build_emotion_based_system_prompt_core(
             else (time_slot or time_str)
         )
         location_lines.append(f"- 時間帯は「{ts}」。")
+
+    # 周囲に他人がいるかどうかの一行（LLM にハッキリ伝える）
+    if others_around is True or party_mode in ("both", "others", "group"):
+        location_lines.append(
+            "- 周囲には他の学院生や利用者も数人います。"
+            "完全な二人きりではないため、人前での振る舞いとして不自然にならない範囲で、"
+            "控えめな甘さと距離感を保ってください。"
+            "可能であれば、ナレーションや地の文の中で周囲の人々の存在や気配にも一言触れてください。"
+        )
+    elif is_alone:
+        location_lines.append(
+            "- 現在、この場には実質的にあなたとリセリアだけがおり、二人きりの状況です。"
+        )
 
     # 好意ラベル（あれば）
     affection_label = persona.get_affection_label(affection)
@@ -160,7 +181,7 @@ def build_emotion_based_system_prompt_core(
         guideline = ""
 
     if not guideline:
-        guideline = build_default_guideline(
+        guideline = persona._build_default_guideline(
             affection_with_doki=affection,
             doki_level=doki_level,
             mode_current=mode_current,
@@ -173,6 +194,8 @@ def build_emotion_based_system_prompt_core(
             "※ 現在、表情コントロール（ばけばけ度）が高いため、"
             "内心の恋愛感情や高揚をあえて抑え、"
             "外見上は一段階落ち着いたトーンで振る舞ってください。"
+            "特に周囲に他人がいる場合は、あからさまな告白や将来の話は避け、"
+            "好意はささやかな言い回しや視線・仕草にとどめてください。"
         )
     elif masking_degree >= 0.3:
         masking_note = (
@@ -189,7 +212,9 @@ def build_emotion_based_system_prompt_core(
     # 文章量ガイドライン
     length_guideline = persona._build_length_guideline(length_mode)
 
+    # ==========================
     # ヘッダ組み立て
+    # ==========================
     header_lines: List[str] = []
     header_lines.append("[感情・関係性プロファイル]")
     header_lines.append(
