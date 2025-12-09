@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, Any
 
-from narrator_ai import NarratorAI, NarrationChoice
+from actors/narrator/narrator_ai/narrator_ai import NarratorAI, NarrationChoice
 
 
 def make_wait_choice_impl(
