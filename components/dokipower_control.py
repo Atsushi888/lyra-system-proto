@@ -1,4 +1,3 @@
-# components/dokipower_control.py
 from __future__ import annotations
 
 from typing import Dict, Any
@@ -12,15 +11,12 @@ from actors.emotion.emotion_state import relationship_stage_from_level
 
 SESSION_KEY = "dokipower_state"
 
-# 初期状態で使う「未適用」マーカー
-DEFAULT_MANUAL_CONTROLS = {
-    "status": "まだ '適用' ボタンが押されていません。"
-}
-
 
 def _get_state() -> Dict[str, Any]:
     """
     サイドウインドウ内のスライダー状態を session_state に保持。
+    emotion_manual_controls にはここでは一切触れない
+    （他モジュールと競合しないようにするため）。
     """
     if SESSION_KEY not in st.session_state:
         st.session_state[SESSION_KEY] = {
@@ -33,18 +29,13 @@ def _get_state() -> Dict[str, Any]:
             "masking_level": 30,       # ばけばけ度（0〜100）
             "environment": "alone",    # "alone" / "with_others"
         }
-
-    # emotion_manual_controls もここで最低限の初期化だけしておく
-    if "emotion_manual_controls" not in st.session_state:
-        st.session_state["emotion_manual_controls"] = dict(DEFAULT_MANUAL_CONTROLS)
-
     return st.session_state[SESSION_KEY]
 
 
 class DokiPowerController:
     """
     ドキドキ💓パワーと EmotionResult ＋長期関係度／ばけばけ度を
-    手動調整するためのコントローラ（デバッグ用）。
+    手動調整するためのデバッグ用コントローラ。
     """
 
     def __init__(self, *, session_key: str = SESSION_KEY) -> None:
@@ -179,7 +170,7 @@ class DokiPowerController:
             masking_degree=float(masking_level) / 100.0,
         )
 
-        # relationship_level → stage / label を反映
+        # relationship_level → stage / label を反映（プレビュー用）
         stage = relationship_stage_from_level(float(relationship_level))
         stage_to_label = {
             "acquaintance": "neutral",
@@ -228,14 +219,13 @@ class DokiPowerController:
             f"EmotionResult.masking_degree = **{emo.masking_degree:.2f}**"
         )
 
-        # emotion_manual_controls の中身を確認
-        with st.expander("適用済み emotion_manual_controls の中身を見る", expanded=False):
-            manual = st.session_state.get("emotion_manual_controls", DEFAULT_MANUAL_CONTROLS)
-            if isinstance(manual, dict) and "status" not in manual:
-                # status キーが無ければ「適用済み」とみなす
-                st.json(manual)
+        # emotion_manual_controls の中身をそのまま表示（EmotionResult と同じ方式）
+        with st.expander("現在の emotion_manual_controls（Mixer が読む値）", expanded=False):
+            manual = st.session_state.get("emotion_manual_controls")
+            if manual is None:
+                st.info("まだ『適用』ボタンが押されていません。")
             else:
-                st.json(DEFAULT_MANUAL_CONTROLS)
+                st.json(manual)
 
         st.markdown("---")
 
@@ -259,7 +249,7 @@ class DokiPowerController:
                 # MixerAI などが読む用の EmotionResult
                 st.session_state["mixer_debug_emotion"] = emo.to_dict()
 
-                # 手動パラメータ本体（status キーは付けない）
+                # 手動パラメータ本体（そのまま JSON 表示できる形）
                 st.session_state["emotion_manual_controls"] = {
                     "relationship_level": int(relationship_level),
                     "doki_power": float(doki_power),
@@ -286,7 +276,8 @@ class DokiPowerController:
                 }
                 self._set_state(init_state)
 
-                # 未適用マーカーに戻す
-                st.session_state["emotion_manual_controls"] = dict(DEFAULT_MANUAL_CONTROLS)
+                # emotion_manual_controls 自体を消す（None 扱い）
+                if "emotion_manual_controls" in st.session_state:
+                    del st.session_state["emotion_manual_controls"]
 
                 st.info("ドキドキ💓パワー / 感情値 / 手動パラメータを初期状態に戻しました。")
