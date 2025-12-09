@@ -24,6 +24,7 @@ def _get_state() -> Dict[str, Any]:
             "doki_level": 0,          # 0〜4
             "relationship_level": 20,  # 長期的な関係の深さ（0〜100）
             "masking_level": 30,       # ばけばけ度（0〜100）
+            "surrounding": "two_alone",  # "two_alone" / "with_others"
         }
     return st.session_state[SESSION_KEY]
 
@@ -146,6 +147,18 @@ class DokiPowerController:
             int(state.get("doki_level", auto_level)),
         )
 
+        # ===== 周囲の状況（ここを DokiPower セクションの直下に配置） =====
+        st.subheader("周囲の状況")
+
+        surrounding = st.radio(
+            "周囲の状況",
+            options=["two_alone", "with_others"],
+            index=0 if state.get("surrounding", "two_alone") == "two_alone" else 1,
+            format_func=lambda v: "二人きり" if v == "two_alone" else "他にも人がいる",
+            horizontal=True,
+            help="プレイヤーと相手キャラが二人きりか、周囲に他の人がいるかのざっくりした環境設定。",
+        )
+
         # ===== EmotionResult を構築（スライダー値ベースのプレビュー） =====
         emo = EmotionResult(
             mode=mode,
@@ -153,7 +166,7 @@ class DokiPowerController:
             arousal=arousal,
             doki_power=doki_power,
             doki_level=doki_level,
-            # ★ ここでスライダー値を反映させる
+            # 関係レベル/ばけばけ度を EmotionResult にも反映
             relationship_level=float(relationship_level),
             masking_degree=float(masking_level) / 100.0,
         )
@@ -194,17 +207,19 @@ class DokiPowerController:
                     "doki_level": doki_level,
                     "relationship_level": relationship_level,
                     "masking_level": masking_level,
+                    "surrounding": surrounding,
                 }
                 self._set_state(new_state)
 
                 # MixerAI などが読む用の EmotionResult
                 st.session_state["mixer_debug_emotion"] = emo.to_dict()
 
-                # ★ relationship / doki / masking の手動パラメータ
+                # ★ relationship / doki / masking / surrounding の手動パラメータ
                 st.session_state["emotion_manual_controls"] = {
                     "relationship_level": int(relationship_level),
                     "doki_power": float(doki_power),
                     "masking_level": int(masking_level),
+                    "surrounding": surrounding,  # "two_alone" or "with_others"
                 }
 
                 st.success(
@@ -213,7 +228,7 @@ class DokiPowerController:
                 )
 
         with col_reset:
-            if st.button("🔁 リセット（初期値に戻す）"):
+            if st.button("🔁 初期値にリセット"):
                 init_state = {
                     "mode": "normal",
                     "affection": 0.5,
@@ -222,6 +237,7 @@ class DokiPowerController:
                     "doki_level": 0,
                     "relationship_level": 20,
                     "masking_level": 30,
+                    "surrounding": "two_alone",
                 }
                 self._set_state(init_state)
 
@@ -230,6 +246,7 @@ class DokiPowerController:
                     "relationship_level": 20,
                     "doki_power": 0.0,
                     "masking_level": 30,
+                    "surrounding": "two_alone",
                 }
 
                 st.info("ドキドキ💓パワー / 感情値 / 手動パラメータを初期状態に戻しました。")
