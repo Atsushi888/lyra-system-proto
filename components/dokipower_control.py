@@ -1,3 +1,4 @@
+# components/dokipower_control.py
 from __future__ import annotations
 
 from typing import Dict, Any
@@ -15,8 +16,6 @@ SESSION_KEY = "dokipower_state"
 def _get_state() -> Dict[str, Any]:
     """
     サイドウインドウ内のスライダー状態を session_state に保持。
-    emotion_manual_controls にはここでは一切触れない
-    （他モジュールと競合しないようにするため）。
     """
     if SESSION_KEY not in st.session_state:
         st.session_state[SESSION_KEY] = {
@@ -34,7 +33,7 @@ def _get_state() -> Dict[str, Any]:
 
 class DokiPowerController:
     """
-    ドキドキ💓パワーと EmotionResult ＋長期関係度／ばけばけ度を
+    ドキドキ💓パワーと EmotionResult ＋ 長期関係度／ばけばけ度を
     手動調整するためのデバッグ用コントローラ。
     """
 
@@ -219,14 +218,6 @@ class DokiPowerController:
             f"EmotionResult.masking_degree = **{emo.masking_degree:.2f}**"
         )
 
-        # emotion_manual_controls の中身をそのまま表示（EmotionResult と同じ方式）
-        with st.expander("現在の emotion_manual_controls（Mixer が読む値）", expanded=False):
-            manual = st.session_state.get("emotion_manual_controls")
-            if manual is None:
-                st.info("まだ『適用』ボタンが押されていません。")
-            else:
-                st.json(manual)
-
         st.markdown("---")
 
         # ===== 適用／リセット =====
@@ -234,6 +225,7 @@ class DokiPowerController:
 
         with col_apply:
             if st.button("✅ この値を Mixer デバッグ用に適用", type="primary"):
+                # スライダー状態を保存
                 new_state = {
                     "mode": mode,
                     "affection": affection,
@@ -249,7 +241,7 @@ class DokiPowerController:
                 # MixerAI などが読む用の EmotionResult
                 st.session_state["mixer_debug_emotion"] = emo.to_dict()
 
-                # 手動パラメータ本体（そのまま JSON 表示できる形）
+                # 手動パラメータ本体
                 st.session_state["emotion_manual_controls"] = {
                     "relationship_level": int(relationship_level),
                     "doki_power": float(doki_power),
@@ -257,10 +249,8 @@ class DokiPowerController:
                     "environment": environment,
                 }
 
-                st.success(
-                    "EmotionResult を session_state['mixer_debug_emotion'] に、"
-                    "手動パラメータを session_state['emotion_manual_controls'] に保存しました。"
-                )
+                # 成功メッセージより「即反映」を優先して強制リラン
+                st.rerun()
 
         with col_reset:
             if st.button("🔁 初期値にリセット"):
@@ -276,8 +266,20 @@ class DokiPowerController:
                 }
                 self._set_state(init_state)
 
-                # emotion_manual_controls 自体を消す（None 扱い）
+                # emotion_manual_controls 自体を消す（未適用扱い）
                 if "emotion_manual_controls" in st.session_state:
                     del st.session_state["emotion_manual_controls"]
+                if "mixer_debug_emotion" in st.session_state:
+                    del st.session_state["mixer_debug_emotion"]
 
-                st.info("ドキドキ💓パワー / 感情値 / 手動パラメータを初期状態に戻しました。")
+                st.rerun()
+
+        st.markdown("---")
+
+        # ===== 現在の emotion_manual_controls（グループ外・常時表示） =====
+        st.subheader("現在の emotion_manual_controls（Mixer が読む値）")
+        manual = st.session_state.get("emotion_manual_controls")
+        if manual is None:
+            st.info("まだ『適用』ボタンが押されていません。")
+        else:
+            st.json(manual)
