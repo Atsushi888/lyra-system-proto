@@ -5,11 +5,11 @@ from pathlib import Path
 import json
 
 from actors.emotion_ai import EmotionResult
-from actors.persona.build_default_guideline import build_default_guideline
-from actors.persona.build_emotion_based_system_prompt_core import (
+from actors.persona.persona_base.build_default_guideline import build_default_guideline
+from actors.persona.persona_base.build_emotion_based_system_prompt_core import (
     build_emotion_based_system_prompt_core,
 )
-from actors.persona.build_emotion_header import build_emotion_header_core
+from actors.persona.persona_base.build_emotion_header import build_emotion_header_core
 
 
 class PersonaBase:
