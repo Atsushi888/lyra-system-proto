@@ -33,13 +33,6 @@ class DokiPowerController:
     """
     ドキドキ💓パワーと EmotionResult ＋長期関係度／ばけばけ度を
     手動調整するためのコントローラ。
-
-    - affection / arousal / doki_power / doki_level
-    - relationship_level / masking_level
-      をスライダーで操作
-    - 「適用」で EmotionResult を session_state["mixer_debug_emotion"] に書き込み、
-      かつ emotion_manual_controls を session_state["emotion_manual_controls"] に書き込む。
-      → MixerAI などがここを読めば、即「効き目」を確認できる。
     """
 
     def __init__(self, *, session_key: str = SESSION_KEY) -> None:
@@ -119,7 +112,7 @@ class DokiPowerController:
             step=1.0,
         )
 
-        # しきい値から自動レベル判定（手動で上書き可：デバッグ用途）
+        # 自動レベル判定
         auto_level = 0
         if doki_power >= 85:
             auto_level = 4
@@ -153,14 +146,13 @@ class DokiPowerController:
             help="プレイヤーと相手キャラが二人きりか、周囲に他の人がいるかのざっくりした環境設定。",
         )
 
-        # ===== EmotionResult を構築（スライダー値ベースのプレビュー） =====
+        # ===== EmotionResult プレビュー =====
         emo = EmotionResult(
             mode=mode,
             affection=affection,
             arousal=arousal,
             doki_power=doki_power,
             doki_level=doki_level,
-            # 関係レベル/ばけばけ度を EmotionResult にも反映
             relationship_level=float(relationship_level),
             masking_degree=float(masking_level) / 100.0,
         )
@@ -169,7 +161,7 @@ class DokiPowerController:
         st.subheader("現在の EmotionResult（スライダー値プレビュー）")
         st.json(emo.to_dict())
 
-        # ★ ここで「環境ステータス」を明示的に表示する
+        # 環境ステータス
         st.markdown("#### 環境ステータス（このコントローラ固有の情報）")
         human_surround = "二人きり" if surrounding == "two_alone" else "他にも人がいる"
         st.write(f"- 周囲の状況: **{human_surround}**  (`{surrounding}`)")
@@ -178,11 +170,6 @@ class DokiPowerController:
             f"- masking_level（スライダー値）: **{masking_level}** "
             f"→ EmotionResult.masking_degree = **{masking_level / 100.0:.2f}**"
         )
-
-        # すでに適用済みの emotion_manual_controls も見えるようにする
-        manual = st.session_state.get("emotion_manual_controls")
-        with st.expander("適用済み emotion_manual_controls の中身を見る", expanded=False):
-            st.json(manual or {"status": "まだ『適用』ボタンが押されていません。"})
 
         # ドキドキ補正後の好感度＆レベル表示
         aff_with_doki = getattr(emo, "affection_with_doki", emo.affection)
@@ -220,15 +207,15 @@ class DokiPowerController:
                 }
                 self._set_state(new_state)
 
-                # MixerAI などが読む用の EmotionResult
+                # MixerAI などが読む用
                 st.session_state["mixer_debug_emotion"] = emo.to_dict()
 
-                # ★ relationship / doki / masking / surrounding の手動パラメータ
+                # 手動パラメータ
                 st.session_state["emotion_manual_controls"] = {
                     "relationship_level": int(relationship_level),
                     "doki_power": float(doki_power),
                     "masking_level": int(masking_level),
-                    "surrounding": surrounding,  # "two_alone" or "with_others"
+                    "surrounding": surrounding,
                 }
 
                 st.success(
@@ -250,7 +237,6 @@ class DokiPowerController:
                 }
                 self._set_state(init_state)
 
-                # 手動パラメータも初期化
                 st.session_state["emotion_manual_controls"] = {
                     "relationship_level": 20,
                     "doki_power": 0.0,
@@ -259,3 +245,9 @@ class DokiPowerController:
                 }
 
                 st.info("ドキドキ💓パワー / 感情値 / 手動パラメータを初期状態に戻しました。")
+
+        # ★ ここで「適用後」の state を読んで表示する
+        manual = st.session_state.get("emotion_manual_controls")
+        st.markdown("---")
+        with st.expander("適用済み emotion_manual_controls の中身を見る", expanded=False):
+            st.json(manual or {"status": "まだ『適用』ボタンが押されていません。"})
