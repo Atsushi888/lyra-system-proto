@@ -5,7 +5,6 @@ from typing import List, Dict, Any
 import streamlit as st
 
 from actors.actor import Actor
-# from personas.persona_floria_ja import Persona as FloriaPersona
 from actors.persona.persona_classes.persona_riseria_ja import Persona as RiseriaPersona
 from actors.narrator.narrator_ai.narrator_ai import NarratorAI
 from actors.narrator.narrator_manager import NarratorManager
@@ -50,8 +49,7 @@ class CouncilManager:
     """
     会談システムのロジック ＋ 画面描画（β）。
 
-    - デフォルトではフローリアとの会話になる。
-    - partner / partner_role を指定することで、会話相手を差し替え可能。
+    partner / partner_role を差し替えることで、会話相手を変更可能。
     """
 
     def __init__(
@@ -71,8 +69,10 @@ class CouncilManager:
         raw_log = st.session_state.get(self.session_key, [])
         self.conversation_log: List[Dict[str, str]] = list(raw_log) if isinstance(raw_log, list) else []
 
-        # ===== 会話相手（デフォルトはフローリア） =====
+        # ===== 会話相手 =====
         if partner is None:
+            # デフォルトは「フローリア」（古い互換用）
+            from personas.persona_floria_ja import Persona as FloriaPersona  # 遅延インポート
             partner = Actor("フローリア", FloriaPersona())
             partner_role = "floria"
         else:
@@ -237,7 +237,7 @@ class CouncilManager:
         return {
             "round": round_,
             "speaker": "player",
-            "mode": self.state.get("mode", "ongoing"),
+            "mode": self.state.get("mode", "ongogoing"),
             "participants": self.state.get("participants", ["player", self.partner_role]),
             "last_speaker": self.state.get("last_speaker"),
             "special_available": self.state.get("special_available", False),
@@ -311,8 +311,7 @@ class CouncilManager:
     # ------------------------------------------------------
     def render(self) -> None:
         """
-        以前の council_manager.py に入っていた UI 部分を
-        そのまま保持した render()。
+        会談システム UI 本体。
         """
         if "council_sending" not in st.session_state:
             st.session_state["council_sending"] = False
@@ -342,14 +341,19 @@ class CouncilManager:
         if not log:
             st.caption("（まだ会談は始まっていません。何か話しかけてみましょう）")
         else:
+            # ここでロール名 → 表示名 をマッピングする
+            persona_id = getattr(getattr(self.partner, "persona", None), "persona_id", None)
             for idx, entry in enumerate(log, start=1):
                 role = entry.get("role", "")
                 text = entry.get("content", "")
+
                 if role == "player":
                     name = "プレイヤー"
                 elif role == "narrator":
                     name = "ナレーション"
-                elif role == self.partner_role:
+                elif role == self.partner_role or (persona_id and role == persona_id):
+                    # partner_role または persona_id（例: elf_riseria_da_silva_ja.json）は
+                    # すべて会話相手の表示名に統一する
                     name = getattr(self.partner, "name", self.partner_role)
                 else:
                     name = role or "？"
@@ -373,6 +377,8 @@ class CouncilManager:
                 st.write("参加者: " + " / ".join(labels))
             last = status.get("last_speaker")
             if last:
+                # last_speaker も、partner_role / persona_id の場合は表示名に寄せたいなら
+                # ここで同様のマッピングをしてもよい
                 st.write(f"最後の話者: {last}")
             st.write(f"スペシャル選択可: {status.get('special_available')}")
 
