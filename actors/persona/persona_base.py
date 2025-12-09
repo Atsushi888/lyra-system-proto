@@ -120,15 +120,6 @@ class PersonaBase:
     def get_emotion_profile(self) -> Dict[str, Any]:
         """
         affection_gain / doki_bias など係数系。
-
-        JSON 例:
-          "emotion_profiles": {
-            "profile": {
-              "affection_gain": 1.2,
-              "doki_bias": 1.0
-            },
-            ...
-          }
         """
         profiles = self._get_emotion_profiles()
         prof = profiles.get("profile") or {}
@@ -192,7 +183,7 @@ class PersonaBase:
         doki_lines: List[str] = doki_levels.get(doki_key, []) or []
 
         # mode 別追加
-        mode_lines: List[str] = mode_overrides.get(str(mode_current), []) or {}
+        mode_lines: List[str] = mode_overrides.get(str(mode_current), []) or []
 
         lines: List[str] = []
         lines.append(f"[{self.display_name}用・口調と距離感ガイドライン]")
@@ -221,20 +212,6 @@ class PersonaBase:
     def _get_masking_defaults(self) -> Dict[str, Any]:
         """
         persona JSON の masking_defaults セクションを返す。
-
-        期待構造（例）:
-          "masking_defaults": {
-            "masking_level": 0.5,
-            "masking_behavior": {
-              "unmasked_locations": ["home", "riseria_home", "club_animal"],
-              "masked_locations": ["school", "classroom", "hallway"],
-              "rules": {
-                "alone_bonus": "...",
-                "public_softening": "...",
-                "example_line": "……二人きりですね、{PLAYER_NAME}先輩…"
-              }
-            }
-          }
         """
         raw = self.raw.get("masking_defaults") or {}
         if not isinstance(raw, dict):
@@ -329,13 +306,6 @@ class PersonaBase:
     ) -> str:
         """
         emotion_override を受け取り、system_prompt に感情ヘッダ＋文章量ガイドラインを付け足したものを返す。
-
-        主に扱う値:
-          - affection_with_doki … ドキドキ補正後の実効好感度
-          - doki_level          … その場の高揚段階（0〜4）
-          - relationship_level  … 長期的な関係の深さ（0〜100）
-          - masking_degree      … ばけばけ度（0〜1）
-          - length_mode         … 発話の長さモード（short/normal/long/story/auto）
         """
         emotion_override = emotion_override or {}
         world_state = emotion_override.get("world_state") or {}
@@ -380,10 +350,11 @@ class PersonaBase:
         time_str = time_info.get("time_str")
 
         # 二人きりかどうかの推定
-        party = world_state.get("party") or {}
-        party_mode = world_state.get("party_mode") or party.get("mode")
+        party_mode = (
+            world_state.get("party_mode")
+            or (world_state.get("party") or {}).get("mode")
+        )
         others_around = world_state.get("others_around")
-
         is_alone = False
         if party_mode == "alone":
             is_alone = True
@@ -411,62 +382,65 @@ class PersonaBase:
         example_line = ""
         raw_example = rules.get("example_line")
         if isinstance(raw_example, str) and raw_example.strip():
-            # {PLAYER_NAME} を実際の名前に差し替え
             example_line = raw_example.replace("{PLAYER_NAME}", self.player_name)
 
-        alone_bonus = (
-            rules.get("alone_bonus") if isinstance(rules.get("alone_bonus"), str) else ""
-        )
-        public_softening = (
-            rules.get("public_softening")
-            if isinstance(rules.get("public_softening"), str)
-            else ""
-        )
+        alone_rule = rules.get("alone_bonus")
+        public_rule = rules.get("public_softening")
 
         # 「二人きり＋ばけばけ無効」かどうか
         if is_unmasked_place:
             # 自宅／リセ家／部室など → 常に素が出やすい場所
-            masking_env_note = (
+            base_note = (
                 "※ 現在は親しい相手とくつろげる場所にいるため、"
                 "表情コントロール（ばけばけ度）があってもほとんど働かず、"
                 "素直なデレや甘えがそのまま表に出て構いません。"
             )
-            if not is_alone and public_softening:
-                # 家でも他人がいるケース
-                masking_env_note += f"\n  {public_softening}"
+            if isinstance(alone_rule, str) and alone_rule.strip():
+                base_note = alone_rule.strip()
+            masking_env_note = base_note
             if example_line:
                 masking_env_note += f"\n  例: 「{example_line}」"
         elif is_masked_place:
-            # 学校など人前になりやすい場所
             if is_alone:
-                # 廊下など「形式上は公共だが実質二人きり」
-                if alone_bonus:
-                    masking_env_note = (
-                        "※ 形式上は人目のある場所ですが、いまは実質二人きりです。"
-                        f"{alone_bonus}"
-                    )
-                else:
-                    masking_env_note = (
-                        "※ 形式上は人目のある場所ですが、いまは実質二人きりなので、"
-                        "ばけばけ度はあまり気にせず素直な恋愛感情を見せて構いません。"
-                    )
+                # 学校などでも「実質二人きり」
+                base_note = (
+                    "※ 形式上は人目のある場所ですが、いまは実質二人きりなので、"
+                    "ばけばけ度はあまり気にせず素直な恋愛感情を見せて構いません。"
+                )
+                if isinstance(alone_rule, str) and alone_rule.strip():
+                    base_note = alone_rule.strip()
+                masking_env_note = base_note
                 if example_line:
                     masking_env_note += f"\n  例: 「{example_line}」"
             else:
-                # 人前＋他人あり
-                if public_softening:
-                    masking_env_note = (
-                        "※ ここは人目のある場所で、周囲にも他の人々がいます。"
-                        f"{public_softening}"
+                # 学校＋他人あり → ここで一番強く絞る
+                base_note = (
+                    "※ ここは人目のある場所で、周囲には他の学生や人々がいます。"
+                    "ばけばけ度を強めに意識し、外見上は『大切な先輩と仲の良い後輩』"
+                    "程度に見えるよう振る舞ってください。"
+                    "結婚や同棲を連想させる台詞、露骨なイチャつき、"
+                    "公衆の面前での恋人らしいボディタッチや囁きは避けてください。"
+                    "内心の恋愛感情や高揚は、視線・間・ささやかな言い回しに"
+                    "にじませる程度に留めてください。"
+                    "必ず背景に、周囲の生徒の会話や足音など、"
+                    "『他人の気配』が分かる描写を一文以上含めてください。"
+                    "以下の口調ガイドラインで示される甘さよりも、"
+                    "『いま人目がある』という事実を最優先してください。"
+                )
+                if isinstance(public_rule, str) and public_rule.strip():
+                    # public_softening に persona 固有の説明があれば優先して使う
+                    base_note = public_rule.strip()
+                    # その後にこちらの追加ルールを足す
+                    base_note += (
+                        "\n※ さらに、結婚や同棲を連想させる台詞や、"
+                        "あからさまな恋人ムーブは人前では控えてください。"
+                        "周囲の人々の気配が分かる描写を一文は入れ、"
+                        "『公の場である』ことを忘れないでください。"
                     )
-                else:
-                    masking_env_note = (
-                        "※ ここは人目のある場所のため、"
-                        "ばけばけ度を意識して外見上は一段階落ち着いたトーンで振る舞ってください。"
-                        "内心のドキドキや恋愛感情は、仕草や視線、ささやかな言葉ににじませる程度に留めてください。"
-                    )
+                masking_env_note = base_note
+        # world_state が無い／マッチしない場合は env_note なし
 
-        # 舞台情報（場所・時間帯）
+        # 舞台情報（場所・時間・周囲の人）
         location_lines: List[str] = []
         if location_name:
             location_lines.append(f"- 現在の舞台は「{location_name}」。")
@@ -478,19 +452,17 @@ class PersonaBase:
             )
             location_lines.append(f"- 時間帯は「{ts}」。")
 
-        # 周囲の人の状況メモ
-        others_note = ""
-        if is_alone:
-            others_note = (
-                "※ 現在は実質的に二人きりの状況です。"
-                "周囲の雑踏や他人の視線があっても、地の文では背景程度の扱いにとどめて構いません。"
+        people_note = ""
+        if others_around is True and not is_alone:
+            people_note = (
+                "- 周囲には他の生徒や人々もおり、会話や足音などの気配が常にあります。"
+                "完全な二人きりではないことを忘れないでください。"
             )
-        elif others_around is True:
-            others_note = (
-                "※ 周囲には他の人々（生徒・客・通行人・店員など）がいる状況です。"
-                "地の文やセリフの中で、ときどき周囲の会話・足音・人の気配を描写し、"
-                "『完全な二人きりではない』空気を表現してください。"
-            )
+        elif is_alone:
+            people_note = "- いまは実質的に二人きりで、近くに第三者はいません。"
+
+        if people_note:
+            location_lines.append(people_note)
 
         # 好意ラベル（あれば）
         affection_label = self.get_affection_label(affection)
@@ -527,8 +499,7 @@ class PersonaBase:
                 "さりげない甘さがにじむ程度に留めてください。"
             )
 
-        # ただし「自宅・リセ家・部室」や「学校でも二人きり」の場合は、
-        # 数値的なばけばけ度より環境優先で、masking_note を上書きする。
+        # 環境情報があれば、数値ベースの注意より優先して上書き
         if masking_env_note:
             masking_note = masking_env_note
 
@@ -558,14 +529,6 @@ class PersonaBase:
                 "(0=素直 / 1=完全に平静を装う)"
             )
 
-        # 周囲状況の一行要約
-        if is_alone:
-            header_lines.append("- 周囲の状況: 二人きり（alone）")
-        elif others_around is True:
-            header_lines.append("- 周囲の状況: 他にも人がいる（with_others）")
-        else:
-            header_lines.append("- 周囲の状況: 不明 / auto")
-
         # 長さモードも一行だけ明示しておく
         header_lines.append(
             f"- 発話の長さモード: {self._normalize_length_mode(length_mode)} "
@@ -582,9 +545,6 @@ class PersonaBase:
 
         if masking_note:
             header_lines.append(masking_note)
-
-        if others_note:
-            header_lines.append(others_note)
 
         # ブロック連結
         blocks: List[str] = []
@@ -775,7 +735,7 @@ class PersonaBase:
             guideline_lines.extend(
                 [
                     "1) 結婚を前提にした深い信頼と愛情を前提として、将来への期待がにじむトーンで話してください。",
-                    "2) さりげないスキンシップや将来の生活を匂わせる表現を、セリフの中に1つ以上含めてください。",
+                    "2) さりげないスキンシップや将来の生活を匂わせる表現をセリフの中に1つ以上含めてください。",
                     "3) 『ずっとそばにいたい』『本気で大事にしたい』と伝わるニュアンスを自然な描写で入れてください。",
                 ]
             )
@@ -783,7 +743,7 @@ class PersonaBase:
             guideline_lines.extend(
                 [
                     "1) 強い好意と信頼が伝わる、親密で少し独占欲のにじむトーンで話してください。",
-                    "2) 距離が近いことや触れそうな距離感を意識した描写を、会話の中にさりげなく混ぜてください。",
+                    "2) 距離が近いことや触れそうな距離感を意識した描写をセリフに混ぜてください。",
                     "3) 相手の体調や気持ちを気遣う言葉を交えつつ、『あなたが大切』というニュアンスを含めてください。",
                 ]
             )
