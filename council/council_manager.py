@@ -7,7 +7,7 @@ import streamlit as st
 from actors.actor import Actor
 # from personas.persona_floria_ja import Persona as FloriaPersona
 from actors.persona.persona_classes.persona_riseria_ja import Persona as RiseriaPersona
-from actors.narrator_ai import NarratorAI
+from actors.narrator.narrator_ai.narrator_ai import NarratorAI
 from actors.narrator.narrator_manager import NarratorManager
 from actors.scene_ai import SceneAI
 
