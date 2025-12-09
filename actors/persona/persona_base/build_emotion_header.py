@@ -1,4 +1,4 @@
-# actors/persona/build_emotion_header.py
+# actors/persona/persona_base/build_emotion_header.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
