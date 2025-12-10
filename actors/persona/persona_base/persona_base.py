@@ -5,11 +5,11 @@ from pathlib import Path
 import json
 
 from actors.emotion_ai import EmotionResult
-from actors.persona.persona_base.build_default_guideline import build_default_guideline
-from actors.persona.persona_base.build_emotion_based_system_prompt_core import (
+from actors.persona.build_default_guideline import build_default_guideline
+from actors.persona.build_emotion_based_system_prompt_core import (
     build_emotion_based_system_prompt_core,
 )
-from actors.persona.persona_base.build_emotion_header import build_emotion_header_core
+from actors.persona.build_emotion_header import build_emotion_header_core
 
 
 class PersonaBase:
@@ -37,14 +37,13 @@ class PersonaBase:
 
         # 基本情報
         self.id: str = self.raw.get("id", self.JSON_NAME or "persona_base")
-
-        # 旧実装互換用の persona_id エイリアス
-        # （古いコードが persona.persona_id を参照しても動くようにする）
-        self.persona_id: str = self.id
-
         self.display_name: str = self.raw.get("display_name", self.id)
         self.short_name: str = self.raw.get("short_name", self.display_name)
-    
+
+        # system_prompt 内の {PLAYER_NAME} を差し替え
+        base_sp = self.raw.get("system_prompt", "")
+        self.system_prompt: str = base_sp.replace("{PLAYER_NAME}", player_name)
+
     # --------------------------------------------------
     # JSON ロード
     # --------------------------------------------------
