@@ -54,16 +54,22 @@ class PersonaBase:
         if not self.JSON_NAME:
             return {}
 
+        # ★ ここを修正：persona_base ディレクトリではなく、
+        #    その 1 つ上（actors/persona）を基準にする
         here = Path(__file__).resolve().parent
-        json_path = here / "persona_datas" / self.JSON_NAME
+        root = here.parent  # actors/persona/
+        json_path = root / "persona_datas" / self.JSON_NAME
 
         if not json_path.exists():
+            # デバッグ用（必要なければ print は消してOK）
+            print(f"[PersonaBase] JSON not found: {json_path}")
             return {}
 
         text = json_path.read_text(encoding="utf-8")
         try:
             data = json.loads(text)
-        except Exception:
+        except Exception as e:
+            print(f"[PersonaBase] JSON parse error at {json_path}: {e}")
             return {}
 
         if isinstance(data, dict):
