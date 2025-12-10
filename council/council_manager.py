@@ -37,6 +37,11 @@ def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "Co
             partner_role="riseria",
             session_key="council_log_riseria",
         )
+        st.write(
+            f"[DEBUG:RiseriaPersona] id={riseria_persona.id}, "
+            f"persona_id={getattr(riseria_persona, 'persona_id', None)}, "
+            f"display_name={riseria_persona.display_name}"
+        )
 
     return st.session_state[key]
 
