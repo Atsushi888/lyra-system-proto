@@ -17,9 +17,13 @@ from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
 from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
+from actors.utils.debug_world_state import WorldStateDebugger  # 🔍 追加
 
 # 環境変数でデバッグモードを切り替え
 LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
+
+# このファイル専用 WorldState デバッガ
+WS_DEBUGGER = WorldStateDebugger(name="AnswerTalker")
 
 
 class AnswerTalker:
@@ -285,6 +289,17 @@ class AnswerTalker:
             self.llm_meta.setdefault("world_state", {})
             self.llm_meta.setdefault("scene_emotion", {})
 
+        # 🔍 デバッグ：SceneAI から積み上がった world_state / scene_emotion の確認
+        WS_DEBUGGER.log(
+            caller="AnswerTalker.speak[after_scene_payload]",
+            world_state=self.llm_meta.get("world_state"),
+            scene_emotion=self.llm_meta.get("scene_emotion"),
+            extra={
+                "step": "after_scene_payload",
+                "has_world_error": bool(self.llm_meta.get("world_error")),
+            },
+        )
+
         # 1.5) emotion_override を MixerAI から取得
         emotion_override = self.mixer_ai.build_emotion_override()
         self.llm_meta["emotion_override"] = emotion_override or {}
@@ -293,6 +308,28 @@ class AnswerTalker:
             st.write(
                 "[DEBUG:AnswerTalker.speak] emotion_override =",
                 emotion_override,
+            )
+
+        # 🔍 デバッグ：MixerAI が返した override 一式
+        if isinstance(emotion_override, dict):
+            WS_DEBUGGER.log(
+                caller="AnswerTalker.speak[after_mixer]",
+                world_state=emotion_override.get("world_state"),
+                scene_emotion=emotion_override.get("scene_emotion"),
+                emotion=emotion_override.get("emotion"),
+                extra={
+                    "step": "after_mixer",
+                    "has_emotion_override": True,
+                },
+            )
+        else:
+            WS_DEBUGGER.log(
+                caller="AnswerTalker.speak[after_mixer]",
+                extra={
+                    "step": "after_mixer",
+                    "has_emotion_override": False,
+                    "emotion_override_type": str(type(emotion_override)),
+                },
             )
 
         # 1.6) system_prompt に emotion_override ＋ length_mode を織り込む
@@ -381,7 +418,7 @@ class AnswerTalker:
                 "chosen_model": "",
                 "chosen_text": "",
                 "candidates": [],
-            }        
+            }
             self.llm_meta["judge"] = judge_result
         if LYRA_DEBUG:
             st.write(
