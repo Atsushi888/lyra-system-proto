@@ -1,4 +1,3 @@
-# llm/llm_router.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +17,7 @@ class LLMRouter:
     各ベンダーごとの LLM 呼び出しをまとめるルーター。
 
     - OpenAI: gpt4o / gpt5.1 など
-    - OpenRouter: Hermes など
+    - OpenRouter: Hermes / Llama Uncensored など
     - xAI: Grok
     - Google: Gemini
 
@@ -38,7 +37,10 @@ class LLMRouter:
         )
 
         # OpenRouter
-        self._openrouter_endpoint = "https://openrouter.ai/api/v1/chat/completions"
+        self._openrouter_endpoint = os.getenv(
+            "OPENROUTER_BASE_URL",
+            "https://openrouter.ai/api/v1",
+        ).rstrip("/") + "/chat/completions"
         self._openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
 
         # xAI (Grok)
@@ -171,10 +173,11 @@ class LLMRouter:
         return self._call_openai_chat("gpt-5.1", messages, **kwargs)
 
     # -------------------------------------------------
-    # OpenRouter（Hermes）
+    # OpenRouter（Hermes / Llama Uncensored）
     # -------------------------------------------------
-    def call_hermes(
+    def _call_openrouter_chat(
         self,
+        model: str,
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
@@ -186,7 +189,7 @@ class LLMRouter:
             "Content-Type": "application/json",
         }
         payload: Dict[str, Any] = {
-            "model": "nousresearch/hermes-3-llama-3.1-70b",
+            "model": model,
             "messages": messages,
         }
         payload.update(kwargs)
@@ -200,6 +203,36 @@ class LLMRouter:
         resp.raise_for_status()
         data = resp.json()
         return self._split_text_and_usage(data)
+
+    def call_hermes(
+        self,
+        messages: List[Dict[str, str]],
+        **kwargs: Any,
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """
+        Hermes 系（デフォルト: nousresearch/hermes-3-llama-3.1-70b）
+        """
+        model_id = os.getenv(
+            "OPENROUTER_HERMES_MODEL",
+            "nousresearch/hermes-3-llama-3.1-70b",
+        )
+        return self._call_openrouter_chat(model_id, messages, **kwargs)
+
+    def call_llama_uncensored(
+        self,
+        messages: List[Dict[str, str]],
+        **kwargs: Any,
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """
+        NousResearch Llama 3.1 70B Uncensored 用。
+
+        - 実際のモデルIDは OPENROUTER_LLAMA_UNC_MODEL 環境変数で上書き可能。
+        """
+        model_id = os.getenv(
+            "OPENROUTER_LLAMA_UNC_MODEL",
+            "nousresearch/llama-3.1-70b-instruct:uncensored",
+        )
+        return self._call_openrouter_chat(model_id, messages, **kwargs)
 
     # -------------------------------------------------
     # xAI（Grok）
