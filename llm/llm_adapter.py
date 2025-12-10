@@ -1,4 +1,3 @@
-# llm/llm_adapter.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -119,7 +118,7 @@ class BaseLLMAdapter:
     """
     各ベンダーごとの LLM 呼び出しをカプセル化する基底クラス。
 
-    - name:  論理モデル名（"gpt51", "grok", "gemini", "hermes" など）
+    - name:  論理モデル名（"gpt51", "grok", "gemini", "hermes", "llama_unc" など）
     - call:  (messages, **kwargs) -> (text, usage_dict or None)
     """
 
@@ -226,6 +225,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
 
         raise RuntimeError(f"{self.name}: OpenAI call failed after retry: {last_exc}")
 
+
 class GPT4oAdapter(OpenAIChatAdapter):
     """
     gpt-4o-mini 用アダプタ。
@@ -251,7 +251,7 @@ class GPT51Adapter(OpenAIChatAdapter):
 
 
 # ============================================================
-# OpenRouter（Hermes）Adapters：旧版／新版
+# OpenRouter（Hermes / Llama Uncensored）Adapters
 # ============================================================
 
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -259,6 +259,11 @@ HERMES_MODEL_OLD_DEFAULT = os.getenv(
     "OPENROUTER_HERMES_MODEL",
     # ここは環境変数で上書きされる前提（デフォルトは旧安定版名）
     "nousresearch/hermes-2-pro-mistral",
+)
+LLAMA_UNC_MODEL_DEFAULT = os.getenv(
+    "OPENROUTER_LLAMA_UNC_MODEL",
+    # ★必要に応じて OpenRouter の実際のモデルIDに合わせて変更すること
+    "nousresearch/llama-3.1-70b-instruct:uncensored",
 )
 
 
@@ -334,6 +339,23 @@ class HermesNewAdapter(HermesBaseAdapter):
             model_id="nousresearch/hermes-4-70b",
         )
         # テスト用途なので少し長めでも許容
+        self.TARGET_TOKENS = 320
+
+
+class LlamaUncensoredAdapter(HermesBaseAdapter):
+    """
+    Llama 3.1 70B Uncensored 用アダプタ。
+
+    - OpenRouter で NousResearch 系の Uncensored モデルを叩く想定
+    - 実際のモデルIDは OPENROUTER_LLAMA_UNC_MODEL 環境変数で差し替え可能
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            name="llama_unc",
+            model_id=LLAMA_UNC_MODEL_DEFAULT,
+        )
+        # 甘め長文をある程度許容
         self.TARGET_TOKENS = 320
 
 
