@@ -9,7 +9,12 @@ import os
 import streamlit as st
 
 from actors.scene.scene_manager import SceneManager
-from actors.utils.debug_world_state import debug_world_state  # ★ 既存ヘルパを利用
+from actors.utils.debug_world_state import WorldStateDebugger
+
+
+# 環境変数でデバッグ ON/OFF
+LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
+_DEBUGGER = WorldStateDebugger(name="SceneAI")
 
 
 @dataclass
@@ -57,16 +62,12 @@ class SceneAI:
         """
         state["world_state"] がなければ、デフォルト値で初期化する。
         すでにあれば、不足フィールドだけを補完する。
-
-        ここで dokipower_control が書き込む
-        session_state["world_state_manual_controls"]["others_present"]
-        を world_state.others_present に反映する。
         """
         ws = self.state.get("world_state")
         if not isinstance(ws, dict):
             ws = {}
 
-        # ----- locations -----
+        # locations
         loc = ws.get("locations") or {}
         if not isinstance(loc, dict):
             loc = {}
@@ -77,7 +78,7 @@ class SceneAI:
         loc["player"] = player_loc
         loc["floria"] = floria_loc
 
-        # ----- time -----
+        # time
         t = ws.get("time") or {}
         if not isinstance(t, dict):
             t = {}
@@ -86,33 +87,29 @@ class SceneAI:
         t["slot"] = slot
         t["time_str"] = time_str
 
-        # ----- others_present （外野フラグ）-----
-        # 基本値は world_state.others_present（bool）→ なければ False
-        raw_others = ws.get("others_present")
-        if isinstance(raw_others, bool):
-            others_present = raw_others
-        else:
+        # ★ others_present（DokiPowerController からの manual override を反映）
+        others_present: Any = ws.get("others_present")
+
+        ws_manual = st.session_state.get("world_state_manual_controls")
+        if isinstance(ws_manual, dict) and isinstance(
+            ws_manual.get("others_present"), bool
+        ):
+            others_present = ws_manual["others_present"]
+
+        if not isinstance(others_present, bool):
             others_present = False
 
-        # dokipower_control が session_state に積んだ manual 値で上書き
-        ws_manual = self.state.get("world_state_manual_controls")
-        if isinstance(ws_manual, dict) and "others_present" in ws_manual:
-            manual_val = ws_manual.get("others_present")
-            if isinstance(manual_val, bool):
-                others_present = manual_val
-
-        # ----- weather -----
+        # weather
         weather = ws.get("weather") or "clear"
 
-        # ----- party（プレイヤー視点のパーティ状態）-----
+        # party（プレイヤー視点のパーティ状態）
         party = ws.get("party") or {}
         if not isinstance(party, dict):
             party = {}
         party_mode = self._calc_party_mode(player_loc, floria_loc)
         party["mode"] = party_mode
 
-        # dict への書き戻し
-        # （新規生成時は locations → time → others_present → weather → party の順で入る）
+        # ★ dict の順序を意識してセット（time → others_present → weather）
         ws["locations"] = loc
         ws["time"] = t
         ws["others_present"] = others_present
@@ -120,19 +117,6 @@ class SceneAI:
         ws["party"] = party
 
         self.state["world_state"] = ws  # type: ignore[index]
-
-        # デバッグ出力（LYRA_DEBUG=1 のときだけ動く前提）
-        try:
-            debug_world_state(
-                caller="SceneAI._ensure_world_state_initialized",
-                world_state=ws,
-                scene_emotion=None,
-                emotion=None,
-                extra={"step": "after_init"},
-            )
-        except Exception:
-            # ここで落ちて本体が止まるのは論外なので握りつぶす
-            pass
 
     @staticmethod
     def _calc_party_mode(player_loc: Optional[str], floria_loc: Optional[str]) -> str:
@@ -188,8 +172,6 @@ class SceneAI:
         locs = new_ws.get("locations") or {}
         if not isinstance(locs, dict):
             locs = {}
-        player_loc = locs.get("player")
-        floria_loc = locs.get("floria")
         new_ws["locations"] = locs
 
         self._sync_party_mode(new_ws)
@@ -328,16 +310,12 @@ class SceneAI:
         ws = self.get_world_state()
         emo = self.get_scene_emotion(ws)
 
-        try:
-            debug_world_state(
-                caller="SceneAI.build_emotion_override_payload",
-                world_state=ws,
-                scene_emotion=emo,
-                emotion=None,
-                extra={"step": "payload"},
-            )
-        except Exception:
-            pass
+        # デバッグ出力
+        _DEBUGGER.log(
+            caller="SceneAI.build_emotion_override_payload",
+            world_state=ws,
+            scene_emotion=emo,
+        )
 
         return {
             "world_state": ws,
