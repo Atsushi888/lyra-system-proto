@@ -56,10 +56,22 @@ class SceneAI:
         """
         state["world_state"] がなければ、デフォルト値で初期化する。
         すでにあれば、不足フィールドだけを補完する。
+
+        DokiPowerControl が書き込んだ
+        state["world_state_manual_controls"]["others_present"]
+        もここで吸収する。
         """
         ws = self.state.get("world_state")
         if not isinstance(ws, dict):
             ws = {}
+
+        # ---- manual controls から others_present を読む ----
+        ws_manual = self.state.get("world_state_manual_controls")
+        manual_others: Optional[bool] = None
+        if isinstance(ws_manual, dict):
+            val = ws_manual.get("others_present")
+            if isinstance(val, bool):
+                manual_others = val
 
         # locations
         loc = ws.get("locations") or {}
@@ -81,6 +93,15 @@ class SceneAI:
         t["slot"] = slot
         t["time_str"] = time_str
 
+        # others_present（manual があればそれを優先）
+        others_present: Optional[bool] = None
+        if isinstance(manual_others, bool):
+            others_present = manual_others
+        else:
+            raw = ws.get("others_present")
+            if isinstance(raw, bool):
+                others_present = raw
+
         # weather
         weather = ws.get("weather") or "clear"
 
@@ -91,12 +112,22 @@ class SceneAI:
         party_mode = self._calc_party_mode(player_loc, floria_loc)
         party["mode"] = party_mode
 
-        ws["locations"] = loc
-        ws["time"] = t
-        ws["weather"] = weather
-        ws["party"] = party
+        # 既存の ws にあった他のキーも失わないようにしつつ、
+        # キー順を locations → time → others_present → weather → party に整える
+        new_ws: Dict[str, Any] = {}
+        new_ws["locations"] = loc
+        new_ws["time"] = t
+        if isinstance(others_present, bool):
+            new_ws["others_present"] = others_present
+        new_ws["weather"] = weather
+        new_ws["party"] = party
 
-        self.state["world_state"] = ws  # type: ignore[index]
+        # 余りキーを後ろに付ける
+        for k, v in ws.items():
+            if k not in new_ws:
+                new_ws[k] = v
+
+        self.state["world_state"] = new_ws  # type: ignore[index]
 
     @staticmethod
     def _calc_party_mode(player_loc: Optional[str], floria_loc: Optional[str]) -> str:
@@ -148,6 +179,14 @@ class SceneAI:
         """
         if not isinstance(new_ws, dict):
             return
+
+        # manual others_present があれば優先して反映
+        ws_manual = self.state.get("world_state_manual_controls")
+        if isinstance(ws_manual, dict):
+            val = ws_manual.get("others_present")
+            if isinstance(val, bool):
+                new_ws["others_present"] = val
+
         # パーティ状態を再計算
         locs = new_ws.get("locations") or {}
         if not isinstance(locs, dict):
@@ -199,6 +238,13 @@ class SceneAI:
         # パーティ状態を更新
         self._sync_party_mode(ws)
 
+        # manual others_present があればここでも反映
+        ws_manual = self.state.get("world_state_manual_controls")
+        if isinstance(ws_manual, dict):
+            val = ws_manual.get("others_present")
+            if isinstance(val, bool):
+                ws["others_present"] = val
+
         # 保存
         self.state["world_state"] = ws  # type: ignore[index]
 
@@ -236,6 +282,13 @@ class SceneAI:
 
         # パーティ状態を更新
         self._sync_party_mode(ws)
+
+        # manual others_present があればここでも反映
+        ws_manual = self.state.get("world_state_manual_controls")
+        if isinstance(ws_manual, dict):
+            val = ws_manual.get("others_present")
+            if isinstance(val, bool):
+                ws["others_present"] = val
 
         self.state["world_state"] = ws  # type: ignore[index]
 
