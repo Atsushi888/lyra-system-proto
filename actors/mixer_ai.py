@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
+
 import os
 
 import streamlit as st
@@ -12,18 +13,19 @@ from actors.scene_ai import SceneAI
 from actors.utils.debug_world_state import WorldStateDebugger
 
 
+LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
+
+# 🔍 このファイル専用デバッガ
+WS_DEBUGGER = WorldStateDebugger(name="MixerAI")
+
+
 @dataclass
 class MixerAI:
     """
-    EmotionAI / SceneAI / world_state を束ねて
-    PersonaBase に渡す emotion_override を組み立てるクラス。
+    EmotionAI / SceneAI / 手動パラメータを混ぜて
+    AnswerTalker に渡す emotion_override を組み立てる担当。
 
-    - world_state: SceneAI / DokiPowerControl が管理している値を「極力そのまま」通す
-      （特に `others_present` を勝手に潰さないことが今回の肝）
-    - scene_emotion: SceneManager 由来のシーン補正
-    - emotion: 直近ターンの EmotionResult を llm_meta から引き継ぐ（あれば）
-
-    ※ デバッグ時は WorldStateDebugger で world_state を丸ごと吐き出す。
+    ※ world_state 自体は SceneAI が正規窓口。
     """
 
     state: Mapping[str, Any]
@@ -34,87 +36,124 @@ class MixerAI:
         self,
         *,
         state: Optional[Mapping[str, Any]] = None,
-        emotion_ai: EmotionAI,
-        scene_ai: SceneAI,
+        emotion_ai: Optional[EmotionAI] = None,
+        scene_ai: Optional[SceneAI] = None,
     ) -> None:
-        env_debug = os.getenv("LYRA_DEBUG", "")
-
         if state is not None:
             self.state = state
-        elif env_debug == "1":
-            # デバッグ中は session_state を共有
-            self.state = st.session_state
         else:
-            # 現状 Streamlit 前提
             self.state = st.session_state
+
+        if emotion_ai is None:
+            raise ValueError("MixerAI: emotion_ai が None です。")
+        if scene_ai is None:
+            raise ValueError("MixerAI: scene_ai が None です。")
 
         self.emotion_ai = emotion_ai
         self.scene_ai = scene_ai
 
-        # 共通デバッガ
-        self._ws_debugger = WorldStateDebugger(name="MixerAI")
-
-    # ==========================================================
-    # 内部ヘルパ
-    # ==========================================================
-    def _get_llm_meta(self) -> Dict[str, Any]:
-        meta = self.state.get("llm_meta")
-        if not isinstance(meta, dict):
-            meta = {}
-        return meta
-
-    # ==========================================================
-    # 公開 API
-    # ==========================================================
+    # ======================================================
+    # emotion_override の組み立て（AnswerTalker から呼ばれる）
+    # ======================================================
     def build_emotion_override(self) -> Dict[str, Any]:
         """
-        AnswerTalker から呼ばれる想定のメインメソッド。
+        AnswerTalker → PersonaBase.build_emotion_based_system_prompt_core に渡す
+        emotion_override を構築する。
 
-        以下の形の dict を返す：
+        返却フォーマット:
         {
             "world_state": {...},
             "scene_emotion": {...},
-            "emotion": {...},
+            "emotion": {...},  # affection / doki / relationship / masking など
         }
-
-        PersonaBase.build_emotion_based_system_prompt() 側では
-        これをそのまま受け取り、world_state / scene_emotion / emotion に分解している。
         """
 
-        # ---- world_state を取得 ----
-        # DokiPowerControl が触った world_state が state に入っている前提。
-        ws_raw = self.state.get("world_state")
-        if not isinstance(ws_raw, dict) or not ws_raw:
-            # まだ何も無い場合のみ SceneAI に初期化させる
-            world_state = self.scene_ai.get_world_state()
-        else:
-            # 既存 world_state を尊重しつつ、party.mode 等だけ SceneAI で整合させる。
-            # ※ set_world_state() は others_present など余計なキーを消さない実装なので、
-            #    DokiPowerControl 側で立てたフラグはそのまま残る。
-            self.scene_ai.set_world_state(ws_raw)
-            world_state = self.scene_ai.get_world_state()
-
-        # ---- scene_emotion を算出 ----
+        # 1) SceneAI から world_state / scene_emotion を取得
+        world_state = self.scene_ai.get_world_state()
         scene_emotion = self.scene_ai.get_scene_emotion(world_state)
 
-        # ---- Emotion 情報（あれば）を引き継ぎ ----
-        llm_meta = self._get_llm_meta()
-        emotion_meta = llm_meta.get("emotion") or {}
+        # 2) llm_meta から EmotionAI 関連の状態を拾う（あくまで読み取り only）
+        llm_meta = self.state.get("llm_meta") or {}
+        if not isinstance(llm_meta, dict):
+            llm_meta = {}
 
-        # Mixer が返す統合 payload
+        emotion_short = llm_meta.get("emotion") or {}
+        if not isinstance(emotion_short, dict):
+            emotion_short = {}
+
+        emotion_long = llm_meta.get("emotion_long_term") or {}
+        if not isinstance(emotion_long, dict):
+            emotion_long = {}
+
+        # 3) doki_power / affection_with_doki などを合成（ここは元のロジックを使う想定）
+        #    ↓↓↓ ★ ここから先は「あなたの元コード」をそのまま貼り付けてOK ↓↓↓
+
+        # ベースの affection（短期）があれば優先、なければ長期から拾う
+        affection = float(
+            emotion_short.get("affection_with_doki", emotion_short.get("affection", 0.0))
+            or emotion_long.get("affection_with_doki", emotion_long.get("affection", 0.0))
+            or 0.0
+        )
+
+        doki_power = float(
+            emotion_short.get("doki_power", emotion_long.get("doki_power", 0.0)) or 0.0
+        )
+        doki_level = int(
+            emotion_short.get("doki_level", emotion_long.get("doki_level", 0)) or 0
+        )
+
+        relationship_level = float(
+            emotion_short.get("relationship_level", emotion_long.get("relationship_level", 0.0))
+            or 0.0
+        )
+        relationship_stage = (
+            emotion_short.get("relationship_stage")
+            or emotion_long.get("relationship_stage")
+            or ""
+        )
+
+        masking_degree = float(
+            emotion_short.get("masking_degree", emotion_long.get("masking_degree", 0.0))
+            or 0.0
+        )
+
+        # affection_zone は EmotionAI 側で決めたものがあればそれを尊重
+        affection_zone = (
+            emotion_short.get("affection_zone")
+            or emotion_long.get("affection_zone")
+            or "auto"
+        )
+
+        # 4) override payload を組み立て
+        emotion_payload: Dict[str, Any] = {
+            "affection": affection,
+            "affection_with_doki": affection,
+            "affection_zone": affection_zone,
+            "doki_power": doki_power,
+            "doki_level": doki_level,
+            "relationship_level": relationship_level,
+            "relationship_stage": relationship_stage,
+            "masking_degree": masking_degree,
+        }
+
         emotion_override: Dict[str, Any] = {
             "world_state": world_state,
             "scene_emotion": scene_emotion,
-            "emotion": emotion_meta,
+            "emotion": emotion_payload,
         }
 
-        # ---- デバッグ出力 ----
-        # LYRA_DEBUG=1 のときだけ、world_state＆emotion_override を丸ごと吐く
-        self._ws_debugger.log(
+        # 5) 🔍 デバッグ：MixerAI 時点の world_state / emotion_override を丸ごとダンプ
+        WS_DEBUGGER.log(
             caller="MixerAI.build_emotion_override",
             world_state=world_state,
-            emotion_override=emotion_override,
-            extra={"has_emotion_meta": bool(emotion_meta)},
+            scene_emotion=scene_emotion,
+            emotion=emotion_payload,
+            extra={
+                "has_llm_meta": bool(llm_meta),
+                "has_emotion_short": bool(emotion_short),
+                "has_emotion_long": bool(emotion_long),
+            },
         )
 
+        # 6) そのまま AnswerTalker へ返す
         return emotion_override
