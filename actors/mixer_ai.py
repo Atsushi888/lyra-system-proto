@@ -9,9 +9,12 @@ import streamlit as st
 
 from actors.emotion_ai import EmotionAI
 from actors.scene_ai import SceneAI
-from actors.utils.debug_world import debug_world_state  # さっき作ったやつを想定
+from actors.utils.debug_world_state import WorldStateDebugger
 
 LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
+
+# このファイル専用のデバッガインスタンス
+_world_debugger = WorldStateDebugger(name="MixerAI")
 
 
 @dataclass
@@ -157,8 +160,8 @@ class MixerAI:
             "masking": masking_degree,
         }
 
-        # 5) デバッグ出力
-        debug_world_state(
+        # 5) デバッグ出力（LYRA_DEBUG=1 のときだけ WorldStateDebugger が吐く）
+        _world_debugger.log(
             caller="MixerAI.build_emotion_override",
             step="after_merge",
             world_state=world_state,
