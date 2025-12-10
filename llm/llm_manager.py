@@ -1,4 +1,3 @@
-# llm/llm_manager.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -50,6 +49,8 @@ class LLMManager:
         # manager.register_hermes(priority=1.0, enabled=True)
         manager.register_grok(priority=1.5, enabled=True)
         manager.register_gemini(priority=1.5, enabled=True)
+        # 新規: Llama 3.1 70B Uncensored（OpenRouter）
+        manager.register_llama_uncensored(priority=1.4, enabled=True)
 
         cls._POOL[persona_id] = manager
         return manager
@@ -139,6 +140,32 @@ class LLMManager:
             priority=priority,
             enabled=enabled,
             extra={"env_key": "OPENROUTER_API_KEY", "model_family": "hermes"},
+            params=params,
+        )
+
+    def register_llama_uncensored(
+        self,
+        *,
+        priority: float = 1.4,
+        enabled: bool = True,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        NousResearch Llama 3.1 70B Uncensored (OpenRouter) 用の登録ヘルパ。
+
+        - vendor: openrouter
+        - router_fn: call_llama_uncensored
+        """
+        self.register_model(
+            "llama_unc",
+            vendor="openrouter",
+            router_fn="call_llama_uncensored",
+            priority=priority,
+            enabled=enabled,
+            extra={
+                "env_key": "OPENROUTER_API_KEY",
+                "model_family": "llama-3.1-70b-uncensored",
+            },
             params=params,
         )
 
