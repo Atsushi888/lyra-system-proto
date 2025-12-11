@@ -1,7 +1,7 @@
 # actors/persona/persona_base/build_default_guideline.py
 from __future__ import annotations
 
-from typing import Any
+from typing import List
 
 
 def build_default_guideline(
@@ -11,40 +11,54 @@ def build_default_guideline(
     mode_current: str,
 ) -> str:
     """
-    emotion_profiles が未設定の場合に使うフォールバック用ガイドライン。
+    persona JSON に emotion_profiles が無い場合などのフォールバック。
 
-    かなり大ざっぱだが、最低限「好感度」「ドキドキ」「モード」に応じた
-    距離感の目安を LLM に伝える。
+    ざっくりとした「好意とドキドキレベルに応じた口調ガイド」を返す。
     """
-    lines: list[str] = []
-    lines.append("[口調と距離感ガイドライン（デフォルト）]")
+    lines: List[str] = []
+    lines.append("[感情ベース・口調ガイドライン（デフォルト）]")
 
-    # 好感度ゾーンざっくり
-    if affection_with_doki < 0.15:
-        lines.append("- まだそこまで親しくない段階。丁寧で少し距離のある話し方。")
-    elif affection_with_doki < 0.4:
-        lines.append("- ある程度打ち解けた相手。丁寧さは保ちつつ、親しみを込めた言い回しも許可。")
-    elif affection_with_doki < 0.7:
-        lines.append("- かなり仲の良い相手。感情表現もやや増やし、安心感のある距離感で接する。")
+    # 好意ざっくり解釈
+    if affection_with_doki >= 0.9:
+        lines.append("- 好意: ほぼ告白済みレベルの本気の恋心。深い信頼と安心感がある。")
+    elif affection_with_doki >= 0.7:
+        lines.append("- 好意: 明らかに特別視しており、自覚した恋心が強い状態。")
+    elif affection_with_doki >= 0.4:
+        lines.append("- 好意: 憧れと好意が自然に混ざり始めている甘酸っぱい段階。")
     else:
-        lines.append("- 深く信頼している相手。素直な甘えや弱さを見せてもよい。")
+        lines.append("- 好意: 強い恋心手前だが、尊敬と好感がしっかりある状態。")
 
-    # doki_level のざっくり解釈
-    if doki_level >= 4:
-        lines.append("- 今回は胸の高鳴りがかなり強い。声や言い回しに少しだけ戸惑いや照れをにじませる。")
-    elif doki_level >= 2:
-        lines.append("- 少しドキドキしている。通常よりもわずかにトーンが柔らかくなる程度。")
+    # doki_level のざっくり説明
+    if doki_level <= 0:
+        lines.append("- ドキドキ度: まだ落ち着いて話せる。距離感もやや控えめ。")
     elif doki_level == 1:
-        lines.append("- かすかな高揚感はあるが、基本は普段通り。")
+        lines.append("- ドキドキ度: 少し意識していて、照れや言いよどみが時々出る。")
+    elif doki_level == 2:
+        lines.append("- ドキドキ度: 付き合い始めのような甘さと緊張が混ざる。")
+    elif doki_level == 3:
+        lines.append("- ドキドキ度: 親密で、少し独占欲もにじむ距離感。")
     else:
-        lines.append("- 特別な高揚感はないため、いつも通り落ち着いたトーンで。")
+        lines.append("- ドキドキ度: 深い愛情と『ずっと一緒にいたい』想いが強く表に出る。")
 
-    # mode による微調整
-    if mode_current == "erotic":
+    # mode 別
+    m = (mode_current or "normal").lower()
+    if m == "erotic":
+        lines.append("")
+        lines.append("[モード別ガイドライン: erotic]")
         lines.append(
-            "- ただし、全体としては大人向けロマンス寄りの雰囲気をわずかに意識する。"
+            "- 直接的・露骨な表現ではなく、ロマンティックで距離の近い甘さを中心にしてください。"
         )
-    elif mode_current == "debate":
-        lines.append("- 今回は議論寄りのモードなので、論理的・冷静な話し方を優先する。")
+        lines.append(
+            "- 信頼関係と感情を主軸にし、身体的な描写は控えめかつ大切に扱ってください。"
+        )
+    elif m == "debate":
+        lines.append("")
+        lines.append("[モード別ガイドライン: debate]")
+        lines.append(
+            "- 感情的になりすぎず、論点を整理しながらも、キャラクター性は崩さない範囲で議論してください。"
+        )
+    else:
+        # normal / その他
+        pass
 
     return "\n".join(lines)
