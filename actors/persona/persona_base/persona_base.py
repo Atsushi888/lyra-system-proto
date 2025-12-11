@@ -1,12 +1,11 @@
 # actors/persona/persona_base/persona_base.py
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import json
 
-from actors.emotion_ai import EmotionResult
 from actors.persona.persona_base.build_default_guideline import (
     build_default_guideline,
 )
@@ -24,7 +23,7 @@ class PersonaBase:
     全 Persona の共通土台。
 
     - JSON_NAME で参照する JSON を決める
-    - system_prompt の生成（共通 / public / private の3レイヤ）
+    - system_prompt の生成
     - messages 構築ヘルパ
     - emotion_profiles を使った好意ラベル / ドキドキガイド
     - EmotionResult / emotion_override からのヘッダ組み立て
@@ -35,50 +34,36 @@ class PersonaBase:
     """
 
     JSON_NAME: str = ""  # 継承クラス側で上書きする想定
-    player_name: str = "アツシ"
 
-    # JSON 生データ
-    raw: Dict[str, Any] = field(default_factory=dict)
+    def __init__(self, player_name: str = "アツシ") -> None:
+        self.player_name = player_name
 
-    # 各種 ID / 表示名
-    id: str = "persona_base"
-    display_name: str = "Character"
-    short_name: str = "Character"
-
-    # system prompt（環境別レイヤ）
-    system_prompt_base: str = ""
-    system_prompt_public_suffix: str = ""
-    system_prompt_private_suffix: str = ""
-
-    # 互換用プロパティ（旧 API）
-    system_prompt: str = ""
-
-    def __post_init__(self) -> None:
         data = self._load_json()
-        if data:
-            self.raw = data
+        self.raw: Dict[str, Any] = data or {}
 
         # 基本情報
-        self.id = self.raw.get("id", self.JSON_NAME or "persona_base")
-        self.display_name = self.raw.get("display_name", self.id)
-        self.short_name = self.raw.get("short_name", self.display_name)
+        self.id: str = self.raw.get("id", self.JSON_NAME or "persona_base")
+        self.display_name: str = self.raw.get("display_name", self.id)
+        self.short_name: str = self.raw.get("short_name", self.display_name)
 
-        # ===== system_prompt レイヤ構造 =====
+        # system_prompt 系
         base_sp = self.raw.get("system_prompt", "") or ""
-        pub_sfx = self.raw.get("system_prompt_public_suffix", "") or ""
-        prv_sfx = self.raw.get("system_prompt_private_suffix", "") or ""
+        public_suffix = self.raw.get("system_prompt_public_suffix", "") or ""
+        private_suffix = self.raw.get("system_prompt_private_suffix", "") or ""
 
-        # {PLAYER_NAME} 展開
-        base_sp = base_sp.replace("{PLAYER_NAME}", self.player_name)
-        pub_sfx = pub_sfx.replace("{PLAYER_NAME}", self.player_name)
-        prv_sfx = prv_sfx.replace("{PLAYER_NAME}", self.player_name)
+        base_sp = base_sp.replace("{PLAYER_NAME}", player_name)
+        public_suffix = public_suffix.replace("{PLAYER_NAME}", player_name)
+        private_suffix = private_suffix.replace("{PLAYER_NAME}", player_name)
 
-        self.system_prompt_base = base_sp
-        self.system_prompt_public_suffix = pub_sfx
-        self.system_prompt_private_suffix = prv_sfx
+        # 共通ベース
+        self.system_prompt_base: str = base_sp
+        # 人の目がある場面用
+        self.system_prompt_public_suffix: str = public_suffix
+        # 二人きり用
+        self.system_prompt_private_suffix: str = private_suffix
 
-        # 互換用：従来の system_prompt は「共通ベースだけ」として扱う
-        self.system_prompt = self.system_prompt_base
+        # 互換性用：get_system_prompt() は「ベースのみ」を返す
+        self.system_prompt: str = self.system_prompt_base
 
     # --------------------------------------------------
     # JSON ロード
@@ -113,14 +98,8 @@ class PersonaBase:
     # system prompt / messages
     # --------------------------------------------------
     def get_system_prompt(self) -> str:
-        """
-        旧 API 互換のためのヘルパ。
-
-        - 直接呼ばれた場合は「環境に依存しない共通ベース」を返す。
-        - 実際の会話では build_emotion_based_system_prompt() が
-          world_state を見て public / private を付け足す。
-        """
-        return self.system_prompt_base
+        """Actor / AnswerTalker などから参照される想定のヘルパ。"""
+        return self.system_prompt
 
     def build_messages(
         self,
@@ -132,12 +111,8 @@ class PersonaBase:
     ) -> List[Dict[str, str]]:
         """
         Actor → AnswerTalker に渡すための messages を構築する共通実装。
-        world_state が与えられた場合は、環境別 prompt を選びたい場面で
-        上位クラス側から使えるようにしておく。
         """
-        # 基本はベースのみ。環境別の付与は AnswerTalker 経由の
-        # build_emotion_based_system_prompt() に任せる。
-        system_parts: List[str] = [self.system_prompt_base]
+        system_parts: List[str] = [self.system_prompt]
 
         if extra_system_hint:
             extra = extra_system_hint.strip()
@@ -161,11 +136,16 @@ class PersonaBase:
     # emotion_profiles（JSON）系
     # --------------------------------------------------
     def _get_emotion_profiles(self) -> Dict[str, Any]:
-        """JSON 内の emotion_profiles セクションを返す。"""
+        """
+        JSON 内の emotion_profiles セクションを返す。
+        ない場合は空 dict。
+        """
         return self.raw.get("emotion_profiles", {}) or {}
 
     def get_emotion_profile(self) -> Dict[str, Any]:
-        """affection_gain / doki_bias など係数系。"""
+        """
+        affection_gain / doki_bias など係数系。
+        """
         profiles = self._get_emotion_profiles()
         prof = profiles.get("profile") or {}
         if isinstance(prof, dict):
@@ -349,11 +329,7 @@ class PersonaBase:
         length_mode: str = "auto",
     ) -> str:
         """
-        emotion_override を受け取り、system_prompt に
-        - 環境別（public / private）suffix
-        - 感情ヘッダ
-        - 文章量ガイドライン
-        を付け足したものを返す。
+        emotion_override を受け取り、system_prompt に感情ヘッダ＋文章量ガイドラインを付け足したものを返す。
 
         実装本体は build_emotion_based_system_prompt_core に分離。
         """
@@ -397,16 +373,14 @@ class PersonaBase:
     # ---- EmotionResult → 「感情ヘッダ」（旧 API 互換） ----
     def build_emotion_header(
         self,
-        emotion: EmotionResult | None,
+        emotion: Any | None,
         world_state: Dict[str, Any] | None = None,
         scene_emotion: Dict[str, Any] | None = None,
     ) -> str:
         """
-        EmotionResult + world_state から
+        EmotionResult 相当 + world_state から
         LLM 用の「感情・関係性ヘッダテキスト」を構築する。
         （古い API 互換用。新規は build_emotion_based_system_prompt を推奨）
-
-        実装本体は build_emotion_header_core に分離。
         """
         return build_emotion_header_core(
             persona=self,
