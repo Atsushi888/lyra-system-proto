@@ -1,8 +1,9 @@
+# actors/narrator/narrator_ai/make_special_title_and_choice.py
 from __future__ import annotations
 
 from typing import Dict, Any, TYPE_CHECKING
 
-from .narrator_ai import NarrationChoice
+from .types import NarrationChoice
 
 if TYPE_CHECKING:
     from .narrator_ai import NarratorAI
