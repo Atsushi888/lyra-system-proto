@@ -28,7 +28,8 @@ def _get_state() -> Dict[str, Any]:
             "masking_level": 30,       # ばけばけ度（0〜100）
             "environment": "alone",    # "alone" / "with_others"
             # Narrator / Scene 向けのシーン種別ヒント
-            # "auto" / "pair_private" / "pair_public" / "solo" / "solo_with_others"
+            # "auto" / "auto_with_others" / "pair_private" / "pair_public"
+            # "solo" / "solo_with_others"
             "interaction_mode_hint": "auto",
         }
     return st.session_state[SESSION_KEY]
@@ -161,17 +162,13 @@ class DokiPowerController:
             horizontal=True,
         )
 
-        # environment → others_present（world_state 用）にマッピング
-        # - alone        → others_present = False（完全二人きり or 本当に一人）
-        # - with_others  → others_present = True（周囲に他の生徒たちがいる）
-        others_present_bool = True if environment == "with_others" else False
-
         # ===== シーンモード（Narrator / Scene 用ヒント） =====
         st.subheader("シーンモード（Narrator / Scene 用ヒント）")
 
         im_default = state.get("interaction_mode_hint", "auto")
         if im_default not in (
             "auto",
+            "auto_with_others",
             "pair_private",
             "pair_public",
             "solo",
@@ -183,6 +180,7 @@ class DokiPowerController:
             "シーン種別（手動ヒント）",
             options=[
                 "auto",
+                "auto_with_others",
                 "pair_private",
                 "pair_public",
                 "solo",
@@ -190,18 +188,31 @@ class DokiPowerController:
             ],
             index=[
                 "auto",
+                "auto_with_others",
                 "pair_private",
                 "pair_public",
                 "solo",
                 "solo_with_others",
             ].index(im_default),
             format_func=lambda k: {
-                "auto": "auto（SceneAI / Narrator におまかせ）",
+                "auto": "auto：SceneAI / Narrator におまかせ",
+                "auto_with_others": "auto_with_others：SceneAI / Narrator におまかせ（外野あり前提）",
                 "pair_private": "pair_private：リセ＋先輩の完全な二人きり",
                 "pair_public": "pair_public：リセ＋先輩＋外野あり",
                 "solo": "solo：先輩ひとり（リセ不在）",
                 "solo_with_others": "solo_with_others：先輩＋外野（リセ不在）",
             }[k],
+        )
+
+        # environment → others_present（world_state 用）にマッピング
+        # - alone        → others_present = False
+        # - with_others  → others_present = True
+        # ただし interaction_mode == "auto_with_others" の場合は
+        # 「外野あり」を強制する。
+        others_present_bool = (
+            True
+            if (environment == "with_others" or interaction_mode == "auto_with_others")
+            else False
         )
 
         # ===== EmotionResult を構築（スライダー値ベースのプレビュー） =====
