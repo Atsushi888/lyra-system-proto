@@ -27,6 +27,9 @@ def _get_state() -> Dict[str, Any]:
             "relationship_level": 20,  # 長期的な関係の深さ（0〜100）
             "masking_level": 30,       # ばけばけ度（0〜100）
             "environment": "alone",    # "alone" / "with_others"
+            # Narrator / Scene 向けのシーン種別ヒント
+            # "auto" / "pair_private" / "pair_public" / "solo" / "solo_with_others"
+            "interaction_mode_hint": "auto",
         }
     return st.session_state[SESSION_KEY]
 
@@ -151,17 +154,55 @@ class DokiPowerController:
             env_default = "alone"
 
         environment = st.radio(
-            "周囲の状況",
+            "周囲の状況（others_present 用）",
             options=["alone", "with_others"],
             index=["alone", "with_others"].index(env_default),
-            format_func=lambda k: "二人きり (alone)" if k == "alone" else "他にも人がいる (with_others)",
+            format_func=lambda k: "二人きり/一人きり (alone)" if k == "alone" else "周囲に他人がいる (with_others)",
             horizontal=True,
         )
 
         # environment → others_present（world_state 用）にマッピング
-        # - alone        → others_present = False（完全二人きり）
+        # - alone        → others_present = False（完全二人きり or 本当に一人）
         # - with_others  → others_present = True（周囲に他の生徒たちがいる）
         others_present_bool = True if environment == "with_others" else False
+
+        # ===== シーンモード（Narrator / Scene 用ヒント） =====
+        st.subheader("シーンモード（Narrator / Scene 用ヒント）")
+
+        im_default = state.get("interaction_mode_hint", "auto")
+        if im_default not in (
+            "auto",
+            "pair_private",
+            "pair_public",
+            "solo",
+            "solo_with_others",
+        ):
+            im_default = "auto"
+
+        interaction_mode = st.radio(
+            "シーン種別（手動ヒント）",
+            options=[
+                "auto",
+                "pair_private",
+                "pair_public",
+                "solo",
+                "solo_with_others",
+            ],
+            index=[
+                "auto",
+                "pair_private",
+                "pair_public",
+                "solo",
+                "solo_with_others",
+            ].index(im_default),
+            format_func=lambda k: {
+                "auto": "auto（SceneAI / Narrator におまかせ）",
+                "pair_private": "pair_private：リセ＋先輩の完全な二人きり",
+                "pair_public": "pair_public：リセ＋先輩＋外野あり",
+                "solo": "solo：先輩ひとり（リセ不在）",
+                "solo_with_others": "solo_with_others：先輩＋外野（リセ不在）",
+            }[k],
+        )
 
         # ===== EmotionResult を構築（スライダー値ベースのプレビュー） =====
         emo = EmotionResult(
@@ -213,13 +254,16 @@ class DokiPowerController:
         st.subheader("環境ステータス（このコントローラ固有の情報）")
 
         env_label = (
-            "二人きり (alone)" if environment == "alone" else "他にも人がいる (with_others)"
+            "二人きり/一人きり (alone)"
+            if environment == "alone"
+            else "他にも人がいる (with_others)"
         )
 
         st.markdown(f"- 周囲の状況: {env_label}")
         st.markdown(
             f"- world_state.others_present に渡す予定の値: **{others_present_bool}**"
         )
+        st.markdown(f"- interaction_mode_hint: **{interaction_mode}**")
         st.markdown(f"- relationship_level（プレビュー）: **{relationship_level}**")
         st.markdown(
             f"- masking_level（スライダー値） = **{masking_level}** → "
@@ -232,7 +276,7 @@ class DokiPowerController:
         col_apply, col_reset = st.columns(2)
 
         with col_apply:
-            if st.button("✅ この値を Mixer デバッグ用に適用", type="primary"):
+            if st.button("✅ この値を Mixer / Narrator 用に適用", type="primary"):
                 # スライダー状態を保存
                 new_state = {
                     "mode": mode,
@@ -243,6 +287,7 @@ class DokiPowerController:
                     "relationship_level": relationship_level,
                     "masking_level": masking_level,
                     "environment": environment,
+                    "interaction_mode_hint": interaction_mode,
                 }
                 self._set_state(new_state)
 
@@ -255,13 +300,14 @@ class DokiPowerController:
                     "doki_power": float(doki_power),
                     "masking_level": int(masking_level),
                     "environment": environment,
-                    # ★ 新規：world_state 向けの外野フラグ
                     "others_present": others_present_bool,
+                    "interaction_mode_hint": interaction_mode,
                 }
 
-                # ★ 将来 SceneAI 側で world_state にミラーするためのフックも用意しておく
+                # world_state 向けの外野フラグ＋シーンモードヒント
                 st.session_state["world_state_manual_controls"] = {
                     "others_present": others_present_bool,
+                    "interaction_mode_hint": interaction_mode,
                 }
 
                 # 成功メッセージより「即反映」を優先して強制リラン
@@ -278,10 +324,11 @@ class DokiPowerController:
                     "relationship_level": 20,
                     "masking_level": 30,
                     "environment": "alone",
+                    "interaction_mode_hint": "auto",
                 }
                 self._set_state(init_state)
 
-                # emotion_manual_controls 自体を消す（未適用扱い）
+                # manual_controls 系を消す（未適用扱い）
                 if "emotion_manual_controls" in st.session_state:
                     del st.session_state["emotion_manual_controls"]
                 if "mixer_debug_emotion" in st.session_state:
@@ -294,7 +341,7 @@ class DokiPowerController:
         st.markdown("---")
 
         # ===== 現在の emotion_manual_controls（常時表示） =====
-        st.subheader("現在の emotion_manual_controls（Mixer / Scene が読む値）")
+        st.subheader("現在の emotion_manual_controls（Mixer / Scene / Narrator が読む値）")
         manual = st.session_state.get("emotion_manual_controls")
         if manual is None:
             st.info("まだ『適用』ボタンが押されていません。")
