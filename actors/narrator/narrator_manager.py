@@ -35,6 +35,9 @@ class NarratorManager:
     - NarratorAI は「投げたい messages」とメタ情報をここに渡すだけ。
     - ここで複数AI → JudgeAI3 の協議を行い、
       最終テキストとログを記録して返す。
+
+    ※ emotion_override は現状 None 固定。
+       将来的に『シーン感情』を直接ナレーションへ載せる場合に拡張しやすい形は維持している。
     """
 
     def __init__(
