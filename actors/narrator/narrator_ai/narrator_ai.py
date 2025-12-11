@@ -132,11 +132,12 @@ class NarratorAI:
             partner_loc = "（この場にはいない）"
 
         # ========= interaction_mode_hint を反映 =========
-        interaction_mode = "auto"
+        interaction_mode: str = "auto"
         manual_ws = st.session_state.get("world_state_manual_controls") or {}
         hint = manual_ws.get("interaction_mode_hint")
         if isinstance(hint, str) and hint in (
             "auto",
+            "auto_with_others",
             "pair_private",
             "pair_public",
             "solo",
@@ -148,6 +149,7 @@ class NarratorAI:
             hint2 = manual_emo.get("interaction_mode_hint")
             if isinstance(hint2, str) and hint2 in (
                 "auto",
+                "auto_with_others",
                 "pair_private",
                 "pair_public",
                 "solo",
@@ -155,8 +157,14 @@ class NarratorAI:
             ):
                 interaction_mode = hint2
 
-        # 手動ヒントが "auto" でなければ、それを優先して party_mode / others_present を上書き
-        if interaction_mode != "auto":
+        # --- 手動ヒントに応じて party_mode / others_present / interaction_mode を確定 ---
+        if interaction_mode in (
+            "pair_private",
+            "pair_public",
+            "solo",
+            "solo_with_others",
+        ):
+            # 完全手動指定
             if interaction_mode == "pair_private":
                 party_mode = "both"
                 others_present = False
@@ -169,8 +177,14 @@ class NarratorAI:
             elif interaction_mode == "solo_with_others":
                 party_mode = "alone"
                 others_present = True
+
         else:
-            # 自動推定で interaction_mode を決める
+            # auto / auto_with_others 系
+            if interaction_mode == "auto_with_others":
+                # 外野ありを強制
+                others_present = True
+
+            # ここからは「自動判定」で interaction_mode を 4分類へ落とし込む
             if party_mode == "both":
                 interaction_mode = "pair_public" if others_present else "pair_private"
             else:
@@ -190,7 +204,7 @@ class NarratorAI:
             "partner_name": self.partner_name,
             "party_mode": party_mode,              # "both" or "alone"
             "others_present": bool(others_present),
-            "interaction_mode": interaction_mode,  # 上記4分類
+            "interaction_mode": interaction_mode,  # pair_private / pair_public / solo / solo_with_others
             "time_slot": time_slot,
             "time_str": time_str,
             "weather": weather,
