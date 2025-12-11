@@ -1,43 +1,19 @@
+# actors/narrator/narrator_ai/narrator_ai.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List
+
+import os
 
 import streamlit as st
 
 from actors.narrator.narrator_manager import NarratorManager
 from actors.scene_ai import SceneAI
-
-
-ChoiceKind = Literal["round0", "look_person", "scan_area", "wait", "special"]
-
-
-@dataclass
-class NarrationLine:
-    """
-    ナレーション1本分。
-    Round0 など「地の文だけ返してほしい」用途。
-    """
-    text: str
-    kind: ChoiceKind = "round0"
-    meta: Dict[str, Any] | None = None
+from .types import NarrationLine, NarrationChoice
 
 
 @dataclass
-class NarrationChoice:
-    """
-    プレイヤーが「救済」として選ぶ行動テキスト。
-    - label: ボタン名（UI用）
-    - speak_text: 実際にログに出す地の文
-    """
-    kind: ChoiceKind
-    label: str
-    speak_text: str
-    target_id: Optional[str] = None
-    special_id: Optional[str] = None
-    meta: Dict[str, Any] | None = None
-
-
 class NarratorAI:
     """
     プロンプト設計＋最終テキストの「意味づけ」担当。
@@ -46,6 +22,10 @@ class NarratorAI:
     partner_role / partner_name を受け取り、
     フローリア固定ではなく「相手キャラクター汎用」で動作する。
     """
+
+    manager: NarratorManager
+    partner_role: str = "floria"
+    partner_name: str = "フローリア"
 
     def __init__(
         self,
@@ -68,6 +48,14 @@ class NarratorAI:
 
         互換性のため、戻り値には
         - "floria_location"  も残しておくが、実体は partner の位置。
+
+        追加フィールド:
+        - "others_present": bool
+        - "interaction_mode":
+            "pair_private"      プレイヤー＋相手キャラの二人きり
+            "pair_public"       プレイヤー＋相手キャラ＋外野
+            "solo"              プレイヤー一人（外野なし）
+            "solo_with_others"  プレイヤー＋外野（相手キャラ不在）
         """
         scene_ai = SceneAI(state=st.session_state)
         ws = scene_ai.get_world_state() or {}
@@ -89,9 +77,9 @@ class NarratorAI:
         weather = ws.get("weather", "clear")
 
         player_loc = locs.get("player", "プレイヤーの部屋")
-        partner_loc = locs.get(self.partner_role, player_loc)
+        partner_loc = locs.get(self.partner_role, None)
 
-        # ========= 「二人きり / 外野あり」判定 =========
+        # ========= others_present 判定 =========
         others_present: Optional[bool] = None
 
         # 1) world_state.flags.others_present を最優先
@@ -130,10 +118,63 @@ class NarratorAI:
         if others_present is None:
             others_present = False
 
-        # パーティ状態（プレイヤーと相手キャラが同じ場所かどうか）
+        # ========= パーティ状態（プレイヤーと相手キャラが同じ場所かどうか） =========
         party_mode = party.get("mode")
         if party_mode not in ("both", "alone"):
-            party_mode = "both" if player_loc == partner_loc else "alone"
+            # partner_loc が None または別場所なら "alone"
+            if partner_loc is None:
+                party_mode = "alone"
+            else:
+                party_mode = "both" if player_loc == partner_loc else "alone"
+
+        # partner が場所未設定の場合は「プレイヤーとは別の場所にいる」扱い
+        if partner_loc is None:
+            partner_loc = "（この場にはいない）"
+
+        # ========= interaction_mode_hint を反映 =========
+        interaction_mode = "auto"
+        manual_ws = st.session_state.get("world_state_manual_controls") or {}
+        hint = manual_ws.get("interaction_mode_hint")
+        if isinstance(hint, str) and hint in (
+            "auto",
+            "pair_private",
+            "pair_public",
+            "solo",
+            "solo_with_others",
+        ):
+            interaction_mode = hint
+        else:
+            manual_emo = st.session_state.get("emotion_manual_controls") or {}
+            hint2 = manual_emo.get("interaction_mode_hint")
+            if isinstance(hint2, str) and hint2 in (
+                "auto",
+                "pair_private",
+                "pair_public",
+                "solo",
+                "solo_with_others",
+            ):
+                interaction_mode = hint2
+
+        # 手動ヒントが "auto" でなければ、それを優先して party_mode / others_present を上書き
+        if interaction_mode != "auto":
+            if interaction_mode == "pair_private":
+                party_mode = "both"
+                others_present = False
+            elif interaction_mode == "pair_public":
+                party_mode = "both"
+                others_present = True
+            elif interaction_mode == "solo":
+                party_mode = "alone"
+                others_present = False
+            elif interaction_mode == "solo_with_others":
+                party_mode = "alone"
+                others_present = True
+        else:
+            # 自動推定で interaction_mode を決める
+            if party_mode == "both":
+                interaction_mode = "pair_public" if others_present else "pair_private"
+            else:
+                interaction_mode = "solo_with_others" if others_present else "solo"
 
         time_slot = t.get("slot", "morning")
         time_str = t.get("time_str", "07:30")
@@ -147,8 +188,9 @@ class NarratorAI:
             "partner_location": partner_loc,
             "partner_role": self.partner_role,
             "partner_name": self.partner_name,
-            "party_mode": party_mode,          # "both" or "alone"
-            "others_present": others_present,  # True = 周囲に他の生徒たち
+            "party_mode": party_mode,              # "both" or "alone"
+            "others_present": bool(others_present),
+            "interaction_mode": interaction_mode,  # 上記4分類
             "time_slot": time_slot,
             "time_str": time_str,
             "weather": weather,
@@ -166,16 +208,19 @@ class NarratorAI:
         """
         Round0 用プロンプトを、シーン状態に応じて切り替える。
 
-        - party_mode == "both"  : プレイヤー＋相手キャラが同じ場所にいる導入
-        - party_mode == "alone" : プレイヤー一人きりの導入（相手キャラは本文に出さない）
+        interaction_mode による4パターン:
+        - pair_private      : プレイヤー＋相手キャラの二人きり
+        - pair_public       : プレイヤー＋相手キャラ＋外野
+        - solo              : プレイヤー一人（外野なし）
+        - solo_with_others  : プレイヤー＋外野（相手キャラ不在）
 
-        さらに others_present フラグで
-        「二人きり」／「他の生徒もいる」を明示的にコントロールする。
+        ※ world_state 引数は互換性のために受けるが、
+           実際には SceneAI 側の world_state を参照する。
         """
         snap = self._get_scene_snapshot()
         ws = snap["world_state"]
         player_loc = snap["player_location"]
-        party_mode = snap["party_mode"]
+        interaction_mode: str = snap.get("interaction_mode", "pair_private")
         others_present: bool = bool(snap.get("others_present", False))
         time_slot = snap["time_slot"]
         time_str = snap["time_str"]
@@ -195,8 +240,8 @@ class NarratorAI:
         }
         time_of_day_jp = slot_label_map.get(time_slot, time_slot)
 
-        # ===== プレイヤー一人きりバージョン =====
-        if party_mode == "alone":
+        # ====== solo / solo_with_others：プレイヤー一人きりシーン ======
+        if interaction_mode in ("solo", "solo_with_others"):
             system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
 
@@ -206,17 +251,16 @@ class NarratorAI:
 - プレイヤーや他キャラクターのセリフは一切書かない（台詞は禁止）。
 - このシーンの相手キャラクター（例: フローリアやリセリア）はこの場にいません。
   本文中にその相手キャラクターの名前や存在を出してはいけません。
-- 周囲に他の生徒たちの気配があるかどうかは、ユーザーの指定するフラグに従ってください。
+- 周囲に他の生徒たちの気配があるかどうかは、指定されたフラグに従ってください。
 - 最後の1文には、プレイヤーがこれから誰かに会ったり、行動を起こしたくなるような、
   ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
 
-            env_label = (
-                "周囲には他の生徒たちの気配もある"
-                if others_present
-                else "周囲には他の生徒たちの気配はなく、完全に一人きり"
-            )
+            if interaction_mode == "solo_with_others":
+                env_label = "周囲には他の生徒たちの気配もある（あなたは一人だが、完全な静寂ではない）"
+            else:
+                env_label = "周囲には他の生徒たちの気配はなく、完全に一人きり"
 
             user = f"""
 [ワールド状態（内部表現）]
@@ -235,7 +279,7 @@ world_state: {ws}
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
 
-        # ===== プレイヤー＋相手キャラクター同伴バージョン =====
+        # ====== pair_private / pair_public：プレイヤー＋相手キャラ同伴シーン ======
         else:
             system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
@@ -245,17 +289,16 @@ world_state: {ws}
 - 二人称または三人称の「地の文」で、2〜4文程度。
 - プレイヤーや相手キャラクターのセリフは一切書かない（台詞は禁止）。
 - 周囲の人の有無は、「二人きり」か「他の生徒たちもいる」のどちらかとして、
-  ユーザーが指定したフラグに必ず従ってください。
+  指定されたフラグに必ず従ってください。
 - 二人の距離感や空気、これから会話が始まりそうな雰囲気をさりげなく示してください。
 - 最後の1文には、プレイヤーが何か話しかけたくなるような、ささやかなフックを入れてください。
 - 文体は落ち着いた日本語ライトノベル調。過度なギャグやメタ発言は禁止。
 """.strip()
 
-            env_label = (
-                "同じ場所には二人以外にも、少数の他の生徒たちがいます"
-                if others_present
-                else "この場所にいるのはプレイヤーと相手キャラクターの二人きりです"
-            )
+            if interaction_mode == "pair_public" or others_present:
+                env_label = "同じ場所には二人以外にも、少数の他の生徒たちがいます"
+            else:
+                env_label = "この場所にいるのはプレイヤーと相手キャラクターの二人きりです"
 
             user = f"""
 [ワールド状態（内部表現）]
@@ -273,7 +316,7 @@ world_state: {ws}
 [要件]
 上記のシーンにふさわしい導入ナレーションを、2〜4文の地の文だけで書いてください。
 - プレイヤーと {partner_name} の距離感や、これから会話が始まりそうな空気感を中心に描写してください。
-- 周囲に他の生徒たちがいる場合は、その存在が自然に伝わる描写を1箇所以上入れてください。
+- 「他の生徒たちもいる」場合は、その存在が自然に伝わる描写を1箇所以上入れてください。
   （例: 少し離れた場所で泳いでいる生徒たちの気配や、談笑する声など。）
 - 「二人きり」の場合は、他の生徒たちの存在を一切出さず、静かな二人きりの空気感として描写してください。
 - プレイヤーや {partner_name} のセリフは書かないでください（地の文のみ）。
@@ -337,12 +380,16 @@ world_state: {ws}
         weather = snap["weather"]
         partner_name = self.partner_name
         others_present: bool = bool(snap.get("others_present", False))
+        interaction_mode: str = snap.get("interaction_mode", "pair_private")
 
-        env_label = (
-            "周囲には他の生徒たちもいる"
-            if others_present
-            else "周囲には二人以外の生徒はいない"
-        )
+        if interaction_mode == "solo_with_others":
+            env_label = "あなた以外にも学院生たちの気配がある（相手キャラクターはこの場にいない）"
+        elif interaction_mode == "solo":
+            env_label = "この場にいるのはあなただけで、静かな空気が満ちている"
+        elif interaction_mode == "pair_public":
+            env_label = "あなたと相手キャラクターのほかに、周囲には何人かの学院生たちがいる"
+        else:
+            env_label = "あなたと相手キャラクターの二人きりの空間になっている"
 
         system = """
 あなたは会話RPG「Lyra」のナレーション補助AIです。
@@ -365,6 +412,7 @@ world_state: {ws}
 - 相手キャラクター({partner_name})の現在地: {partner_loc}
 - 時刻帯: {time_slot}（time={time_str}）
 - 天候: {weather}
+- シーン種別: {interaction_mode}
 - 周囲の状況: {env_label}
 
 [行動の意図]
@@ -390,7 +438,6 @@ world_state: {ws}
 
     # ============================================================
     # 公開API: 救済用 Choice
-    # （中身は分割ファイルに委譲）
     # ============================================================
     def make_wait_choice(
         self,
