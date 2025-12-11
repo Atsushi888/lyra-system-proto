@@ -1,23 +1,13 @@
 # actors/persona/persona_base/persona_base.py
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import json
 
-from actors.persona.persona_base.build_default_guideline import (
-    build_default_guideline,
-)
-from actors.persona.persona_base.build_emotion_based_system_prompt_core import (
-    build_emotion_based_system_prompt_core,
-)
-from actors.persona.persona_base.build_emotion_header import (
-    build_emotion_header_core,
-)
 
-
-@dataclass
 class PersonaBase:
     """
     全 Persona の共通土台。
@@ -46,23 +36,18 @@ class PersonaBase:
         self.display_name: str = self.raw.get("display_name", self.id)
         self.short_name: str = self.raw.get("short_name", self.display_name)
 
-        # system_prompt 系
-        base_sp = self.raw.get("system_prompt", "") or ""
-        public_suffix = self.raw.get("system_prompt_public_suffix", "") or ""
-        private_suffix = self.raw.get("system_prompt_private_suffix", "") or ""
+        # system_prompt 系（base + public/private suffix を JSON から構成）
+        (
+            base_sp,
+            public_suffix,
+            private_suffix,
+        ) = self._build_system_prompts_from_json(player_name=player_name)
 
-        base_sp = base_sp.replace("{PLAYER_NAME}", player_name)
-        public_suffix = public_suffix.replace("{PLAYER_NAME}", player_name)
-        private_suffix = private_suffix.replace("{PLAYER_NAME}", player_name)
-
-        # 共通ベース
         self.system_prompt_base: str = base_sp
-        # 人の目がある場面用
         self.system_prompt_public_suffix: str = public_suffix
-        # 二人きり用
         self.system_prompt_private_suffix: str = private_suffix
 
-        # 互換性用：get_system_prompt() は「ベースのみ」を返す
+        # 互換用：古いコードが self.system_prompt を読んでも動くようにベースを入れておく
         self.system_prompt: str = self.system_prompt_base
 
     # --------------------------------------------------
@@ -75,7 +60,7 @@ class PersonaBase:
         if not self.JSON_NAME:
             return {}
 
-        here = Path(__file__).resolve().parent
+        here = Path(__file__).resolve().parent  # actors/persona/persona_base/
         root = here.parent  # actors/persona/
         json_path = root / "persona_datas" / self.JSON_NAME
 
@@ -95,11 +80,83 @@ class PersonaBase:
         return {}
 
     # --------------------------------------------------
+    # system_prompt 自動構成
+    # --------------------------------------------------
+    @staticmethod
+    def _join_lines(lines: List[Any]) -> str:
+        parts: List[str] = []
+        for x in lines:
+            s = str(x).strip()
+            if s:
+                parts.append(s)
+        return "\n".join(parts)
+
+    def _build_system_prompts_from_json(
+        self,
+        *,
+        player_name: str,
+    ) -> tuple[str, str, str]:
+        """
+        JSON から system_prompt_base / public_suffix / private_suffix を決定する。
+
+        優先順位:
+        1) conversation_rules.roleplay_instructions_common/public/private が定義されていれば、
+           それを使って base ＋ suffix を構築する。
+        2) そうでなければ、従来どおり system_prompt と
+           system_prompt_public_suffix / system_prompt_private_suffix をそのまま使う。
+        """
+
+        raw_sp = str(self.raw.get("system_prompt", "") or "")
+
+        conv = self.raw.get("conversation_rules") or {}
+        if not isinstance(conv, dict):
+            conv = {}
+
+        common_list = conv.get("roleplay_instructions_common") or []
+        public_list = conv.get("roleplay_instructions_public") or []
+        private_list = conv.get("roleplay_instructions_private") or []
+        flat_list = conv.get("roleplay_instructions") or []
+
+        has_segmented = bool(common_list or public_list or private_list)
+
+        if has_segmented:
+            # ========== 新スタイル：common / public / private を使う ==========
+            common_text = self._join_lines(common_list)
+            public_suffix = self._join_lines(public_list)
+            private_suffix = self._join_lines(private_list)
+            flat_text = self._join_lines(flat_list)
+
+            # ベースは「元の system_prompt（あれば）」＋ common
+            if raw_sp and common_text:
+                base = raw_sp.strip() + "\n\n" + common_text
+            elif raw_sp:
+                base = raw_sp.strip()
+            elif common_text:
+                base = common_text
+            elif flat_text:
+                base = flat_text
+            else:
+                base = ""
+        else:
+            # ========== 旧スタイル互換：素の system_prompt + suffix フィールド ==========
+            base = raw_sp
+            public_suffix = str(self.raw.get("system_prompt_public_suffix", "") or "")
+            private_suffix = str(self.raw.get("system_prompt_private_suffix", "") or "")
+
+        # プレイヤー名差し替え
+        for token in ("{PLAYER_NAME}", "{player_name}"):
+            base = base.replace(token, player_name)
+            public_suffix = public_suffix.replace(token, player_name)
+            private_suffix = private_suffix.replace(token, player_name)
+
+        return base, public_suffix, private_suffix
+
+    # --------------------------------------------------
     # system prompt / messages
     # --------------------------------------------------
     def get_system_prompt(self) -> str:
         """Actor / AnswerTalker などから参照される想定のヘルパ。"""
-        return self.system_prompt
+        return self.system_prompt_base
 
     def build_messages(
         self,
@@ -111,8 +168,10 @@ class PersonaBase:
     ) -> List[Dict[str, str]]:
         """
         Actor → AnswerTalker に渡すための messages を構築する共通実装。
+
+        必要に応じてサブクラス側でオーバーライドしてもよい。
         """
-        system_parts: List[str] = [self.system_prompt]
+        system_parts: List[str] = [self.system_prompt_base]
 
         if extra_system_hint:
             extra = extra_system_hint.strip()
@@ -193,6 +252,10 @@ class PersonaBase:
         """
         doki_level / mode に応じた「口調・距離感ガイドライン」を JSON から組み立て。
         """
+        from actors.persona.persona_base.build_default_guideline import (
+            build_default_guideline,
+        )
+
         profiles = self._get_emotion_profiles()
         affection_labels = profiles.get("affection_labels", {}) or {}
         doki_levels = profiles.get("doki_levels", {}) or {}
@@ -210,6 +273,14 @@ class PersonaBase:
         # mode 別追加
         mode_lines: List[str] = mode_overrides.get(str(mode_current), []) or []
 
+        # JSON が空の場合はデフォルトガイドラインにフォールバック
+        if not doki_lines and not mode_lines and not aff_label:
+            return build_default_guideline(
+                affection_with_doki=affection_with_doki,
+                doki_level=doki_level,
+                mode_current=mode_current,
+            )
+
         lines: List[str] = []
         lines.append(f"[{self.display_name}用・口調と距離感ガイドライン]")
 
@@ -223,11 +294,6 @@ class PersonaBase:
             lines.append("")
             lines.append("[モード別ガイドライン]")
             lines.extend(mode_lines)
-
-        if not doki_lines and not mode_lines and not aff_label:
-            lines.append(
-                "※ 感情プロファイルが未設定のため、通常時とほぼ同じトーンで話してください。"
-            )
 
         return "\n".join(lines)
 
@@ -331,8 +397,12 @@ class PersonaBase:
         """
         emotion_override を受け取り、system_prompt に感情ヘッダ＋文章量ガイドラインを付け足したものを返す。
 
-        実装本体は build_emotion_based_system_prompt_core に分離。
+        実装本体は actors/persona/persona_base/build_emotion_based_system_prompt_core.py に分離。
         """
+        from actors.persona.persona_base.build_emotion_based_system_prompt_core import (
+            build_emotion_based_system_prompt_core,
+        )
+
         return build_emotion_based_system_prompt_core(
             persona=self,
             base_system_prompt=base_system_prompt,
@@ -370,7 +440,7 @@ class PersonaBase:
 
         return new_messages
 
-    # ---- EmotionResult → 「感情ヘッダ」（旧 API 互換） ----
+    # ---- EmotionResult → 「感情ヘッダ」 ----
     def build_emotion_header(
         self,
         emotion: Any | None,
@@ -378,10 +448,15 @@ class PersonaBase:
         scene_emotion: Dict[str, Any] | None = None,
     ) -> str:
         """
-        EmotionResult 相当 + world_state から
+        EmotionResult + world_state から
         LLM 用の「感情・関係性ヘッダテキスト」を構築する。
-        （古い API 互換用。新規は build_emotion_based_system_prompt を推奨）
+
+        実装本体は actors/persona/persona_base/build_emotion_header.py に分離。
         """
+        from actors.persona.persona_base.build_emotion_header import (
+            build_emotion_header_core,
+        )
+
         return build_emotion_header_core(
             persona=self,
             emotion=emotion,
@@ -401,8 +476,12 @@ class PersonaBase:
     ) -> str:
         """
         互換性維持用ラッパー。
-        実装本体は build_default_guideline。
+        実装本体は actors/persona/persona_base/build_default_guideline.py。
         """
+        from actors.persona.persona_base.build_default_guideline import (
+            build_default_guideline,
+        )
+
         return build_default_guideline(
             affection_with_doki=affection_with_doki,
             doki_level=doki_level,
