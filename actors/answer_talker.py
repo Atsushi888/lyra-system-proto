@@ -19,6 +19,9 @@ from llm.llm_manager import LLMManager
 from llm.llm_manager_factory import get_llm_manager
 from actors.utils.debug_world_state import WorldStateDebugger  # 🔍 追加
 
+# ★ 追加：InitAI（セッション初期化の一本化）
+from actors.init_ai import InitAI
+
 # 環境変数でデバッグモードを切り替え
 LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
 
@@ -64,6 +67,10 @@ class AnswerTalker:
             # 現状は Streamlit 前提なので session_state を使う
             self.state = st.session_state
 
+        # ★ InitAI：セッション初期化をここで必ず一本化
+        # - player_name / world_state / manual_controls / llm_meta の「最低限の形」を確実に作る
+        InitAI.ensure_all(state=self.state, persona=self.persona)
+
         # PersonaAI
         self.persona_ai = PersonaAI(persona_id=persona_id)
 
@@ -71,11 +78,13 @@ class AnswerTalker:
         self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
         self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
 
-        # llm_meta 初期化
+        # llm_meta 取得（InitAIが最低限の形を保証している前提）
         llm_meta = self.state.get("llm_meta")
         if not isinstance(llm_meta, dict):
             llm_meta = {}
+            self.state["llm_meta"] = llm_meta
 
+        # ---- 既存キー（不足のみ補完）----
         llm_meta.setdefault("models", {})
         llm_meta.setdefault("judge", {})
         llm_meta.setdefault("judge_mode", "normal")
@@ -92,8 +101,7 @@ class AnswerTalker:
         llm_meta.setdefault("emotion_override", {})
         llm_meta.setdefault("system_prompt_used", {})
         llm_meta.setdefault("emotion_model_snapshot", {})
-        self._ensure_world_state_controls(self.state)        
-        
+
         # ★ 文章量モード（UserSettings 由来）
         length_mode = str(
             self.state.get("reply_length_mode")
@@ -141,7 +149,10 @@ class AnswerTalker:
             llm_manager=self.llm_manager,
             model_name="gpt51",
         )
+
+        # ★ SceneAI は state を受け取り、内部で world_state を確実に初期化する
         self.scene_ai = SceneAI(state=self.state)
+
         self.mixer_ai = MixerAI(
             state=self.state,
             emotion_ai=self.emotion_ai,
@@ -166,39 +177,6 @@ class AnswerTalker:
             persona_id=persona_id,
             model_name=memory_model,
         )
-
-    def _ensure_world_state_controls(self, state: Mapping[str, Any]) -> None:
-        """
-        UIがまだ描画されていない Round0 でも、
-        SceneAI/MixerAI が参照する manual controls を必ず定義しておく。
-        """
-        # --- world_state manual controls ---
-        if not isinstance(state, dict):
-            # st.session_state 互換のつもりでも、念のためガード
-            return
-
-        state.setdefault("world_state_manual_controls", {})
-        mc = state.get("world_state_manual_controls")
-
-        if not isinstance(mc, dict):
-            mc = {}
-            state["world_state_manual_controls"] = mc
-
-        # DokipowerControl が期待するキーのデフォルト
-        mc.setdefault("others_present", False)
-
-        # "narrator" / "scene" / "auto" のどれかで揃えるのが安全
-        # （あなたのUI側で "auto" を使っているなら auto でOK）
-        mc.setdefault("interaction_mode_hint", "auto")
-
-        # --- emotion manual controls（もし参照するなら先に作る） ---
-        state.setdefault("emotion_state_manual_controls", {})
-        emc = state.get("emotion_state_manual_controls")
-        if not isinstance(emc, dict):
-            emc = {}
-            state["emotion_state_manual_controls"] = emc
-
-        emc.setdefault("enabled", False)
 
     # ---------------------------------------
     # ModelsAI 呼び出し
@@ -258,13 +236,14 @@ class AnswerTalker:
             return ""
 
         if LYRA_DEBUG:
-            st.write(
-                "[DEBUG:AnswerTalker.speak] ========= TURN START ========="
-            )
+            st.write("[DEBUG:AnswerTalker.speak] ========= TURN START =========")
             st.write(
                 f"[DEBUG:AnswerTalker.speak] len(messages)={len(messages)}, "
                 f"user_text={repr(user_text)[:120]}, judge_mode={judge_mode}"
             )
+
+        # 0.0) 念のため：毎ターン最小限の形が崩れていないか補修（軽量）
+        InitAI.ensure_minimum(state=self.state, persona=self.persona)
 
         # 0.5) PersonaAI から最新 persona 情報を取得 → llm_meta へ
         try:
@@ -339,10 +318,7 @@ class AnswerTalker:
         self.llm_meta["emotion_override"] = emotion_override or {}
 
         if LYRA_DEBUG:
-            st.write(
-                "[DEBUG:AnswerTalker.speak] emotion_override =",
-                emotion_override,
-            )
+            st.write("[DEBUG:AnswerTalker.speak] emotion_override =", emotion_override)
 
         # 🔍 デバッグ：MixerAI が返した override 一式
         if isinstance(emotion_override, dict):
@@ -351,10 +327,7 @@ class AnswerTalker:
                 world_state=emotion_override.get("world_state"),
                 scene_emotion=emotion_override.get("scene_emotion"),
                 emotion=emotion_override.get("emotion"),
-                extra={
-                    "step": "after_mixer",
-                    "has_emotion_override": True,
-                },
+                extra={"step": "after_mixer", "has_emotion_override": True},
             )
         else:
             WS_DEBUGGER.log(
@@ -408,10 +381,7 @@ class AnswerTalker:
                     system_index = idx
                     break
 
-            system_message = {
-                "role": "system",
-                "content": system_prompt_used,
-            }
+            system_message = {"role": "system", "content": system_prompt_used}
 
             if system_index is not None:
                 new_messages[system_index] = system_message
@@ -454,6 +424,7 @@ class AnswerTalker:
                 "candidates": [],
             }
             self.llm_meta["judge"] = judge_result
+
         if LYRA_DEBUG:
             st.write(
                 "[DEBUG:AnswerTalker.speak] judge_result.status =",
@@ -508,8 +479,6 @@ class AnswerTalker:
 
             # judge_mode の決定（現状は従来ロジックを維持）
             next_mode = self.emotion_ai.decide_judge_mode(emotion_res)
-            # 将来はこちらに寄せられる:
-            # next_mode = emo_model.decide_judge_mode(current_mode=mode_current)
 
             self.llm_meta["judge_mode_next"] = next_mode
             self.state["judge_mode"] = next_mode
@@ -533,10 +502,7 @@ class AnswerTalker:
                     "[DEBUG:AnswerTalker.speak] emotion_model_snapshot =",
                     self.llm_meta.get("emotion_model_snapshot"),
                 )
-                st.write(
-                    "[DEBUG:AnswerTalker.speak] judge_mode_next =",
-                    next_mode,
-                )
+                st.write("[DEBUG:AnswerTalker.speak] judge_mode_next =", next_mode)
 
         except Exception as e:
             self.llm_meta["emotion_error"] = str(e)
@@ -547,14 +513,8 @@ class AnswerTalker:
         final_text = composed.get("text") or judge_result.get("chosen_text") or ""
 
         if LYRA_DEBUG:
-            st.write(
-                "[DEBUG:AnswerTalker.speak] final_text length =",
-                len(final_text),
-            )
-            st.write(
-                "[DEBUG:AnswerTalker.speak] final_text preview =",
-                repr(final_text[:200]),
-            )
+            st.write("[DEBUG:AnswerTalker.speak] final_text length =", len(final_text))
+            st.write("[DEBUG:AnswerTalker.speak] final_text preview =", repr(final_text[:200]))
 
         # 7) MemoryAI.update_from_turn
         try:
@@ -565,11 +525,7 @@ class AnswerTalker:
                 round_id=round_val,
             )
         except Exception as e:
-            mem_update = {
-                "status": "error",
-                "error": str(e),
-                "records": [],
-            }
+            mem_update = {"status": "error", "error": str(e), "records": []}
             if LYRA_DEBUG:
                 st.write("[DEBUG:AnswerTalker.speak] MemoryAI.update_from_turn error:", e)
 
@@ -593,10 +549,7 @@ class AnswerTalker:
         except Exception as e:
             self.llm_meta["emotion_long_term_error"] = str(e)
             if LYRA_DEBUG:
-                st.write(
-                    "[DEBUG:AnswerTalker.speak] EmotionAI.update_long_term error:",
-                    e,
-                )
+                st.write("[DEBUG:AnswerTalker.speak] EmotionAI.update_long_term error:", e)
 
         # 8) 保存
         self.state["llm_meta"] = self.llm_meta
