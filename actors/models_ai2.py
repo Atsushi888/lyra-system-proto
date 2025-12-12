@@ -13,9 +13,9 @@ class ModelsAI2:
     """
     複数 LLM から一斉に回答案を集めるためのクラス。
 
-    - LLMManager に登録されているモデル定義（model_props）を参照
-    - enable フラグが立っているモデルだけを順番に呼び出し
-    - 結果を {model_name: {...}} の dict で返す
+    方針（LLMAI化に合わせて単純化）:
+    - 「enabled なモデルを回して結果を集める」だけに責務を限定
+    - 呼び出しパラメータ（defaults / temperature 等）は LLM 側（LLMAI/Registry）に集約
     """
 
     def __init__(
@@ -28,9 +28,8 @@ class ModelsAI2:
         self.model_props: Dict[str, Dict[str, Any]] = llm_manager.get_model_props()
 
         if enabled_models is not None:
-            self.enabled_models = enabled_models
+            self.enabled_models = list(enabled_models)
         else:
-            # model_props 内で `"enabled": True` なモデルだけを対象にする
             models: List[str] = []
             for name, props in self.model_props.items():
                 if props.get("enabled", True):
@@ -43,19 +42,15 @@ class ModelsAI2:
     @staticmethod
     def _normalize_completion(completion: CompletionType) -> Dict[str, Any]:
         """
-        LLMManager.chat(...) の戻り値形式の揺れを吸収して、
-        text / usage / raw を取り出すためのヘルパ。
-
         想定パターン:
         - dict 形式: {"text": "...", "usage": {...}, ...}
         - tuple 形式: (text, usage_dict?) など
-        - 素の str: "answer text"
+        - str: "answer text"
         """
         text: str = ""
         usage: Any = None
         raw: Any = None
 
-        # dict パターン
         if isinstance(completion, dict):
             raw = completion
             text = (
@@ -66,18 +61,14 @@ class ModelsAI2:
             )
             usage = completion.get("usage")
 
-        # tuple / list パターン（例: (text, usage)）
         elif isinstance(completion, (tuple, list)):
             raw = {"raw_tuple": completion}
-
             if len(completion) >= 1:
                 first = completion[0]
                 text = str(first) if first is not None else ""
-
             if len(completion) >= 2:
                 usage = completion[1]
 
-        # それ以外（str など）はそのまま文字列化
         else:
             raw = {"raw": completion}
             text = "" if completion is None else str(completion)
@@ -100,40 +91,30 @@ class ModelsAI2:
         ----------
         messages:
             OpenAI / OpenRouter 互換の chat messages 配列。
-            ※ 先頭の system などは AnswerTalker 側で既に差し替え済み。
         mode_current:
-            JudgeAI3 などと揃えるための「モード名」。temperature などの
-            プリセット切り替えに使いたい場合はここで参照可能。
+            ロギング用途（将来のプリセット切替に使える）
         emotion_override:
-            MixerAI から渡された感情オーバーライド情報（任意）。
+            ロギング用途
         reply_length_mode:
-            UserSettings 由来の「発話の長さモード」。現状はロギング用途。
+            ロギング用途
         """
-
         results: Dict[str, Any] = {}
 
         for model_name in self.enabled_models:
-            props = self.model_props.get(model_name, {})
-
             try:
-                # LLMManager.chat(...) への呼び出し
-                # ※ LLMManager 側の引数名は "model" を想定
+                # ここでは「回して集める」だけ。
+                # 温度/トークン等は LLM 側（LLMAI/Registry）に集約済み前提。
                 completion: CompletionType = self.llm_manager.chat(
                     model=model_name,
                     messages=messages,
-                    **props.get("defaults", {}),
                 )
 
                 norm = self._normalize_completion(completion)
-                text = norm["text"]
-                usage = norm["usage"]
-                raw = norm["raw"]
-
                 results[model_name] = {
                     "status": "ok",
-                    "text": text,
-                    "raw": raw,
-                    "usage": usage,
+                    "text": norm["text"],
+                    "raw": norm["raw"],
+                    "usage": norm["usage"],
                     "error": None,
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
@@ -141,8 +122,6 @@ class ModelsAI2:
                 }
 
             except Exception as e:
-                # ここで例外を握りつぶしておくことで、
-                # 他モデルに影響させずにエラー内容だけ記録する。
                 results[model_name] = {
                     "status": "error",
                     "text": "",
