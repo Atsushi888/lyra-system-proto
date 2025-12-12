@@ -1,4 +1,4 @@
-# actors/council_manager.py
+# actors/council/council_manager.py
 from __future__ import annotations
 from typing import List, Dict, Any
 
@@ -22,10 +22,17 @@ def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "Co
     - Persona は actors/persona/persona_datas/elf_riseria_da_silva_ja.json を元に構築
     - Actor.name には Persona.display_name（通常「リセリア・ダ・シルヴァ」）を使用
     - partner_role は "riseria"
-    """
-    key = "council_manager_riseria"
 
-    if key not in st.session_state:
+    ★ 注意:
+      SceneManager 側の _reset_council_state() は、汎用キー "council_manager"
+      に対して reset() を呼び出す仕様になっている。
+      そのため、ここで作成したリセリア用 CouncilManager インスタンスを
+      "council_manager_riseria" と "council_manager" の両方に登録しておく。
+    """
+    key_riseria = "council_manager_riseria"
+    key_generic = "council_manager"
+
+    if key_riseria not in st.session_state:
         st.write(f"[DEBUG:Council] create CouncilManager for Riseria (player_name={player_name})")
 
         riseria_persona = RiseriaPersona(player_name=player_name)
@@ -33,13 +40,24 @@ def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "Co
             name=riseria_persona.display_name,
             persona=riseria_persona,
         )
-        st.session_state[key] = CouncilManager(
+        manager = CouncilManager(
             partner=riseria_actor,
             partner_role="riseria",
             session_key="council_log_riseria",
         )
 
-    return st.session_state[key]
+        # リセリア専用キー
+        st.session_state[key_riseria] = manager
+        # 汎用キー（SceneManager からの reset 用エイリアス）
+        st.session_state[key_generic] = manager
+
+    else:
+        # 既にリセリア用が存在している場合、
+        # 汎用キーが未設定ならエイリアスを張る
+        if key_generic not in st.session_state:
+            st.session_state[key_generic] = st.session_state[key_riseria]
+
+    return st.session_state[key_riseria]
 
 
 # ==========================================================
@@ -73,6 +91,9 @@ class CouncilManager:
 
         # ===== 会話相手（デフォルトはフローリア） =====
         if partner is None:
+            # FloriaPersona の import はコメントアウトされているが、
+            # デフォルト経路はリセリア版では基本的に使われない前提。
+            from personas.persona_floria_ja import Persona as FloriaPersona  # type: ignore
             partner = Actor("フローリア", FloriaPersona())
             partner_role = "floria"
         else:
@@ -136,6 +157,7 @@ class CouncilManager:
     def _build_narrator_world_state(self) -> Dict[str, Any]:
         """
         NarratorAI に渡す world_state を llm_meta["world"] から構成する。
+        （NarratorAI 側では SceneAI の world_state を正として使う）
         """
         world = self._get_world_snapshot()
         locs = world.get("locations", {})
