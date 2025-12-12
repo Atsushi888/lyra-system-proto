@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 # Adapter 基底
-from llm2.llm_ai.adapters.base import BaseLLMAdapter
+from llm2.llm_ai.llm_adapters.base import BaseLLMAdapter
 
 
 class LLMAI:
