@@ -92,7 +92,7 @@ class AnswerTalker:
         llm_meta.setdefault("emotion_override", {})
         llm_meta.setdefault("system_prompt_used", {})
         llm_meta.setdefault("emotion_model_snapshot", {})
-        _ensure_world_state_controls(self.state)        
+        self._ensure_world_state_controls(self.state)        
         
         # ★ 文章量モード（UserSettings 由来）
         length_mode = str(
