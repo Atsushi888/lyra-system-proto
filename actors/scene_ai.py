@@ -72,8 +72,19 @@ class SceneAI:
         if not isinstance(loc, dict):
             loc = {}
 
-        player_loc = loc.get("player") or "プレイヤーの部屋"
-        floria_loc = loc.get("floria") or "プレイヤーの部屋"
+        # --- player name aware location ---
+        player_name = ""
+        if isinstance(self.state, dict):
+            pn = self.state.get("player_name")
+            if isinstance(pn, str) and pn.strip():
+                player_name = pn.strip()
+
+        default_player_loc = (
+            f"{player_name}の部屋" if player_name else "プレイヤーの部屋"
+        )
+
+        player_loc = loc.get("player") or default_player_loc
+        floria_loc = loc.get("floria") or player_loc
 
         loc["player"] = player_loc
         loc["floria"] = floria_loc
