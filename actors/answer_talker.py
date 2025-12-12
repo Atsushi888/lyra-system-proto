@@ -177,7 +177,7 @@ class AnswerTalker:
             state["world_state_manual_controls"] = mc
     
         mc.setdefault("others_present", False)
-        mc.setdefault("interaction_mode_hint", "narrator")  
+        mc.setdefault("interaction_mode_hint", "auto")  
         # ↑ narrator / scene / auto など、DokipowerControlで使う値
 
 
