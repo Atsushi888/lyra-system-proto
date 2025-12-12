@@ -92,7 +92,8 @@ class AnswerTalker:
         llm_meta.setdefault("emotion_override", {})
         llm_meta.setdefault("system_prompt_used", {})
         llm_meta.setdefault("emotion_model_snapshot", {})
-
+        _ensure_world_state_controls(self.state)        
+        
         # ★ 文章量モード（UserSettings 由来）
         length_mode = str(
             self.state.get("reply_length_mode")
@@ -165,6 +166,20 @@ class AnswerTalker:
             persona_id=persona_id,
             model_name=memory_model,
         )
+
+    def _ensure_world_state_controls(state):
+        # --- world_state manual controls ---
+        state.setdefault("world_state_manual_controls", {})
+        mc = state["world_state_manual_controls"]
+    
+        if not isinstance(mc, dict):
+            mc = {}
+            state["world_state_manual_controls"] = mc
+    
+        mc.setdefault("others_present", False)
+        mc.setdefault("interaction_mode_hint", "narrator")  
+        # ↑ narrator / scene / auto など、DokipowerControlで使う値
+
 
     # ---------------------------------------
     # ModelsAI 呼び出し
