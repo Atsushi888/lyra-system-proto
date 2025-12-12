@@ -167,19 +167,38 @@ class AnswerTalker:
             model_name=memory_model,
         )
 
-    def _ensure_world_state_controls(state):
+    def _ensure_world_state_controls(self, state: Mapping[str, Any]) -> None:
+        """
+        UIがまだ描画されていない Round0 でも、
+        SceneAI/MixerAI が参照する manual controls を必ず定義しておく。
+        """
         # --- world_state manual controls ---
+        if not isinstance(state, dict):
+            # st.session_state 互換のつもりでも、念のためガード
+            return
+
         state.setdefault("world_state_manual_controls", {})
-        mc = state["world_state_manual_controls"]
-    
+        mc = state.get("world_state_manual_controls")
+
         if not isinstance(mc, dict):
             mc = {}
             state["world_state_manual_controls"] = mc
-    
-        mc.setdefault("others_present", False)
-        mc.setdefault("interaction_mode_hint", "auto")  
-        # ↑ narrator / scene / auto など、DokipowerControlで使う値
 
+        # DokipowerControl が期待するキーのデフォルト
+        mc.setdefault("others_present", False)
+
+        # "narrator" / "scene" / "auto" のどれかで揃えるのが安全
+        # （あなたのUI側で "auto" を使っているなら auto でOK）
+        mc.setdefault("interaction_mode_hint", "auto")
+
+        # --- emotion manual controls（もし参照するなら先に作る） ---
+        state.setdefault("emotion_state_manual_controls", {})
+        emc = state.get("emotion_state_manual_controls")
+        if not isinstance(emc, dict):
+            emc = {}
+            state["emotion_state_manual_controls"] = emc
+
+        emc.setdefault("enabled", False)
 
     # ---------------------------------------
     # ModelsAI 呼び出し
