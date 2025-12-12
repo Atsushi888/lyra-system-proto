@@ -1,139 +1,171 @@
 # llm2/llm_ai/llm_ai.py
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-# Adapter 基底
+import os
+
 from llm2.llm_ai.llm_adapters.base import BaseLLMAdapter
+
+
+@dataclass
+class LLMModelConfig:
+    """
+    LLMAI 内で管理する1モデル分の設定。
+    """
+    name: str
+    adapter: BaseLLMAdapter
+    vendor: str = "unknown"
+    priority: float = 1.0
+    enabled: bool = True
+    extra: Dict[str, Any] = field(default_factory=dict)
+    params: Dict[str, Any] = field(default_factory=dict)  # デフォルト呼び出しパラメータ
 
 
 class LLMAI:
     """
-    次世代 LLM 管理中枢クラス（llm2 系）。
+    LLM呼び出しのターミナル。
 
-    役割:
-    - 各 LLM Adapter の登録・管理
-    - models_ai2 / AnswerTalker などからの唯一の LLM 呼び出し窓口
-    - パラメータ管理・デフォルト値の集約点
-
-    設計思想:
-    - 「どの LLM をどう呼ぶか」はすべてここに集約
-    - Adapter は *純粋に API を叩くだけ*
+    - register_* で Adapter を登録
+    - call() で呼び出し（Adapter.call に委譲）
+    - get_model_props() で UI/ModelsAI2 互換の一覧を返す
     """
 
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
+        self._models: Dict[str, LLMModelConfig] = {}
 
-        # name -> adapter
-        self._adapters: Dict[str, BaseLLMAdapter] = {}
-
-        # name -> enabled
-        self._enabled: Dict[str, bool] = {}
-
-        # name -> priority
-        self._priority: Dict[str, float] = {}
-
-        # name -> default params
-        self._defaults: Dict[str, Dict[str, Any]] = {}
-
-    # ======================================================
-    # Register
-    # ======================================================
-    def register(
+    # ===========================================================
+    # Adapter 登録
+    # ===========================================================
+    def register_adapter(
         self,
         adapter: BaseLLMAdapter,
         *,
-        enabled: bool = True,
+        vendor: Optional[str] = None,
         priority: float = 1.0,
-        defaults: Optional[Dict[str, Any]] = None,
+        enabled: bool = True,
+        extra: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
-        Adapter を登録する。
+        register_* から呼ばれる入口。
 
-        Parameters
-        ----------
-        adapter:
-            BaseLLMAdapter 派生クラス
-        enabled:
-            初期有効状態
-        priority:
-            Judge / UI 用の優先度
-        defaults:
-            call 時に暗黙で適用されるパラメータ
+        adapter.name をキーとして登録する。
         """
-        name = adapter.name
+        name = getattr(adapter, "name", "") or ""
         if not name:
-            raise ValueError("Adapter.name must not be empty")
+            raise ValueError("Adapter.name is empty")
 
-        self._adapters[name] = adapter
-        self._enabled[name] = bool(enabled)
-        self._priority[name] = float(priority)
-        self._defaults[name] = defaults or {}
+        # 既知モデルは env_key 等を自動補完しておく（UIの可用性判定に使える）
+        auto_vendor, auto_extra = self._infer_vendor_extra(name)
 
-    # ======================================================
-    # Call
-    # ======================================================
+        cfg = LLMModelConfig(
+            name=name,
+            adapter=adapter,
+            vendor=vendor or auto_vendor,
+            priority=float(priority),
+            enabled=bool(enabled),
+            extra={**auto_extra, **(extra or {})},
+            params=dict(params or {}),
+        )
+        self._models[name] = cfg
+
+    @staticmethod
+    def _infer_vendor_extra(model_name: str) -> Tuple[str, Dict[str, Any]]:
+        """
+        既知の論理名から vendor / env_key / model_family を推定。
+        """
+        if model_name in ("gpt51", "gpt4o"):
+            return "openai", {"env_key": "OPENAI_API_KEY", "model_family": model_name}
+        if model_name == "grok":
+            return "xai", {"env_key": "GROK_API_KEY", "model_family": "grok"}
+        if model_name == "gemini":
+            return "google", {"env_key": "GEMINI_API_KEY", "model_family": "gemini"}
+        if model_name in ("hermes", "hermes_new", "llama_unc"):
+            return "openrouter", {
+                "env_key": "OPENROUTER_API_KEY",
+                "model_family": model_name,
+            }
+        return "unknown", {}
+
+    # ===========================================================
+    # 呼び出し
+    # ===========================================================
     def call(
         self,
-        model: str,
+        *,
+        model_name: str,
         messages: List[Dict[str, str]],
         **kwargs: Any,
-    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+    ) -> Any:
         """
-        単一モデル呼び出し。
-
-        戻り値:
-            (text, usage or None)
+        互換のため、戻り値は Adapter 実装に合わせる：
+        - (text, usage) が基本
         """
-        adapter = self._adapters.get(model)
-        if adapter is None:
-            raise ValueError(f"Unknown LLM model: {model}")
+        cfg = self._models.get(model_name)
+        if cfg is None:
+            raise ValueError(f"Unknown model: {model_name}")
 
-        if not self._enabled.get(model, False):
-            raise RuntimeError(f"LLM model '{model}' is disabled")
+        # 登録済み params をデフォルトとして合成
+        call_params = dict(cfg.params)
+        call_params.update(kwargs)
 
-        call_kwargs = dict(self._defaults.get(model, {}))
-        call_kwargs.update(kwargs)
+        return cfg.adapter.call(messages=messages, **call_params)
 
-        return adapter.call(messages=messages, **call_kwargs)
-
-    # OpenAI 互換名
-    chat = call
-
-    # ======================================================
-    # Introspection
-    # ======================================================
+    # ===========================================================
+    # 情報取得（互換）
+    # ===========================================================
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
         """
-        ModelsAI2 / UI 用のメタ情報。
+        旧 LLMManager.get_model_props 互換。
+
+        ModelsAI2 / UI が読むので、enabled / priority / extra / params を返す。
         """
-        result: Dict[str, Dict[str, Any]] = {}
-        for name, adapter in self._adapters.items():
-            result[name] = {
-                "enabled": self._enabled.get(name, False),
-                "priority": self._priority.get(name, 0.0),
-                "defaults": dict(self._defaults.get(name, {})),
-                "adapter": adapter.__class__.__name__,
+        out: Dict[str, Dict[str, Any]] = {}
+        for name, cfg in self._models.items():
+            out[name] = {
+                "vendor": cfg.vendor,
+                "priority": cfg.priority,
+                "enabled": cfg.enabled,
+                "extra": dict(cfg.extra),
+                "params": dict(cfg.params),
+
+                # 互換性のために defaults も置く（古い呼び出しが残ってても壊れにくい）
+                "defaults": dict(cfg.params),
             }
-        return result
+        return out
 
     def get_models_sorted(self) -> Dict[str, Dict[str, Any]]:
-        items = sorted(
-            self.get_model_props().items(),
-            key=lambda kv: kv[1]["priority"],
-            reverse=True,
-        )
-        return dict(items)
+        items = sorted(self._models.items(), key=lambda kv: kv[1].priority, reverse=True)
+        out: Dict[str, Dict[str, Any]] = {}
+        for name, cfg in items:
+            out[name] = {
+                "vendor": cfg.vendor,
+                "priority": cfg.priority,
+                "enabled": cfg.enabled,
+                "extra": dict(cfg.extra),
+                "params": dict(cfg.params),
+                "defaults": dict(cfg.params),
+            }
+        return out
 
-    # ======================================================
-    # Enable / Disable
-    # ======================================================
-    def set_enabled(self, model: str, enabled: bool) -> None:
-        if model not in self._adapters:
-            raise ValueError(f"Unknown LLM model: {model}")
-        self._enabled[model] = bool(enabled)
+    def get_available_models(self) -> Dict[str, Dict[str, Any]]:
+        """
+        env_key が存在するモデルは APIキー有無も付与して返す。
+        """
+        props = self.get_model_props()
+        for name, p in props.items():
+            extra = p.get("extra") or {}
+            env_key = extra.get("env_key")
+            has_key = True
+            if env_key:
+                has_key = bool(os.getenv(env_key, ""))
+            p["has_key"] = has_key
+        return props
 
-    def set_enabled_bulk(self, flags: Dict[str, bool]) -> None:
-        for name, flag in flags.items():
-            if name in self._adapters:
-                self._enabled[name] = bool(flag)
+    def set_enabled_models(self, enabled: Dict[str, bool]) -> None:
+        for name, flag in enabled.items():
+            if name in self._models:
+                self._models[name].enabled = bool(flag)
