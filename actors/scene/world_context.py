@@ -1,40 +1,37 @@
+# actors/scene/world_context.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Literal
-
-
-TimeSlot = Literal["morning", "lunch", "after_school", "night"]
 
 
 @dataclass
 class WorldContext:
     """
-    world_state の“運用しやすい窓口”となる構造体。
-
-    - 保存先（唯一の正）は state["world_state"] として維持しつつ、
-      普段の読み書きはこの構造体でやり取りする。
-    - InitAI が WorldContext <-> world_state を変換/同期する。
+    ゲーム世界の現在状態を表す正規データ構造。
+    world_state / manual_controls / narrator / scene の
+    すべての初期化元になる。
     """
 
-    # a) プレイヤー名
-    player_name: str = "プレイヤー"
+    # ===== キャラクター =====
+    player_name: str
+    partner_name: str
 
-    # b) 相手キャラ（Persona 由来をデフォルトにし、必要なら上書き）
-    partner_role: str = "floria"
-    partner_name: str = "フローリア"
+    # ===== 位置 =====
+    player_location: str
+    partner_location: str
 
-    # c) プレイヤー所在地 / d) 相手所在地
-    # None の場合は InitAI が規定値を補完する（例: "{player_name}の部屋"）
-    player_location: Optional[str] = None
-    partner_location: Optional[str] = None
-
-    # e) 時刻
-    time_slot: TimeSlot = "morning"
+    # ===== 時間 =====
+    time_slot: str = "morning"   # morning / lunch / after_school / night
     time_str: str = "07:30"
 
-    # f) モブの有無
+    # ===== 環境 =====
     others_present: bool = False
 
-    # 追加（当面の既定値）
+    # ===== 補助 =====
     weather: str = "clear"
+
+    @property
+    def party_mode(self) -> str:
+        if self.player_location == self.partner_location:
+            return "both"
+        return "alone"
