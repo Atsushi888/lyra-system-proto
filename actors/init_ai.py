@@ -1,61 +1,77 @@
 # actors/init_ai.py
 from __future__ import annotations
+from typing import Any, Mapping
 
-from typing import Mapping, Any
 import streamlit as st
-
-from actors.scene.world_context import WorldContext
 
 
 class InitAI:
     """
-    WorldContext を唯一の入力として、
-    session_state / world_state / manual_controls を初期化する。
+    セッション初期化の唯一の正規窓口。
+    AnswerTalker / SceneAI / NarratorAI より前に一度だけ呼ばれる想定。
     """
 
+    @classmethod
+    def ensure_all(
+        cls,
+        *,
+        state: Mapping[str, Any],
+        persona: Any | None = None,
+    ) -> None:
+        """
+        Lyra セッションに必要な初期状態をすべて保証する。
+        """
+        cls.ensure_player_name(state)
+        cls.ensure_world_state(state, persona)
+        cls.ensure_manual_controls(state)
+
+    # -------------------------
+    # 個別 ensure 群
+    # -------------------------
+
     @staticmethod
-    def apply(context: WorldContext, state: Mapping[str, Any] | None = None) -> None:
-        if state is None:
-            state = st.session_state
+    def ensure_player_name(state: Mapping[str, Any]) -> None:
+        if "player_name" not in state:
+            state["player_name"] = "アツシ"
 
-        # =========================
-        # world_state 本体
-        # =========================
-        state["world_state"] = {
-            "player_name": context.player_name,
-            "locations": {
-                "player": context.player_location,
-                "floria": context.partner_location,
+    @staticmethod
+    def ensure_world_state(
+        state: Mapping[str, Any],
+        persona: Any | None,
+    ) -> None:
+        ws = state.get("world_state")
+        if not isinstance(ws, dict):
+            player_name = state.get("player_name", "プレイヤー")
+
+            ws = {
+                "player_name": player_name,
+                "locations": {
+                    "player": f"{player_name}の部屋",
+                    "floria": f"{player_name}の部屋",
+                },
+                "time": {
+                    "slot": "morning",
+                    "time_str": "07:30",
+                },
+                "others_present": False,
+                "weather": "clear",
+                "party": {
+                    "mode": "both",
+                },
+            }
+            state["world_state"] = ws
+
+    @staticmethod
+    def ensure_manual_controls(state: Mapping[str, Any]) -> None:
+        state.setdefault(
+            "world_state_manual_controls",
+            {
+                "others_present": False,
+                "interaction_mode_hint": "auto",
             },
-            "time": {
-                "slot": context.time_slot,
-                "time_str": context.time_str,
-            },
-            "others_present": context.others_present,
-            "weather": context.weather,
-            "party": {
-                "mode": context.party_mode,
-            },
-        }
+        )
 
-        # =========================
-        # world_state_manual_controls
-        # =========================
-        state["world_state_manual_controls"] = {
-            "others_present": context.others_present,
-            "interaction_mode_hint": "auto",
-        }
-
-        # =========================
-        # emotion_manual_controls（最低限）
-        # =========================
-        state.setdefault("emotion_manual_controls", {
-            "environment": "with_others" if context.others_present else "alone",
-            "others_present": context.others_present,
-            "interaction_mode_hint": "auto",
-        })
-
-        # =========================
-        # 安全弁：Round0 用
-        # =========================
-        state.setdefault("round_number", 0)
+        state.setdefault(
+            "emotion_manual_controls",
+            {},
+        )
