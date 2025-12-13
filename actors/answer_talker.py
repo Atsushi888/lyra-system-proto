@@ -75,7 +75,7 @@ class AnswerTalker:
         self.persona_ai = PersonaAI(persona_id=persona_id)
 
         # LLMManager
-        self.llm_manager: LLMManager = llm_manager or llm_manager.get_or_create(persona_id = self.persona_id)
+        self.llm_manager: LLMManager = llm_manager or llm_manager.get_or_create(persona_id=persona_id)
         self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
 
         # llm_meta 取得（InitAIが最低限の形を保証している前提）
