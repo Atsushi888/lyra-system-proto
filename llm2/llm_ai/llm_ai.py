@@ -3,8 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-
 import os
+
+try:
+    import streamlit as st
+    _HAS_ST = True
+except Exception:
+    st = None  # type: ignore
+    _HAS_ST = False
 
 from llm2.llm_ai.llm_adapters.base import BaseLLMAdapter
 
@@ -37,6 +43,19 @@ class LLMAI:
         self._models: Dict[str, LLMModelConfig] = {}
 
     # ===========================================================
+    # 内部：APIキー判定（env + streamlit.secrets）
+    # ===========================================================
+    @staticmethod
+    def _has_api_key(env_key: Optional[str]) -> bool:
+        if not env_key:
+            return True
+        if os.getenv(env_key):
+            return True
+        if _HAS_ST and isinstance(st.secrets, dict) and st.secrets.get(env_key):
+            return True
+        return False
+
+    # ===========================================================
     # Adapter 登録
     # ===========================================================
     def register_adapter(
@@ -58,7 +77,6 @@ class LLMAI:
         if not name:
             raise ValueError("Adapter.name is empty")
 
-        # 既知モデルは env_key 等を自動補完しておく（UIの可用性判定に使える）
         auto_vendor, auto_extra = self._infer_vendor_extra(name)
 
         cfg = LLMModelConfig(
@@ -74,9 +92,6 @@ class LLMAI:
 
     @staticmethod
     def _infer_vendor_extra(model_name: str) -> Tuple[str, Dict[str, Any]]:
-        """
-        既知の論理名から vendor / env_key / model_family を推定。
-        """
         if model_name in ("gpt51", "gpt4o"):
             return "openai", {"env_key": "OPENAI_API_KEY", "model_family": model_name}
         if model_name == "grok":
@@ -84,10 +99,7 @@ class LLMAI:
         if model_name == "gemini":
             return "google", {"env_key": "GEMINI_API_KEY", "model_family": "gemini"}
         if model_name in ("hermes", "hermes_new", "llama_unc"):
-            return "openrouter", {
-                "env_key": "OPENROUTER_API_KEY",
-                "model_family": model_name,
-            }
+            return "openrouter", {"env_key": "OPENROUTER_API_KEY", "model_family": model_name}
         return "unknown", {}
 
     # ===========================================================
@@ -103,12 +115,22 @@ class LLMAI:
         """
         互換のため、戻り値は Adapter 実装に合わせる：
         - (text, usage) が基本
+
+        追加の安全策：
+        - enabled=False のモデルは呼ばない
+        - env_key が必要でキーが無いモデルは呼ばない
         """
         cfg = self._models.get(model_name)
         if cfg is None:
             raise ValueError(f"Unknown model: {model_name}")
 
-        # 登録済み params をデフォルトとして合成
+        if not cfg.enabled:
+            raise RuntimeError(f"Model disabled: {model_name}")
+
+        env_key = (cfg.extra or {}).get("env_key")
+        if env_key and not self._has_api_key(str(env_key)):
+            raise RuntimeError(f"Missing API key: {env_key} (model={model_name})")
+
         call_params = dict(cfg.params)
         call_params.update(kwargs)
 
@@ -118,11 +140,6 @@ class LLMAI:
     # 情報取得（互換）
     # ===========================================================
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
-        """
-        旧 LLMManager.get_model_props 互換。
-
-        ModelsAI2 / UI が読むので、enabled / priority / extra / params を返す。
-        """
         out: Dict[str, Dict[str, Any]] = {}
         for name, cfg in self._models.items():
             out[name] = {
@@ -131,8 +148,6 @@ class LLMAI:
                 "enabled": cfg.enabled,
                 "extra": dict(cfg.extra),
                 "params": dict(cfg.params),
-
-                # 互換性のために defaults も置く（古い呼び出しが残ってても壊れにくい）
                 "defaults": dict(cfg.params),
             }
         return out
@@ -153,16 +168,13 @@ class LLMAI:
 
     def get_available_models(self) -> Dict[str, Dict[str, Any]]:
         """
-        env_key が存在するモデルは APIキー有無も付与して返す。
+        env_key が存在するモデルは APIキー有無も付与して返す（env + secrets）。
         """
         props = self.get_model_props()
         for name, p in props.items():
             extra = p.get("extra") or {}
             env_key = extra.get("env_key")
-            has_key = True
-            if env_key:
-                has_key = bool(os.getenv(env_key, ""))
-            p["has_key"] = has_key
+            p["has_key"] = self._has_api_key(str(env_key)) if env_key else True
         return props
 
     def set_enabled_models(self, enabled: Dict[str, bool]) -> None:
