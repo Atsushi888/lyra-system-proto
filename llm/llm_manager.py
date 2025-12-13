@@ -4,33 +4,26 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 import os
 
-try:
-    import streamlit as st  # type: ignore
-    _HAS_ST = True
-except Exception:
-    st = None  # type: ignore
-    _HAS_ST = False
-
 # 新LLM中枢
 from llm2.llm_ai import LLMAI
 
 # register 群
 from llm2.llm_ai.llm_registers.register_gpt51 import register_gpt51
-from llm2.llm_ai.llm_registers.register_gpt52 import register_gpt52  # ★追加
-# from llm2.llm_ai.llm_registers.register_gpt4o import register_gpt4o  # ★眠らせる
+from llm2.llm_ai.llm_registers.register_gpt4o import register_gpt4o
 from llm2.llm_ai.llm_registers.register_grok import register_grok
 from llm2.llm_ai.llm_registers.register_gemini import register_gemini
 from llm2.llm_ai.llm_registers.register_hermes_old import register_hermes_old
 from llm2.llm_ai.llm_registers.register_hermes_new import register_hermes_new
 from llm2.llm_ai.llm_registers.register_llama_unc import register_llama_unc
 
-
-def _has_key(key: str) -> bool:
-    if os.getenv(key):
-        return True
-    if _HAS_ST and isinstance(st.secrets, dict) and st.secrets.get(key):
-        return True
-    return False
+# ※ gpt52 を起こす場合：この register が存在する前提
+#   まだ無いなら作ってね（register_gpt51 と同様の構造でOK）
+try:
+    from llm2.llm_ai.llm_registers.register_gpt52 import register_gpt52  # type: ignore
+    _HAS_GPT52 = True
+except Exception:
+    register_gpt52 = None  # type: ignore
+    _HAS_GPT52 = False
 
 
 class LLMManager:
@@ -39,6 +32,9 @@ class LLMManager:
 
     - 旧来の LLMManager API を維持
     - 実体は llm2.llm_ai.LLMAI に委譲
+
+    モデルの「登録」を環境変数で制御する。
+    → 登録されないモデルは UI に出ない / 呼び出せない（ゾンビ封印）
     """
 
     _POOL: Dict[str, "LLMManager"] = {}
@@ -64,19 +60,62 @@ class LLMManager:
         # 新中枢
         self._llm_ai = LLMAI(persona_id=persona_id)
 
-        # --- 標準モデル登録 ---
-        register_gpt51(self._llm_ai)
-        register_gpt52(self._llm_ai)     # ★起こす（gpt52）
+        # --- 登録制御（ここが肝） ---------------------------------
+        # 例:
+        #   LYRA_ENABLE_MODELS="gpt51,gpt52,grok,gemini"
+        #   LYRA_DISABLE_MODELS="gpt4o,hermes,hermes_new,llama_unc"
+        #
+        # enable を指定しない場合のデフォルトは「安全側」：
+        #   gpt51 / (あれば gpt52) / grok / gemini のみ
+        enable_raw = os.getenv("LYRA_ENABLE_MODELS", "").strip()
+        disable_raw = os.getenv("LYRA_DISABLE_MODELS", "").strip()
 
-        # register_gpt4o(self._llm_ai)   # ★眠らせる（必要になったら戻す）
+        enable_set = {
+            s.strip().lower() for s in enable_raw.split(",") if s.strip()
+        }
+        disable_set = {
+            s.strip().lower() for s in disable_raw.split(",") if s.strip()
+        }
 
-        register_grok(self._llm_ai)
-        register_gemini(self._llm_ai)
+        default_enable = {"gpt51", "grok", "gemini"}
+        if _HAS_GPT52:
+            default_enable.add("gpt52")
 
-        # ★Hermes系は「OPENROUTER_API_KEY がある時だけ」登録（勝手に復活させない）
-        if _has_key("OPENROUTER_API_KEY"):
+        def want(name: str) -> bool:
+            key = name.strip().lower()
+            if key in disable_set:
+                return False
+            if enable_set:
+                return key in enable_set
+            return key in default_enable
+
+        # --- 標準モデル登録（必要なものだけ登録） --------------------
+        if want("gpt51"):
+            register_gpt51(self._llm_ai)
+
+        # gpt52 を起こす（register が存在するときのみ）
+        if want("gpt52") and _HAS_GPT52 and register_gpt52 is not None:
+            register_gpt52(self._llm_ai)
+
+        # gpt4o は「眠らせたい」ことが多いのでデフォルトでは登録しない
+        if want("gpt4o"):
+            register_gpt4o(self._llm_ai)
+
+        if want("grok"):
+            register_grok(self._llm_ai)
+
+        if want("gemini"):
+            register_gemini(self._llm_ai)
+
+        # --- OpenRouter 系（Hermes / llama_unc）はデフォルト封印 ----
+        # ここを登録しない限り UI にも出ない＝復活しない
+        if want("hermes") or want("hermes_old"):
             register_hermes_old(self._llm_ai)
+
+        if want("hermes_new"):
             register_hermes_new(self._llm_ai)
+
+        if want("llama_unc"):
             register_llama_unc(self._llm_ai)
 
     # ===========================================================
@@ -119,9 +158,9 @@ class LLMManager:
             usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
             return text, usage
 
+        # fallback
         return str(result or ""), {}
 
-    # OpenAI 互換エイリアス
     chat = chat_completion
 
     # ===========================================================
