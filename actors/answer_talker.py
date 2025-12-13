@@ -277,6 +277,27 @@ class AnswerTalker:
                 new_messages[system_index] = sys_msg
             messages_for_models = new_messages
 
+        # # ---- ModelsAI2 ----
+        # try:
+        #     results = self.models_ai.collect(
+        #         messages_for_models,
+        #         mode_current=mode_current,
+        #         emotion_override=emotion_override,
+        #         reply_length_mode=length_mode,
+        #     )
+        #     self.llm_meta["models"] = results or {}
+        #     self.llm_meta["models_error"] = None
+        # except Exception as e:
+        #     # ここが落ちると「emotion_override まで出るのに models が無い」になる
+        #     self.llm_meta["models"] = {}
+        #     self.llm_meta["models_error"] = str(e)
+        #     if LYRA_DEBUG:
+        #         st.error("[AnswerTalker] ModelsAI2.collect failed")
+        #         st.exception(e)
+        #     # 返答は一応返す（Council 側のフリーズ回避）
+        #     self.state["llm_meta"] = self.llm_meta
+        #     return "……ごめん、いま少し調子が悪いみたい。もう一回だけお願い。"
+
         # ---- ModelsAI2 ----
         try:
             results = self.models_ai.collect(
@@ -285,18 +306,22 @@ class AnswerTalker:
                 emotion_override=emotion_override,
                 reply_length_mode=length_mode,
             )
-            self.llm_meta["models"] = results or {}
-            self.llm_meta["models_error"] = None
+
+            # ★ここ追加：空結果を検知して models_error を立てる
+            if not results:
+                self.llm_meta["models"] = {}
+                self.llm_meta["models_error"] = (
+                    "ModelsAI2.collect returned empty results (no exception). "
+                    "Check API keys / enabled providers / model list / message format."
+                )
+            else:
+                self.llm_meta["models"] = results
+                self.llm_meta["models_error"] = None
+
         except Exception as e:
-            # ここが落ちると「emotion_override まで出るのに models が無い」になる
             self.llm_meta["models"] = {}
             self.llm_meta["models_error"] = str(e)
-            if LYRA_DEBUG:
-                st.error("[AnswerTalker] ModelsAI2.collect failed")
-                st.exception(e)
-            # 返答は一応返す（Council 側のフリーズ回避）
-            self.state["llm_meta"] = self.llm_meta
-            return "……ごめん、いま少し調子が悪いみたい。もう一回だけお願い。"
+            ...
 
         # ---- Judge ----
         try:
