@@ -15,7 +15,7 @@ from actors.emotion.emotion_models import EmotionModel
 from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
-from llm.llm_manager import LLMManager
+from llm.llm_manager import LLMManager, get_or_create
 from llm.llm_manager_factory import get_llm_manager
 from actors.utils.debug_world_state import WorldStateDebugger  # 🔍 追加
 
@@ -75,7 +75,7 @@ class AnswerTalker:
         self.persona_ai = PersonaAI(persona_id=persona_id)
 
         # LLMManager
-        self.llm_manager: LLMManager = llm_manager or get_llm_manager(persona_id)
+        self.llm_manager: LLMManager = llm_manager or get_or_create(persona_id)
         self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
 
         # llm_meta 取得（InitAIが最低限の形を保証している前提）
