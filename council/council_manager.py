@@ -10,7 +10,17 @@ from actors.narrator.narrator_manager import NarratorManager
 from actors.scene_ai import SceneAI
 
 
+# ==========================================================
+# CouncilManager を取得するヘルパ
+# ==========================================================
 def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "CouncilManager":
+    """
+    リセリアとの会話用 CouncilManager をセッションから取得（なければ作成）。
+
+    ★注意:
+    SceneManager 側が汎用キー "council_manager" を reset 対象にするため、
+    "council_manager_riseria" と "council_manager" の両方へ同一インスタンスを登録する。
+    """
     key_riseria = "council_manager_riseria"
     key_generic = "council_manager"
 
@@ -34,7 +44,16 @@ def get_or_create_riseria_council_manager(player_name: str = "アツシ") -> "Co
     return st.session_state[key_riseria]
 
 
+# ==========================================================
+# CouncilManager 本体
+# ==========================================================
 class CouncilManager:
+    """
+    1on1 会談UI（β）
+    - 送信/救済処理は try/finally で必ず解除（固まり対策）
+    - 表示名は日本語ラベルに変換（player/riseria/narrator を出さない）
+    """
+
     def __init__(
         self,
         partner: Actor | None = None,
@@ -46,18 +65,20 @@ class CouncilManager:
         raw_log = st.session_state.get(self.session_key, [])
         self.conversation_log: List[Dict[str, str]] = list(raw_log) if isinstance(raw_log, list) else []
 
+        # 相手
         if partner is None:
-            from personas.persona_floria_ja import Persona as FloriaPersona
+            from personas.persona_floria_ja import Persona as FloriaPersona  # type: ignore
             partner = Actor("フローリア", FloriaPersona())
             partner_role = "floria"
         else:
             if partner_role is None:
                 partner_role = "partner"
 
-        self.partner_role = partner_role
-        self.partner = partner
-        self.actors = {self.partner_role: self.partner}
+        self.partner_role: str = partner_role
+        self.partner: Actor = partner
+        self.actors: Dict[str, Actor] = {self.partner_role: self.partner}
 
+        # 状態
         self.state: Dict[str, Any] = {
             "mode": "ongoing",
             "participants": ["player", self.partner_role],
@@ -70,92 +91,384 @@ class CouncilManager:
         # world_state を必ず初期化
         SceneAI(state=st.session_state)
 
+        # NarratorManager / NarratorAI
         if "narrator_manager" not in st.session_state:
             st.session_state["narrator_manager"] = NarratorManager(state=st.session_state)
+        self.narrator_manager: NarratorManager = st.session_state["narrator_manager"]
 
-        self.narrator_manager = st.session_state["narrator_manager"]
         self.narrator = NarratorAI(
             manager=self.narrator_manager,
             partner_role=self.partner_role,
-            partner_name=self.partner.name,
+            partner_name=getattr(self.partner, "name", self.partner_role),
         )
 
+        # Round0 を一度だけ
         self._ensure_round0_initialized()
 
-    # -------------------------------------------------
+    # ------------------------------------------------------
+    # world_state ヘルパ
+    # ------------------------------------------------------
+    def _get_world_snapshot(self) -> Dict[str, Any]:
+        """
+        AnswerTalker が積む llm_meta["world_state"] があればそれを優先。
+        無ければ SceneAI の world_state を読む。
+        """
+        llm_meta = st.session_state.get("llm_meta", {})
+        if isinstance(llm_meta, dict):
+            ws = llm_meta.get("world_state")
+            if isinstance(ws, dict) and ws:
+                return ws
 
-    def _save_log(self) -> None:
+        # fallback
+        try:
+            return SceneAI(state=st.session_state).get_world_state()
+        except Exception:
+            return {}
+
+    def _build_narrator_world_state(self) -> Dict[str, Any]:
+        world = self._get_world_snapshot()
+        locs = world.get("locations", {}) if isinstance(world.get("locations", {}), dict) else {}
+        t = world.get("time", {}) if isinstance(world.get("time", {}), dict) else {}
+
+        location_name = locs.get("player") or "通学路"
+        time_of_day = t.get("slot", "morning") or "morning"
+        weather = world.get("weather", "clear") or "clear"
+
+        return {
+            "location_name": location_name,
+            "time_of_day": time_of_day,
+            "weather": weather,
+        }
+
+    # ------------------------------------------------------
+    # ログ
+    # ------------------------------------------------------
+    def _save_log_to_session(self) -> None:
         st.session_state[self.session_key] = list(self.conversation_log)
 
     def _append_log(self, role: str, content: str) -> None:
         safe = (content or "").replace("\n", "<br>")
         self.conversation_log.append({"role": role, "content": safe})
         self.state["last_speaker"] = role
-        self._save_log()
+        self._save_log_to_session()
 
     def _ensure_round0_initialized(self) -> None:
-        if self.state["round0_done"]:
+        if self.state.get("round0_done", False):
             return
 
+        world_state = self._build_narrator_world_state()
+        partner_state = {"mood": "slightly_nervous"}
+
         try:
-            world = SceneAI(state=st.session_state).get_world_state()
-            text = self.narrator.generate_round0_opening(
-                world_state=world,
+            line = self.narrator.generate_round0_opening(
+                world_state=world_state,
                 player_profile={},
-                floria_state={"mood": "slightly_nervous"},
-            ).text
+                floria_state=partner_state,  # 引数名互換
+            )
+            text = (getattr(line, "text", None) or "").strip()
         except Exception:
-            text = f"{self.partner.name}は、少し緊張した様子であなたの前に立っている。"
+            text = ""
+
+        if not text:
+            text = f"{getattr(self.partner, 'name', 'その子')}は、どこかそわそわした様子であなたの前に立っている。"
 
         self._append_log("narrator", text)
         self.state["round0_done"] = True
 
-    # -------------------------------------------------
+    # ------------------------------------------------------
+    # 公開API
+    # ------------------------------------------------------
+    def reset(self) -> None:
+        self.conversation_log.clear()
+        self.state["mode"] = "ongoing"
+        self.state["last_speaker"] = None
+        self.state["round0_done"] = False
+        self.state["special_available"] = False
+        self.state["special_id"] = None
+
+        st.session_state.pop("council_rescue_buffer", None)
+        st.session_state.pop("council_pending_action", None)
+        st.session_state.pop("council_sending", None)
+        st.session_state.pop("council_rescue_running", None)
+
+        self._save_log_to_session()
+        self._ensure_round0_initialized()
+
+    def get_log(self) -> List[Dict[str, str]]:
+        return list(self.conversation_log)
+
+    def get_status(self) -> Dict[str, Any]:
+        round_ = len(self.conversation_log) + 1
+        world = self._get_world_snapshot()
+        locs = world.get("locations", {}) if isinstance(world.get("locations", {}), dict) else {}
+        t = world.get("time", {}) if isinstance(world.get("time", {}), dict) else {}
+
+        return {
+            "round": round_,
+            "speaker": "player",
+            "mode": self.state.get("mode", "ongoing"),
+            "participants": self.state.get("participants", ["player", self.partner_role]),
+            "last_speaker": self.state.get("last_speaker"),
+            "special_available": self.state.get("special_available", False),
+            "world": {
+                "player_location": locs.get("player"),
+                # 互換：元々 floria 固定だった名残り
+                "floria_location": locs.get("floria") or locs.get(self.partner_role),
+                "time_slot": t.get("slot"),
+                "time_str": t.get("time_str"),
+            },
+        }
 
     def proceed(self, user_text: str) -> str:
         self._append_log("player", user_text)
 
         reply = ""
         actor = self.actors.get(self.partner_role)
-        if actor:
+        if actor is not None:
             try:
                 reply = actor.speak(self.conversation_log)
             except Exception as e:
+                # 例外でUIが固まらないように吸収＋可視化
                 st.error("[Council] Actor.speak failed")
                 st.exception(e)
-                reply = "……ごめん。今、一瞬だけ考えが途切れたみたい。もう一度話してくれる？"
+                reply = "……ごめん。今、一瞬だけ考えが途切れたみたい。もう一度、ゆっくり言ってくれる？"
 
             self._append_log(self.partner_role, reply)
 
         return reply
 
-    # -------------------------------------------------
+    # ------------------------------------------------------
+    # 救済アクション
+    # ------------------------------------------------------
+    def build_rescue_text(self, kind: str) -> str:
+        world_state = self._build_narrator_world_state()
+        partner_state = {"mood": "slightly_nervous"}
 
+        try:
+            if kind == "wait":
+                choice = self.narrator.make_wait_choice(world_state, partner_state)
+                return choice.speak_text or ""
+
+            if kind == "look_person":
+                choice = self.narrator.make_look_person_choice(
+                    actor_name=getattr(self.partner, "name", "相手"),
+                    world_state=world_state,
+                    floria_state=partner_state,
+                )
+                return choice.speak_text or ""
+
+            if kind == "scan_area":
+                choice = self.narrator.make_scan_area_choice(
+                    location_name=world_state["location_name"],
+                    world_state=world_state,
+                    floria_state=partner_state,
+                )
+                return choice.speak_text or ""
+
+            if kind == "special":
+                special_id = self.state.get("special_id") or "unknown_special"
+                _, choice = self.narrator.make_special_title_and_choice(
+                    special_id,
+                    world_state=world_state,
+                    floria_state=partner_state,
+                )
+                return choice.speak_text or ""
+
+        except Exception as e:
+            st.error("[Council] Rescue action failed")
+            st.exception(e)
+
+        return ""
+
+    # ------------------------------------------------------
+    # UI
+    # ------------------------------------------------------
     def render(self) -> None:
-        if "council_sending" not in st.session_state:
-            st.session_state["council_sending"] = False
+        # フラグ初期化
+        st.session_state.setdefault("council_sending", False)
+        st.session_state.setdefault("council_pending_action", None)
+        st.session_state.setdefault("council_rescue_running", False)
 
-        sending = st.session_state["council_sending"]
+        sending: bool = bool(st.session_state.get("council_sending", False))
 
-        st.markdown("## 🗣️ 会談システム")
+        log = self.get_log()
+        status = self.get_status()
+        world_info = status.get("world", {}) or {}
 
-        for entry in self.conversation_log:
-            st.markdown(f"**{entry['role']}**")
-            st.markdown(entry["content"], unsafe_allow_html=True)
+        # 表示名（英語 role を出さない）
+        player_name = str(st.session_state.get("player_name") or "アツシ")
+        partner_name = getattr(self.partner, "name", self.partner_role)
 
-        user_text = st.text_area("あなたの発言")
+        def role_to_label(role: str) -> str:
+            if role == "player":
+                return player_name
+            if role == "narrator":
+                return "ナレーション"
+            if role == self.partner_role:
+                return partner_name
+            # ここに英語が残っても「内部role」扱いで丸出しにしない
+            return "？？？"
 
-        if st.button("送信", disabled=sending):
-            if not user_text.strip():
+        st.markdown("## 🗣️ 会談システム（Council Prototype）")
+
+        # 右上リセット
+        col_left, col_right = st.columns([3, 1])
+        with col_right:
+            if st.button("🔁 リセット", key="council_reset"):
+                self.reset()
+                st.success("会談をリセットしました。")
+                st.rerun()
+
+        # ---- ログ表示
+        st.markdown("### 会談ログ")
+        if not log:
+            st.caption("（まだ会談は始まっていません。何か話しかけてみましょう）")
+        else:
+            for idx, entry in enumerate(log, start=1):
+                role = entry.get("role", "")
+                text = entry.get("content", "")
+                name = role_to_label(role)
+
+                st.markdown(f"**[{idx}] {name}**")
+                st.markdown(text, unsafe_allow_html=True)
+                st.markdown("---")
+
+        # ---- サイドバー：ステータス
+        with st.sidebar.expander("📊 会談ステータス", expanded=True):
+            st.write(f"ラウンド: {status.get('round')}")
+            st.write(f"話者: {role_to_label(status.get('speaker') or 'player')}")
+            st.write(f"モード: {status.get('mode')}")
+            participants = status.get("participants") or []
+            if participants:
+                st.write("参加者: " + " / ".join(role_to_label(p) for p in participants))
+            last = status.get("last_speaker")
+            if last:
+                st.write(f"最後の話者: {role_to_label(last)}")
+            st.write(f"スペシャル選択可: {status.get('special_available')}")
+
+            st.markdown("---")
+            st.write("**現在の世界情報**")
+            st.write(f"プレイヤー位置: {world_info.get('player_location')}")
+            st.write(f"相手位置: {world_info.get('floria_location')}")
+            st.write(f"時間帯: {world_info.get('time_slot')}")
+            st.write(f"時刻: {world_info.get('time_str')}")
+
+        # ---- プレイヤー入力
+        st.markdown("### あなたの発言")
+
+        round_no = int(status.get("round") or 1)
+        input_key = f"council_user_input_r{round_no}"
+
+        # 救済テキストを入力欄へ注入
+        buffer = st.session_state.get("council_rescue_buffer")
+        if isinstance(buffer, dict) and buffer.get("round") == round_no:
+            st.session_state[input_key] = buffer.get("text", "")
+            st.session_state["council_rescue_buffer"] = None
+
+        user_text = st.text_area(
+            "あなたの発言：",
+            key=input_key,
+            placeholder=f"ここに{partner_name}への発言を書いてください。",
+        )
+
+        # ---- ボタン群（救済復活）
+        send_col, wait_col, look_col, scan_col, special_col = st.columns([1, 1, 1, 1, 1])
+
+        with send_col:
+            send_clicked = st.button("送信", key="council_send", disabled=sending)
+
+        with wait_col:
+            wait_clicked = st.button("何もしない", key="council_wait", disabled=sending)
+
+        with look_col:
+            look_clicked = st.button("相手の様子を伺う", key="council_look", disabled=sending)
+
+        with scan_col:
+            scan_clicked = st.button("周りの様子を見る", key="council_scan", disabled=sending)
+
+        with special_col:
+            special_clicked = st.button("スペシャル", key="council_special", disabled=sending)
+
+        # ---- 送信処理（固まり防止：try/finally）
+        if send_clicked:
+            cleaned = (user_text or "").strip()
+            if not cleaned:
                 st.warning("発言を入力してください。")
             else:
-                st.session_state["council_sending"] = True
-                try:
-                    with st.spinner("考えています…"):
-                        self.proceed(user_text.strip())
-                except Exception as e:
-                    st.error("会話処理中にエラーが発生しました")
-                    st.exception(e)
-                finally:
-                    st.session_state["council_sending"] = False
+                if st.session_state["council_sending"]:
+                    st.info("いま処理中です。少し待ってから再度お試しください。")
+                else:
+                    st.session_state["council_sending"] = True
+                    try:
+                        with st.spinner(f"{partner_name}は少し考えています…"):
+                            self.proceed(cleaned)
+                    except Exception as e:
+                        st.error("会話処理中にエラーが発生しました")
+                        st.exception(e)
+                    finally:
+                        st.session_state["council_sending"] = False
+                    st.rerun()
+
+        # ---- 救済アクションの予約
+        if wait_clicked:
+            st.session_state["council_pending_action"] = "wait"
+            st.rerun()
+        if look_clicked:
+            st.session_state["council_pending_action"] = "look_person"
+            st.rerun()
+        if scan_clicked:
+            st.session_state["council_pending_action"] = "scan_area"
+            st.rerun()
+        if special_clicked:
+            if not self.state.get("special_available", False):
+                st.info("ここでスペシャルは選択できません。")
+            else:
+                st.session_state["council_pending_action"] = "special"
+                st.rerun()
+
+        # ---- 実行確認UI
+        pending = st.session_state.get("council_pending_action")
+        if pending:
+            if pending == "wait":
+                msg = "このターンは何も行動せず、様子を見ます。よろしいですか？"
+            elif pending == "look_person":
+                msg = f"{partner_name}の様子をうかがいます。よろしいですか？"
+            elif pending == "scan_area":
+                msg = "周囲の様子を見回します。よろしいですか？"
+            elif pending == "special":
+                msg = "スペシャルアクションを実行します。よろしいですか？"
+            else:
+                msg = "この行動を実行します。よろしいですか？"
+
+            st.markdown("---")
+            st.warning(msg)
+
+            col_ok, col_cancel = st.columns(2)
+            with col_ok:
+                ok_clicked = st.button("実行する", key="council_rescue_ok")
+            with col_cancel:
+                cancel_clicked = st.button("キャンセル", key="council_rescue_cancel")
+
+            if ok_clicked:
+                if st.session_state["council_rescue_running"]:
+                    st.info("救済アクションを処理中です。少し待ってください。")
+                else:
+                    st.session_state["council_rescue_running"] = True
+                    try:
+                        with st.spinner("ナレーション案を考えています…"):
+                            text = self.build_rescue_text(str(pending))
+                        st.session_state["council_rescue_buffer"] = {
+                            "round": round_no,
+                            "text": text,
+                        }
+                    except Exception as e:
+                        st.error("救済アクション中にエラーが発生しました")
+                        st.exception(e)
+                    finally:
+                        st.session_state["council_rescue_running"] = False
+                        st.session_state["council_pending_action"] = None
+                    st.rerun()
+
+            if cancel_clicked:
+                st.session_state["council_pending_action"] = None
                 st.rerun()
