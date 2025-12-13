@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import os
-
-import streamlit as st  # ← 追加（secrets / session_state を見るため）
 
 # 新LLM中枢
 from llm2.llm_ai import LLMAI
@@ -18,24 +16,6 @@ from llm2.llm_ai.llm_registers.register_hermes_new import register_hermes_new
 from llm2.llm_ai.llm_registers.register_llama_unc import register_llama_unc
 
 
-def _flag_enabled(key: str, default: bool = False) -> bool:
-    """
-    環境変数 or streamlit.secrets で Feature Flag を読む。
-    - "1"/"true"/"yes"/"on" を True 扱い
-    """
-    v = os.getenv(key)
-    if v is None:
-        try:
-            if isinstance(st.secrets, dict):
-                v = st.secrets.get(key)  # type: ignore[assignment]
-        except Exception:
-            v = None
-    if v is None:
-        return default
-    s = str(v).strip().lower()
-    return s in ("1", "true", "yes", "on")
-
-
 class LLMManager:
     """
     互換レイヤ。
@@ -46,6 +26,9 @@ class LLMManager:
 
     _POOL: Dict[str, "LLMManager"] = {}
 
+    # ===========================================================
+    # singleton
+    # ===========================================================
     @classmethod
     def get_or_create(cls, persona_id: str = "default") -> "LLMManager":
         if persona_id in cls._POOL:
@@ -55,6 +38,9 @@ class LLMManager:
         cls._POOL[persona_id] = mgr
         return mgr
 
+    # ===========================================================
+    # init
+    # ===========================================================
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
 
@@ -66,19 +52,12 @@ class LLMManager:
         register_gpt4o(self._llm_ai)
         register_grok(self._llm_ai)
         register_gemini(self._llm_ai)
-        register_llama_unc(self._llm_ai)
 
-        # =========================================================
-        # Hermes は「明示的に有効化された時だけ」登録する
-        # （ここが“勝手に復活”の元凶だった）
-        # =========================================================
-        enable_hermes_old = _flag_enabled("LYRA_ENABLE_HERMES_OLD", default=False)
-        enable_hermes_new = _flag_enabled("LYRA_ENABLE_HERMES_NEW", default=False)
-
-        if enable_hermes_old:
+        # --- OpenRouter 系は APIキーがある時だけ登録（復活事故を防ぐ） ---
+        if os.getenv("OPENROUTER_API_KEY", ""):
             register_hermes_old(self._llm_ai)
-        if enable_hermes_new:
             register_hermes_new(self._llm_ai)
+            register_llama_unc(self._llm_ai)
 
     # ===========================================================
     # 互換API
@@ -89,6 +68,13 @@ class LLMManager:
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Any:
+        """
+        旧 AnswerTalker / ModelsAI2 用。
+
+        戻り値形式は adapter に依存：
+        - (text, usage) tuple
+        - str
+        """
         return self._llm_ai.call(
             model_name=model_name,
             messages=messages,
@@ -101,13 +87,18 @@ class LLMManager:
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Tuple[str, Dict[str, Any]]:
+        """
+        ComposerAI / Refiner 用ラッパ。
+        """
         result = self.call_model(model, messages, **kwargs)
 
+        # tuple (text, usage)
         if isinstance(result, tuple) and len(result) >= 1:
             text = str(result[0] or "")
-            usage = result[1] if len(result) >= 2 and saysinstance(result[1], dict) else {}
+            usage = result[1] if len(result) >= 2 and isinstance(result[1], dict) else {}
             return text, usage
 
+        # dict
         if isinstance(result, dict):
             text = str(
                 result.get("text")
@@ -118,11 +109,19 @@ class LLMManager:
             usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
             return text, usage
 
+        # fallback
         return str(result or ""), {}
 
+    # OpenAI 互換エイリアス
     chat = chat_completion
 
+    # ===========================================================
+    # 情報取得系（ModelsAI2 用）
+    # ===========================================================
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
+        """
+        ModelsAI2 が参照するモデル一覧。
+        """
         return self._llm_ai.get_model_props()
 
     def get_models_sorted(self) -> Dict[str, Dict[str, Any]]:
