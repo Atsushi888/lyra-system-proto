@@ -17,7 +17,7 @@ from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
 from actors.init_ai import InitAI
-from llm.llm_manager import LLMManager, get_or_create
+from llm.llm_manager import LLMManager
 
 LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
 
