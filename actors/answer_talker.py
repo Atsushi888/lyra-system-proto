@@ -16,7 +16,7 @@ from actors.persona_ai import PersonaAI
 from actors.scene_ai import SceneAI
 from actors.mixer_ai import MixerAI
 from llm.llm_manager import LLMManager
-from llm.llm_manager_factory import get_llm_manager
+# from llm.llm_manager_factory import get_llm_manager
 from actors.utils.debug_world_state import WorldStateDebugger  # 🔍 追加
 
 # ★ 追加：InitAI（セッション初期化の一本化）
