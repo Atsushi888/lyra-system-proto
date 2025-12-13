@@ -51,9 +51,13 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         for k in ("mode", "judge_mode"):
             kwargs.pop(k, None)
 
-        # gpt-5.1 系だけは reasoning を弱めに
-        if self.name == "gpt51" and "reasoning" not in kwargs:
-            kwargs["reasoning"] = {"effort": "low"}
+        # --------------------------------------------------
+        # 重要:
+        #   chat.completions.create は環境(=SDK/エンドポイント)によって
+        #   reasoning= を受け付けず TypeError で落ちる。
+        #   互換性最優先で、reasoning はデフォルトで送らない。
+        # --------------------------------------------------
+        kwargs.pop("reasoning", None)
 
         # TARGET_TOKENS があり、かつ明示指定が無ければ適用
         if (
@@ -101,6 +105,34 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                     continue
 
                 return text, usage
+
+            except TypeError as e:
+                # 保険: どこか別経路で reasoning が紛れ込んでも即死させない
+                msg = str(e)
+                if "unexpected keyword argument" in msg and "reasoning" in msg:
+                    logger.warning(
+                        "%s: reasoning kw not supported here; dropping and retrying once",
+                        self.name,
+                    )
+                    kwargs.pop("reasoning", None)
+                    try:
+                        completion = self._client.chat.completions.create(
+                            model=self.model_id,
+                            messages=messages,
+                            **kwargs,
+                        )
+                        text, usage = split_text_and_usage_from_openai_completion(completion)
+                        return text, usage
+                    except Exception as e2:
+                        last_exc = e2
+                        logger.exception(
+                            "%s: OpenAI call failed after dropping reasoning", self.name
+                        )
+                else:
+                    last_exc = e
+                    logger.exception(
+                        "%s: OpenAI call failed (attempt=%s)", self.name, attempt + 1
+                    )
 
             except Exception as e:
                 last_exc = e
