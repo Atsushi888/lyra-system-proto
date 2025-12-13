@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Tuple, Optional
 class LLMManager:
     ...
 
+    _POOL: Dict[str, "LLMManager"] = {}
+
     # ===========================================================
     # singleton
     # ===========================================================
