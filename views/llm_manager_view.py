@@ -20,7 +20,7 @@ class LLMManagerView:
 
     def __init__(self) -> None:
         # グローバルな LLMManager を共有して利用
-        self.manager = llmget_llm_manager()
+        self.manager = LLMManager.get_or_create()
 
     # ------------------------------------------------------------------
     def render(self) -> None:
