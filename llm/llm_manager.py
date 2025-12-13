@@ -3,6 +3,19 @@ from typing import Any, Dict, List, Tuple, Optional
 class LLMManager:
     ...
 
+    # ===========================================================
+    # singleton
+    # ===========================================================
+    @classmethod
+    def get_or_create(cls, persona_id: str = "default") -> "LLMManager":
+        if persona_id in cls._POOL:
+            return cls._POOL[persona_id]
+
+        mgr = cls(persona_id=persona_id)
+        cls._POOL[persona_id] = mgr
+        return mgr
+
+    
     def call_model(
         self,
         model_name: str,
