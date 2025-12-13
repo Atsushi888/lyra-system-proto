@@ -16,25 +16,26 @@ class GrokAdapter(BaseLLMAdapter):
     """
     xAI Grok 用アダプタ。
 
-    変更点:
-    - endpoint を環境変数で差し替え可能にする（Streamlit Cloudでも運用しやすい）
-    - 404 のときだけ「末尾スラッシュ有り」も試す（xAI側のルーティング差異対策）
+    docs.x.ai の curl と同じ:
+      POST https://api.x.ai/v1/chat/completions
+      Authorization: Bearer $XAI_API_KEY
+      model: grok-4 (など)
     """
 
     def __init__(
         self,
         *,
         name: str = "grok",
-        model_id: str = "grok-2-latest",
-        env_key: str = "GROK_API_KEY",
-        endpoint_env: str = "GROK_API_ENDPOINT",
+        model_id: str = "grok-4",
+        # 公式は XAI_API_KEY。互換で GROK_API_KEY も読む
+        env_key_primary: str = "XAI_API_KEY",
+        env_key_fallback: str = "GROK_API_KEY",
     ) -> None:
         self.name = name
         self.model_id = model_id
 
-        # デフォルトは従来のまま。必要なら env で差し替え。
-        self._endpoint = os.getenv(endpoint_env, "https://api.x.ai/v1/chat/completions").strip()
-        self._api_key = os.getenv(env_key, "")
+        self._endpoint = "https://api.x.ai/v1/chat/completions"
+        self._api_key = os.getenv(env_key_primary, "") or os.getenv(env_key_fallback, "")
 
         self.TARGET_TOKENS = 480
 
@@ -44,7 +45,7 @@ class GrokAdapter(BaseLLMAdapter):
         **kwargs: Any,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
         if not self._api_key:
-            raise RuntimeError("GROK_API_KEY が設定されていません。")
+            raise RuntimeError("XAI_API_KEY (or GROK_API_KEY) が設定されていません。")
 
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -61,26 +62,15 @@ class GrokAdapter(BaseLLMAdapter):
 
         payload.update(kwargs)
 
-        def _post(url: str) -> requests.Response:
-            return requests.post(
-                url,
+        try:
+            resp = requests.post(
+                self._endpoint,
                 headers=headers,
                 json=payload,
                 timeout=60,
             )
-
-        try:
-            resp = _post(self._endpoint)
-
-            # ✅ 404 のときだけ「末尾スラッシュ」を試す（同一パスでも実際に差が出る環境がある）
-            if resp.status_code == 404:
-                alt = (self._endpoint.rstrip("/") + "/")
-                if alt != self._endpoint:
-                    resp = _post(alt)
-
             resp.raise_for_status()
             data = resp.json()
-
         except Exception as e:
             logger.exception("%s: Grok call failed", self.name)
             raise RuntimeError(f"{self.name}: Grok call failed: {e}")
