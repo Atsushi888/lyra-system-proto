@@ -23,30 +23,30 @@ from llm2.llm_ai.llm_registers.register_hermes_new import register_hermes_new
 from llm2.llm_ai.llm_registers.register_llama_unc import register_llama_unc
 
 
-def _has_key(env_key: str) -> bool:
-    """
-    環境変数 or streamlit.secrets のどちらかに key が入っていれば True。
-    """
-    if not env_key:
+def _env_has(key: str) -> bool:
+    if os.getenv(key):
         return True
-    if os.getenv(env_key, ""):
-        return True
-    if _HAS_ST and isinstance(getattr(st, "secrets", None), dict) and st.secrets.get(env_key):
+    if _HAS_ST and isinstance(getattr(st, "secrets", None), dict) and st.secrets.get(key):
         return True
     return False
 
 
-def _env_flag(name: str, default: str = "") -> str:
+def _env_flag_true(key: str, default: bool = False) -> bool:
     """
-    env or secrets からフラグ文字列を取る（secrets 優先）。
+    例:
+      LYRASYSTEM_ENABLE_HERMES=1 / true / yes / on で True
+      未設定なら default
     """
-    if _HAS_ST and isinstance(getattr(st, "secrets", None), dict) and st.secrets.get(name):
-        return str(st.secrets.get(name) or "")
-    return os.getenv(name, default)
-
-
-def _flag_true(s: str) -> bool:
-    return str(s).strip().lower() in ("1", "true", "yes", "on", "enable", "enabled")
+    v = os.getenv(key)
+    if v is None:
+        if _HAS_ST and isinstance(getattr(st, "secrets", None), dict):
+            sv = st.secrets.get(key)
+            if sv is None:
+                return default
+            v = str(sv)
+        else:
+            return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 class LLMManager:
@@ -56,10 +56,16 @@ class LLMManager:
     - 旧来の LLMManager API を維持
     - 実体は llm2.llm_ai.LLMAI に委譲
 
-    方針：
-    - “見せたくない/眠らせたいモデル” は **登録自体をしない**
-      （enabled=False で残すのではなく、UIにも出さない）
-    - 有効化は環境変数（or secrets）で制御する
+    ★重要ポリシー（要望反映）
+    - 「環境変数があるモデルだけ登録（=復活）する」
+      -> APIキーが無ければ register 自体をしない（UIにも出ない）
+    - 例外的に強制ON/OFFしたい時はフラグで制御
+      LYRASYSTEM_ENABLE_OPENAI=1/0
+      LYRASYSTEM_ENABLE_XAI=1/0
+      LYRASYSTEM_ENABLE_GEMINI=1/0
+      LYRASYSTEM_ENABLE_OPENROUTER=1/0
+      LYRASYSTEM_ENABLE_HERMES=1/0
+      LYRASYSTEM_ENABLE_LLAMA_UNC=1/0
     """
 
     _POOL: Dict[str, "LLMManager"] = {}
@@ -71,6 +77,7 @@ class LLMManager:
     def get_or_create(cls, persona_id: str = "default") -> "LLMManager":
         if persona_id in cls._POOL:
             return cls._POOL[persona_id]
+
         mgr = cls(persona_id=persona_id)
         cls._POOL[persona_id] = mgr
         return mgr
@@ -80,75 +87,38 @@ class LLMManager:
     # ===========================================================
     def __init__(self, persona_id: str = "default") -> None:
         self.persona_id = persona_id
+
+        # 新中枢
         self._llm_ai = LLMAI(persona_id=persona_id)
 
-        # =======================================================
-        # まず “主要どころ” を登録（Hermes は条件付き）
-        # =======================================================
-        register_gpt51(self._llm_ai)
-        register_gpt4o(self._llm_ai)
-        register_grok(self._llm_ai)
-        register_gemini(self._llm_ai)
-        register_llama_unc(self._llm_ai)
+        # ---- Provider 有効判定（キー or 明示フラグ）----
+        enable_openai = _env_flag_true("LYRASYSTEM_ENABLE_OPENAI", default=True) and _env_has("OPENAI_API_KEY")
+        enable_xai = _env_flag_true("LYRASYSTEM_ENABLE_XAI", default=True) and _env_has("GROK_API_KEY")
+        enable_gemini = _env_flag_true("LYRASYSTEM_ENABLE_GEMINI", default=True) and _env_has("GEMINI_API_KEY")
 
-        # =======================================================
-        # Hermes は「復活」を防ぐため、明示フラグが無い限り登録しない
-        #
-        # 使うときだけ:
-        #   LYRA_ENABLE_HERMES=1 かつ OPENROUTER_API_KEY が存在
-        # =======================================================
-        enable_hermes = _flag_true(_env_flag("LYRA_ENABLE_HERMES", "0"))
-        if enable_hermes and _has_key("OPENROUTER_API_KEY"):
+        enable_openrouter = _env_flag_true("LYRASYSTEM_ENABLE_OPENROUTER", default=False) and _env_has("OPENROUTER_API_KEY")
+        enable_hermes = _env_flag_true("LYRASYSTEM_ENABLE_HERMES", default=False)
+        enable_llama_unc = _env_flag_true("LYRASYSTEM_ENABLE_LLAMA_UNC", default=False)
+
+        # --- 標準モデル登録（キーがあるものだけ登録） ---
+        if enable_openai:
+            register_gpt51(self._llm_ai)
+            register_gpt4o(self._llm_ai)
+
+        if enable_xai:
+            register_grok(self._llm_ai)
+
+        if enable_gemini:
+            register_gemini(self._llm_ai)
+
+        # OpenRouter 系は「OPENROUTER_API_KEY がある」かつ「個別に許可」した場合のみ登録
+        # ※ これで Hermes が勝手に復活しない（キーが無い/フラグOFFならレジストリに載らない）
+        if enable_openrouter and enable_hermes:
             register_hermes_old(self._llm_ai)
             register_hermes_new(self._llm_ai)
 
-        # =======================================================
-        # “キー無しモデルの参加” をここで抑止（登録はしてるが、無効化）
-        # ※ UIには出るけど、呼ばれない。UIからも消したければ登録しない方針へ。
-        # =======================================================
-        self._apply_key_gates()
-
-        # =======================================================
-        # gpt51 の “reasoning” 事故を踏む環境向けの安全策
-        # （openai SDK が古いと Completions.create が reasoning を受けず死ぬ）
-        #
-        # - 登録は維持しつつ、デフォルト params に reasoning が混ざっていたら除去
-        # =======================================================
-        self._strip_gpt51_reasoning_param()
-
-    # ===========================================================
-    # 内部: キー有無で enabled を落とす
-    # ===========================================================
-    def _apply_key_gates(self) -> None:
-        props = self._llm_ai.get_model_props()
-        enabled_map: Dict[str, bool] = {}
-
-        for name, p in props.items():
-            extra = p.get("extra") or {}
-            env_key = str(extra.get("env_key") or "")
-            if env_key and not _has_key(env_key):
-                enabled_map[name] = False
-
-        if enabled_map:
-            self._llm_ai.set_enabled_models(enabled_map)
-
-    # ===========================================================
-    # 内部: gpt51 の reasoning をデフォルトから除去（SDK差異対策）
-    # ===========================================================
-    def _strip_gpt51_reasoning_param(self) -> None:
-        try:
-            # LLMAI の内部構造に触る（安全策。存在しない/構造違いなら握り潰す）
-            models = getattr(self._llm_ai, "_models", None)
-            if not isinstance(models, dict):
-                return
-            cfg = models.get("gpt51")
-            if cfg is None:
-                return
-            params = getattr(cfg, "params", None)
-            if isinstance(params, dict) and "reasoning" in params:
-                params.pop("reasoning", None)
-        except Exception:
-            pass
+        if enable_openrouter and enable_llama_unc:
+            register_llama_unc(self._llm_ai)
 
     # ===========================================================
     # 互換API
@@ -166,6 +136,13 @@ class LLMManager:
         - (text, usage) tuple
         - str
         """
+
+        # ---- 安全弁：OpenAI ChatCompletions に渡すと落ちる引数を除去 ----
+        # いま出ている: Completions/ChatCompletions.create() got unexpected keyword argument 'reasoning'
+        # -> ここで剥がす（gpt51 だけでなく openai 系全体の事故防止）
+        if model_name in ("gpt51", "gpt4o"):
+            kwargs.pop("reasoning", None)
+
         return self._llm_ai.call(
             model_name=model_name,
             messages=messages,
@@ -210,6 +187,9 @@ class LLMManager:
     # 情報取得系（ModelsAI2 用）
     # ===========================================================
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
+        """
+        ModelsAI2 が参照するモデル一覧。
+        """
         return self._llm_ai.get_model_props()
 
     def get_models_sorted(self) -> Dict[str, Dict[str, Any]]:
