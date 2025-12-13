@@ -1,4 +1,3 @@
-# actors/models_ai2.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -102,8 +101,6 @@ class ModelsAI2:
 
         for model_name in self.enabled_models:
             try:
-                # ここでは「回して集める」だけ。
-                # 温度/トークン等は LLM 側（LLMAI/Registry）に集約済み前提。
                 completion: CompletionType = self.llm_manager.chat(
                     model=model_name,
                     messages=messages,
