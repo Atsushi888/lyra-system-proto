@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
 from llm.llm_manager import LLMManager
-from llm.llm_manager_factory import get_llm_manager
+# from llm.llm_manager_factory import get_llm_manager
 from actors.models_ai2 import ModelsAI2
 from actors.judge_ai3 import JudgeAI3
 
@@ -49,7 +49,7 @@ class NarratorManager:
         # state は任意（Streamlit の session_state を渡してもよい）
         self.state: Dict[str, Any] = state if state is not None else {}
 
-        self.llm_manager = llm_manager or get_llm_manager(persona_id)
+        self.llm_manager = llm_manager or LLMManager.get_or_create(person_id = persona_id)
         self.models_ai = ModelsAI2(llm_manager=self.llm_manager)
         self.judge_ai = JudgeAI3(mode="normal")
 
