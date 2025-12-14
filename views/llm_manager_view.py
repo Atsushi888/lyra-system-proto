@@ -5,8 +5,8 @@ from typing import Dict, Any
 
 import streamlit as st
 
-from llm.llm_manager_factory import get_llm_manager
-
+# from llm.llm_manager_factory import get_llm_manager
+from llm.11m_manager import get_or_create
 
 class LLMManagerView:
     """
@@ -20,7 +20,7 @@ class LLMManagerView:
 
     def __init__(self) -> None:
         # グローバルな LLMManager を共有して利用
-        self.manager = get_llm_manager()
+        self.manager = get_or_create()
 
     # ------------------------------------------------------------------
     def render(self) -> None:
