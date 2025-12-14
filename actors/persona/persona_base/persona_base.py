@@ -51,6 +51,29 @@ class PersonaBase:
         self.system_prompt: str = self.system_prompt_base
 
     # --------------------------------------------------
+    # Streamlit(llm_meta) への保険書き込み
+    # --------------------------------------------------
+    def _try_set_llm_meta(self, key: str, value: Any) -> None:
+        """
+        Persona 側から st.session_state["llm_meta"] を安全に更新するためのヘルパ。
+        Streamlit 非依存で動かしたい場面もあるため、import は try する。
+        """
+        try:
+            import streamlit as st  # type: ignore
+        except Exception:
+            return
+
+        try:
+            meta = st.session_state.get("llm_meta")
+            if not isinstance(meta, dict):
+                meta = {}
+                st.session_state["llm_meta"] = meta
+            meta[key] = value
+        except Exception:
+            # ここで例外を出すと会話全体が崩れるので絶対落とさない
+            return
+
+    # --------------------------------------------------
     # JSON ロード
     # --------------------------------------------------
     def _load_json(self) -> Dict[str, Any]:
@@ -184,6 +207,10 @@ class PersonaBase:
                 system_parts.append(ah)
 
         system_text = "\n\n".join(system_parts)
+
+        # ★最小修正：ここで「少なくともこのsystemは使った」を必ず残す
+        # AnswerTalker側が保存し忘れても View で表示できる
+        self._try_set_llm_meta("system_prompt_used", system_text)
 
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": system_text},
@@ -403,13 +430,18 @@ class PersonaBase:
             build_emotion_based_system_prompt_core,
         )
 
-        return build_emotion_based_system_prompt_core(
+        sp = build_emotion_based_system_prompt_core(
             persona=self,
             base_system_prompt=base_system_prompt,
             emotion_override=emotion_override,
             mode_current=mode_current,
             length_mode=length_mode,
         )
+
+        # ★最小修正：最終的に使う system_prompt を必ず残す（View に出すため）
+        self._try_set_llm_meta("system_prompt_used", sp)
+
+        return sp
 
     def replace_system_prompt(
         self,
