@@ -70,6 +70,15 @@ class AnswerTalker:
         user_text: str = "",
         judge_mode: Optional[str] = None,
     ) -> str:
+
+        if LYRA_DEBUG:
+            st.write(
+                "[DEBUG] system_prompt_used exists:",
+                "system_prompt_used" in self.llm_meta,
+                type(self.llm_meta.get("system_prompt_used")),
+                len(self.llm_meta.get("system_prompt_used") or "")
+            )
+
         if not messages:
             return ""
 
