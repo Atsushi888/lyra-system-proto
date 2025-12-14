@@ -98,7 +98,7 @@ class AnswerTalkerView:
         st.info(
             "この画面では、Actor に紐づく AnswerTalker が保持している llm_meta の内容 "
             "（system_prompt / emotion_override / models / judge / composer / emotion / memory）を参照できます。\n\n"
-            "※ この画面からは AnswerTalker.run_models() や MemoryAI.update_from_turn() などは実行しません。"
+            "※ この画面からは AnswerTalker.speak() や MemoryAI.update_from_turn() などは実行しません。"
         )
 
         llm_meta: Dict[str, Any] = st.session_state.get("llm_meta", {}) or {}
