@@ -1,7 +1,7 @@
 # views/answertalker_view.py
 from __future__ import annotations
 
-from typing import Any, Dict, MutableMapping, Optional, Protocol
+from typing import Any, Dict, MutableMapping, Optional
 
 import os
 import json
@@ -21,9 +21,50 @@ class AnswerTalkerView:
     """
     AnswerTalker / ModelsAI / JudgeAI3 / ComposerAI / MemoryAI の
     デバッグ・閲覧用ビュー。
+
+    注意：
+    - このビューは「閲覧専用」。
+    - AnswerTalker は InitAI 経由で session_state を補修/初期化しうるため、
+      ここから st.session_state を AnswerTalker に渡すと
+      “見るだけのつもりが状態を書き換える” 副作用が起きる。
+    - したがって AnswerTalker にはローカル state を渡し、
+      st.session_state の llm_meta を安全に閲覧する。
     """
 
     TITLE = "🧩 AnswerTalker（AI統合テスト）"
+
+    @staticmethod
+    def _render_any_as_textarea(label: str, value: Any, height: int = 220) -> None:
+        """
+        llm_meta は過渡的に型が変わることがある。
+        - str: text_area
+        - dict/list: pretty json を text_area
+        - その他: str() を text_area
+        """
+        if isinstance(value, str):
+            st.text_area(
+                label,
+                value=value,
+                height=height,
+                label_visibility="collapsed",
+            )
+            return
+
+        if isinstance(value, (dict, list)):
+            st.text_area(
+                label,
+                value=json.dumps(value, ensure_ascii=False, indent=2),
+                height=height,
+                label_visibility="collapsed",
+            )
+            return
+
+        st.text_area(
+            label,
+            value="" if value is None else str(value),
+            height=height,
+            label_visibility="collapsed",
+        )
 
     def __init__(self) -> None:
         # --- プレイヤー名（UserSettings 由来）を取得 ---
@@ -34,14 +75,13 @@ class AnswerTalkerView:
         persona = Persona(player_name=player_name)
         self.actor = Actor("floria", persona)
 
-        # ★ Streamlit の state を AnswerTalker に明示的に渡す
-        #   これにより、AnswerTalker 内部とビューの両方で
-        #   st.session_state["llm_meta"] などを共有できる。
-        state: Optional[MutableMapping[str, Any]] = st.session_state if LYRA_DEBUG else None
+        # ★重要：閲覧専用ビューなので session_state を AnswerTalker に渡さない
+        #   → AnswerTalker 生成による session_state への副作用を遮断する
+        local_state: MutableMapping[str, Any] = {}
 
         self.answer_talker = AnswerTalker(
             persona,
-            state=state,
+            state=local_state,
         )
 
     def render(self) -> None:
@@ -65,16 +105,17 @@ class AnswerTalkerView:
 
         # ---- 今回使用された system_prompt ----
         st.subheader("今回使用された system_prompt（affection / ドキドキ💓反映後）")
-        sys_used = llm_meta.get("system_prompt_used") or ""
-        if not sys_used:
-            st.info("system_prompt_used はまだありません。")
+
+        if "system_prompt_used" not in llm_meta:
+            st.info("system_prompt_used はまだありません。（キー未作成）")
         else:
-            st.text_area(
-                "system_prompt_used",
-                value=sys_used,
-                height=220,
-                label_visibility="collapsed",
+            sys_used = llm_meta.get("system_prompt_used")
+            st.caption(
+                f"system_prompt_used type={type(sys_used).__name__} / "
+                f"len={len(sys_used) if isinstance(sys_used, str) else '(n/a)'}"
             )
+            # 空文字でも「空が入っている」こと自体が重要なので必ず出す
+            self._render_any_as_textarea("system_prompt_used", sys_used, height=220)
 
         # ---- emotion_override ----
         st.subheader("emotion_override（MixerAI → ModelsAI に渡した感情オーバーライド）")
@@ -138,20 +179,20 @@ class AnswerTalkerView:
             raw_candidates = judge.get("candidates") or []
             with st.expander("候補モデル一覧（candidates / scores）", expanded=False):
                 if isinstance(raw_candidates, dict):
-                    for name, info in raw_candidates.items():
-                        score = info.get("score", "-")
-                        preview = (info.get("text") or "")[:800]
-                        st.markdown(f"### {name}  |  score = `{score}`")
+                    for cand_name, cand_info in raw_candidates.items():
+                        score = cand_info.get("score", "-")
+                        preview = (cand_info.get("text") or "")[:800]
+                        st.markdown(f"### {cand_name}  |  score = `{score}`")
                         st.write(preview)
                         st.markdown("---")
                 elif isinstance(raw_candidates, list):
                     for i, cand in enumerate(raw_candidates, start=1):
-                        name = cand.get("name", f"cand-{i}")
+                        cand_name = cand.get("name", f"cand-{i}")
                         score = cand.get("score", "-")
                         length = cand.get("length", 0)
                         preview = (cand.get("text") or "")[:800]
                         st.markdown(
-                            f"### 候補 {i}: `{name}`  |  score = `{score}`  |  length = {length}"
+                            f"### 候補 {i}: `{cand_name}`  |  score = `{score}`  |  length = {length}"
                         )
                         details = cand.get("details") or {}
                         if details:
