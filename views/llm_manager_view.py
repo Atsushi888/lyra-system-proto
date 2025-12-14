@@ -6,7 +6,7 @@ from typing import Dict, Any
 import streamlit as st
 
 # from llm.llm_manager_factory import get_llm_manager
-from llm.11m_manager import get_or_create
+from llm.llm_manager import get_or_create
 
 class LLMManagerView:
     """
