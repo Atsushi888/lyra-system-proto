@@ -1,6 +1,6 @@
 # llm/llm_ai/__init__.py
 """
-llm2.llm_ai
+llm.llm_ai
 
 次世代 LLM 管理レイヤ。
 
