@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from llm2.llm_ai.llm_adapters.gpt51 import GPT51Adapter
+from llm.llm_ai.llm_adapters.gpt51 import GPT51Adapter
 
 
 def register_gpt51(llm_ai: Any) -> None:
