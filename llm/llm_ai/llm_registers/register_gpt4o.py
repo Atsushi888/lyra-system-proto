@@ -1,7 +1,7 @@
-# llm2/llm_ai/llm_registers/register_gpt4o.py
+# llm/llm_ai/llm_registers/register_gpt4o.py
 from __future__ import annotations
 
-from llm2.llm_ai.llm_adapters.gpt4o import GPT4oAdapter
+from llm.llm_ai.llm_adapters.gpt4o import GPT4oAdapter
 
 
 def register_gpt4o(llm_ai: Any) -> None:
