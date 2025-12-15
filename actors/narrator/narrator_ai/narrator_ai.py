@@ -1,18 +1,18 @@
 # actors/narrator/narrator_ai/narrator_ai.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
 
-import os
 import streamlit as st
 
 from actors.narrator.narrator_manager import NarratorManager
 from actors.scene_ai import SceneAI
 from actors.init_ai import InitAI
-from actors.scene.world_context import WorldContext
 from .types import NarrationLine, NarrationChoice
+
+# LLMManager を直接同期できるようにする（manager側に無い場合の保険）
+from llm.llm_manager import LLMManager
 
 
 @dataclass
@@ -41,33 +41,68 @@ class NarratorAI:
         self.partner_name = partner_name
 
     # ============================================================
-    # 内部ヘルパ：初期化保証（InitAI）
+    # 内部ヘルパ：InitAI の初期化保証（現行 init_ai.py に合わせる）
     # ============================================================
     def _ensure_initialized(self) -> None:
         """
-        起動直後（Round0）でも player_name / manual_controls が未定義にならないように、
+        起動直後（Round0）でも player_name / manual_controls / world_state が未定義にならないように、
         InitAI をここでも保険として呼ぶ。
+
+        重要: 旧コードの InitAI.apply(ctx, ...) は現行 init_ai.py に存在しない前提なので使わない。
         """
-        ws = st.session_state.get("world_state")
-        if isinstance(ws, dict) and ws:
-            # 既にあるなら SceneAI 側の補完に任せる（ここで壊さない）
+        try:
+            # st.session_state を Mapping として渡す（InitAI 側が dict write を try してくれている）
+            InitAI.ensure_minimum(state=st.session_state, persona=None, snapshot=None)
+        except Exception:
+            # ここで落として会話全体を壊したくないので握りつぶす
+            pass
+
+    # ============================================================
+    # 内部ヘルパ：AIManager 設定（enabled/priority）を Narrator 側へ同期
+    # ============================================================
+    def _sync_ai_manager_settings(self) -> None:
+        """
+        st.session_state["ai_manager"] の設定を読み、
+        NarratorManager が使う LLMManager に enabled_models を反映する。
+
+        - enabled_models: 提出AIを On/Off
+        - priority: （使えるなら）優先順位も manager 側へ渡す
+        """
+        ai_state = st.session_state.get("ai_manager")
+        if not isinstance(ai_state, dict):
             return
 
-        player_name = str(st.session_state.get("player_name") or "").strip() or "アツシ"
-        partner_name = str(st.session_state.get("partner_name") or "").strip() or self.partner_name
-        home = f"{player_name}の部屋"
+        enabled = ai_state.get("enabled_models")
+        priority = ai_state.get("priority")
 
-        ctx = WorldContext(
-            player_name=player_name,
-            partner_name=partner_name,
-            player_location=home,
-            partner_location=home,
-            time_slot="morning",
-            time_str="07:30",
-            others_present=False,
-            weather="clear",
-        )
-        InitAI.apply(ctx, state=st.session_state)
+        # ---- enabled_models を LLMManager に反映 ----
+        if isinstance(enabled, dict):
+            # 1) manager が llm_manager を持っているならそこへ
+            mgr_llm = getattr(self.manager, "llm_manager", None)
+
+            if mgr_llm is not None and hasattr(mgr_llm, "set_enabled_models"):
+                try:
+                    mgr_llm.set_enabled_models(enabled)
+                except Exception:
+                    pass
+            else:
+                # 2) 無ければ default に反映（最低限「どれを呼ぶか」を揃える）
+                try:
+                    LLMManager.get_or_create("default").set_enabled_models(enabled)
+                except Exception:
+                    pass
+
+        # ---- priority を（可能なら）manager側へ渡す ----
+        if isinstance(priority, list) and priority:
+            # manager 側に優先順位のsetterがあるなら使う（無ければ session_state に残すだけ）
+            if hasattr(self.manager, "set_priority"):
+                try:
+                    self.manager.set_priority([str(x) for x in priority])
+                except Exception:
+                    pass
+
+            # デバッグ/互換のため、セッションにも置いておく（他の層が参照しやすい）
+            st.session_state["narrator_priority"] = [str(x) for x in priority]
 
     # ============================================================
     # 内部ヘルパ：SceneAI から一括でワールド情報を取る
@@ -75,14 +110,9 @@ class NarratorAI:
     def _get_scene_snapshot(self) -> Dict[str, Any]:
         """
         SceneAI 経由で world_state を取得し、Narrator 用の簡易ビューを作る。
-
-        追加フィールド:
-        - "player_name": str
-        - "others_present": bool
-        - "interaction_mode":
-            "pair_private" / "pair_public" / "solo" / "solo_with_others"
         """
         self._ensure_initialized()
+        self._sync_ai_manager_settings()
 
         scene_ai = SceneAI(state=st.session_state)
 
@@ -106,8 +136,6 @@ class NarratorAI:
 
         weather = ws.get("weather", "clear")
 
-        # “プレイヤーの部屋”が残っていたら、プレイヤー名ベースに補正（壊さない範囲で）
-        # ※ InitAI/SceneAI に寄せるが、NarratorAI 側は「見せ方」を揃えるための保険
         default_home = f"{player_name}の部屋"
 
         player_loc = locs.get("player") or default_home
@@ -121,20 +149,17 @@ class NarratorAI:
         # ========= others_present 判定 =========
         others_present: Optional[bool] = None
 
-        # 1) world_state.flags.others_present（互換）
         flags = ws.get("flags")
         if isinstance(flags, dict) and "others_present" in flags:
             v = flags.get("others_present")
             if isinstance(v, bool):
                 others_present = v
 
-        # 2) world_state 直下
         if others_present is None and "others_present" in ws:
             v = ws.get("others_present")
             if isinstance(v, bool):
                 others_present = v
 
-        # 3) manual controls
         if others_present is None:
             manual_ws = st.session_state.get("world_state_manual_controls") or {}
             v = manual_ws.get("others_present")
@@ -164,7 +189,6 @@ class NarratorAI:
             else:
                 party_mode = "both" if player_loc == partner_loc else "alone"
 
-        # partner_loc 未設定は「不在」
         if partner_loc is None:
             partner_loc = "（この場にはいない）"
 
@@ -209,7 +233,6 @@ class NarratorAI:
                 party_mode = "alone"
                 others_present = True
         else:
-            # auto / auto_with_others
             if interaction_mode == "auto_with_others":
                 others_present = True
 
@@ -225,8 +248,7 @@ class NarratorAI:
             "world_state": ws,
             "player_name": player_name,
             "player_location": player_loc,
-            # 互換用キー（中身は partner の位置）
-            "floria_location": partner_loc,
+            "floria_location": partner_loc,   # 互換用キー
             "partner_location": partner_loc,
             "partner_role": self.partner_role,
             "partner_name": self.partner_name,
@@ -247,13 +269,6 @@ class NarratorAI:
         player_profile: Dict[str, Any] | None = None,
         floria_state: Dict[str, Any] | None = None,
     ) -> List[Dict[str, str]]:
-        """
-        Round0 用プロンプトを、シーン状態に応じて切り替える。
-
-        重要:
-        - ここで player_name を必ず明示し、Round0 にプレイヤー名が落ちない問題を潰す。
-        - world_state 引数は互換用。実体は SceneAI の world_state を参照。
-        """
         snap = self._get_scene_snapshot()
         ws = snap["world_state"]
         player_name: str = snap.get("player_name", "アツシ") or "アツシ"
@@ -277,7 +292,6 @@ class NarratorAI:
         }
         time_of_day_jp = slot_label_map.get(time_slot, time_slot)
 
-        # ====== solo / solo_with_others ======
         if interaction_mode in ("solo", "solo_with_others"):
             system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
@@ -315,7 +329,6 @@ world_state: {ws}
 - JSON や説明文は書かず、物語の本文だけを書きます。
 """.strip()
 
-        # ====== pair_private / pair_public ======
         else:
             system = """
 あなたは会話RPG「Lyra」の中立的なナレーターです。
@@ -371,10 +384,6 @@ world_state: {ws}
         player_profile: Dict[str, Any],
         floria_state: Dict[str, Any],
     ) -> NarrationLine:
-        """
-        ※ world_state 引数は互換のため受け取るが、
-           実際には SceneAI 側の world_state を参照する。
-        """
         messages = self._build_round0_messages(
             world_state=world_state,
             player_profile=player_profile,
