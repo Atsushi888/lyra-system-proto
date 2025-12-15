@@ -1,4 +1,4 @@
-# llm2/llm_ai/llm_adapters/base.py
+# llm/llm_ai/llm_adapters/base.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
