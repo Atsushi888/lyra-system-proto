@@ -1,9 +1,9 @@
-# llm2/llm_ai/llm_adapters/llama_unc.py
+# llm/llm_ai/llm_adapters/llama_unc.py
 from __future__ import annotations
 
 import os
 
-from llm2.llm_ai.llm_adapters.openrouter_chat import OpenRouterChatAdapter
+from llm.llm_ai.llm_adapters.openrouter_chat import OpenRouterChatAdapter
 
 
 LLAMA_UNC_MODEL_DEFAULT = os.getenv(
