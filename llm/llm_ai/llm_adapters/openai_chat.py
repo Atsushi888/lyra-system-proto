@@ -1,4 +1,4 @@
-# llm2/llm_ai/llm_adapters/openai_chat.py
+# llm/llm_ai/llm_adapters/openai_chat.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -7,8 +7,8 @@ import logging
 
 from openai import OpenAI as OpenAIClient
 
-from llm2.llm_ai.llm_adapters.base import BaseLLMAdapter
-from llm2.llm_ai.llm_adapters.utils import (
+from llm.llm_ai.llm_adapters.base import BaseLLMAdapter
+from llm.llm_ai.llm_adapters.utils import (
     split_text_and_usage_from_openai_completion,
     normalize_max_tokens,
 )
