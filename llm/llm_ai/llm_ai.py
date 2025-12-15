@@ -1,4 +1,4 @@
-# llm2/llm_ai/llm_ai.py
+# llm/llm_ai/llm_ai.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -12,7 +12,7 @@ except Exception:
     st = None  # type: ignore
     _HAS_ST = False
 
-from llm2.llm_ai.llm_adapters.base import BaseLLMAdapter
+from llm.llm_ai.llm_adapters.base import BaseLLMAdapter
 
 
 @dataclass
