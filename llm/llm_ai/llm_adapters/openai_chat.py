@@ -1,9 +1,9 @@
-# llm/llm_ai/llm_adapters/openai_chat.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 import os
 import logging
+import re
 
 from openai import OpenAI as OpenAIClient
 
@@ -18,10 +18,14 @@ logger = logging.getLogger(__name__)
 
 class OpenAIChatAdapter(BaseLLMAdapter):
     """
-    OpenAI ChatCompletion 系（GPT-4o / GPT-5.1 など）の共通アダプタ。
+    OpenAI ChatCompletion 系（GPT-4o / GPT-5.x など）の共通アダプタ。
 
     - OpenAI SDK を直接使用
     - max_tokens / max_completion_tokens の差異を内部で吸収
+
+    ★重要（Lyra向け強化）
+    - reasoning / verbosity など、SDK/環境差で未対応な引数が混ざっても即死させない
+      → TypeError の "unexpected keyword argument 'xxx'" を検出して該当キーを落として再試行する
     """
 
     def __init__(
@@ -39,6 +43,18 @@ class OpenAIChatAdapter(BaseLLMAdapter):
             OpenAIClient(api_key=api_key) if api_key else None
         )
 
+    @staticmethod
+    def _extract_unexpected_kw_from_typeerror(e: TypeError) -> Optional[str]:
+        """
+        TypeError: got an unexpected keyword argument 'reasoning'
+        みたいな文面から 'reasoning' を抜く。
+        """
+        msg = str(e)
+        m = re.search(r"unexpected keyword argument\s+'([^']+)'", msg)
+        if not m:
+            return None
+        return m.group(1)
+
     def call(
         self,
         messages: List[Dict[str, str]],
@@ -50,14 +66,6 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         # Lyra 内部用キーワードは削除
         for k in ("mode", "judge_mode"):
             kwargs.pop(k, None)
-
-        # --------------------------------------------------
-        # 重要:
-        #   chat.completions.create は環境(=SDK/エンドポイント)によって
-        #   reasoning= を受け付けず TypeError で落ちる。
-        #   互換性最優先で、reasoning はデフォルトで送らない。
-        # --------------------------------------------------
-        kwargs.pop("reasoning", None)
 
         # TARGET_TOKENS があり、かつ明示指定が無ければ適用
         if (
@@ -81,6 +89,9 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 kwargs["max_tokens"] = min(cur + inc, 2048)
             else:
                 kwargs["max_completion_tokens"] = 512
+
+        # 未対応引数を落として再試行する枠（安全策）
+        dropped_unexpected: List[str] = []
 
         for attempt in range(3):
             try:
@@ -107,32 +118,25 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 return text, usage
 
             except TypeError as e:
-                # 保険: どこか別経路で reasoning が紛れ込んでも即死させない
-                msg = str(e)
-                if "unexpected keyword argument" in msg and "reasoning" in msg:
+                # ★環境差：未知のキーワードが来ても死なない
+                bad_kw = self._extract_unexpected_kw_from_typeerror(e)
+                if bad_kw and bad_kw in kwargs and bad_kw not in dropped_unexpected:
+                    dropped_unexpected.append(bad_kw)
                     logger.warning(
-                        "%s: reasoning kw not supported here; dropping and retrying once",
+                        "%s: dropping unsupported kw '%s' and retrying (dropped=%s)",
                         self.name,
+                        bad_kw,
+                        dropped_unexpected,
                     )
-                    kwargs.pop("reasoning", None)
-                    try:
-                        completion = self._client.chat.completions.create(
-                            model=self.model_id,
-                            messages=messages,
-                            **kwargs,
-                        )
-                        text, usage = split_text_and_usage_from_openai_completion(completion)
-                        return text, usage
-                    except Exception as e2:
-                        last_exc = e2
-                        logger.exception(
-                            "%s: OpenAI call failed after dropping reasoning", self.name
-                        )
-                else:
+                    kwargs.pop(bad_kw, None)
                     last_exc = e
-                    logger.exception(
-                        "%s: OpenAI call failed (attempt=%s)", self.name, attempt + 1
-                    )
+                    # そのまま次ループで再試行
+                    continue
+
+                last_exc = e
+                logger.exception(
+                    "%s: OpenAI call failed (TypeError, attempt=%s)", self.name, attempt + 1
+                )
 
             except Exception as e:
                 last_exc = e
@@ -141,5 +145,5 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 )
 
         raise RuntimeError(
-            f"{self.name}: OpenAI call failed after retry: {last_exc}"
+            f"{self.name}: OpenAI call failed after retry: {last_exc} (dropped={dropped_unexpected})"
         )
