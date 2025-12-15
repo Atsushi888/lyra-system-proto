@@ -1,3 +1,4 @@
+# components/mode_switcher.py
 from __future__ import annotations
 
 from typing import Dict, Protocol, Any
@@ -16,7 +17,9 @@ from views.persona_editor_view import create_persona_editor_view
 from views.narrator_manager_view import create_narrator_manager_view
 from views.scene_manager_view import SceneManagerView
 from views.dokipower_control_view import create_dokipower_control_view
-from views.user_settings_view import create_user_settings_view  # ★ 新規 UserSettings 用
+
+# ★ UserSettings の代わりに AIManager
+from views.ai_manager_view import create_ai_manager_view
 
 
 class View(Protocol):
@@ -53,7 +56,7 @@ def _resolve_view(view_or_factory: Any) -> View:
 class ModeSwitcher:
     LABELS: Dict[str, str] = {
         "USER":          "🎛️ ユーザー設定（LLM）",
-        "USERSETTINGS":  "💻 ユーザー設定（その他）",
+        "AIMANAGER":     "🤖 AI Manager",
         "PRIVATE":       "⚙️ （※非公開※）",
         "COUNCIL":       "🗣 会談システム（β）",
         "ANSWERTALKER":  "🧩 AnswerTalker（AI統合テスト）",
@@ -75,9 +78,9 @@ class ModeSwitcher:
                 "view": create_llm_manager_view,
                 "min_role": Role.USER,
             },
-            "USERSETTINGS": {   # ★ 新規ルート
-                "label": self.LABELS["USERSETTINGS"],
-                "view": create_user_settings_view,
+            "AIMANAGER": {
+                "label": self.LABELS["AIMANAGER"],
+                "view": create_ai_manager_view,
                 "min_role": Role.USER,
             },
             "PRIVATE": {
@@ -105,11 +108,6 @@ class ModeSwitcher:
                 "view": create_persona_editor_view,
                 "min_role": Role.ADMIN,
             },
-            # "SCENE": {
-            #     "label": self.LABELS["SCENE"],
-            #     "view": create_scene_changer_view,
-            #     "min_role": Role.ADMIN,
-            # },
             "NARRATOR": {
                 "label": self.LABELS["NARRATOR"],
                 "view": create_narrator_manager_view,
