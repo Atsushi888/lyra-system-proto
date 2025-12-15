@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from llm2.llm_ai.llm_adapters.grok import GrokAdapter
+from llm.llm_ai.llm_adapters.grok import GrokAdapter
 
 
 def register_grok(llm_ai: Any) -> None:
