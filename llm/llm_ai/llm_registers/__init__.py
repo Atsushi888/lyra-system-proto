@@ -1,6 +1,6 @@
-# llm2/llm_ai/llm_registers/__init__.py
+# llm/llm_ai/llm_registers/__init__.py
 """
-llm2.llm_ai.llm_registers
+llm.llm_ai.llm_registers
 
 LLMAI に対して Adapter を登録するための register 群。
 
