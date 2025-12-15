@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 import os
 
 # 新LLM中枢
-from llm2.llm_ai import LLMAI
+from llm.llm_ai import LLMAI
 
 # register 群
 from llm2.llm_ai.llm_registers.register_gpt51 import register_gpt51
