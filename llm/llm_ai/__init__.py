@@ -1,4 +1,4 @@
-# llm2/llm_ai/__init__.py
+# llm/llm_ai/__init__.py
 """
 llm2.llm_ai
 
@@ -8,7 +8,7 @@ llm2.llm_ai
 - Adapter / Register / Factory は下位モジュールに分離
 """
 
-from llm2.llm_ai.llm_ai import LLMAI
+from llm.llm_ai.llm_ai import LLMAI
 
 __all__ = [
     "LLMAI",
