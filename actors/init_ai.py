@@ -1,7 +1,7 @@
 # actors/init_ai.py
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
 
 
@@ -74,6 +74,9 @@ class InitAI:
     # dokipower_control.py と合わせる
     DOKIPOWER_SESSION_KEY = "dokipower_state"
 
+    # AIManager の state key
+    AI_MANAGER_SESSION_KEY = "ai_manager"
+
     @classmethod
     def ensure_all(
         cls,
@@ -86,6 +89,10 @@ class InitAI:
         以前の呼び出し（InitAI.ensure_all）互換。
         """
         cls._ensure_player_name(state=state, persona=persona, snapshot=snapshot)
+
+        # ★追加：AI Manager の初期デフォルト（Manual + gpt52のみ）
+        cls._ensure_ai_manager_defaults(state=state)
+
         cls._ensure_manual_controls(state=state, snapshot=snapshot)
         cls._ensure_world_state(state=state, snapshot=snapshot)
 
@@ -102,6 +109,53 @@ class InitAI:
         「最低限」と言いつつ、現状は ensure_all と同義でOK。
         """
         cls.ensure_all(state=state, persona=persona, snapshot=snapshot)
+
+    # ------------------------
+    # AI Manager defaults
+    # ------------------------
+    @classmethod
+    def _ensure_ai_manager_defaults(
+        cls,
+        *,
+        state: Mapping[str, Any],
+    ) -> None:
+        """
+        初期設定:
+          - AI選択モード: Manual
+          - enabled_models: gpt52のみ True、他は False
+        ※ユーザーが既に設定を変更していた場合は上書きしない（setdefault思想）
+        """
+        s = state
+
+        # ai_manager 辞書の確保
+        try:
+            cur = getattr(s, "get", lambda k, d=None: d)(cls.AI_MANAGER_SESSION_KEY, None)
+        except Exception:
+            cur = None
+
+        if not isinstance(cur, dict):
+            cur = {}
+            try:
+                s[cls.AI_MANAGER_SESSION_KEY] = cur  # type: ignore[index]
+            except Exception:
+                return
+
+        # 既に select_mode があるなら尊重。無ければ Manual。
+        if not isinstance(cur.get("select_mode"), str) or not cur.get("select_mode"):
+            cur["select_mode"] = "Manual"
+
+        # enabled_models：無ければ gpt52のみ有効で初期化
+        if not isinstance(cur.get("enabled_models"), dict) or not cur.get("enabled_models"):
+            cur["enabled_models"] = {
+                "gpt52": True,
+                "gpt51": False,
+                "grok": False,
+                "gemini": False,
+                "gpt4o": False,
+            }
+
+        # priority は AIManager 側の DEFAULT_PRIORITY で整形されるので、ここでは触らない。
+        # x_rated / suppress_warnings も AIManager 側で setdefault されるので、ここでは触らない。
 
     # ------------------------
     # player_name
