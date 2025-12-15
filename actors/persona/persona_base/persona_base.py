@@ -1,5 +1,3 @@
-# actors/persona/persona_base/persona_base.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -217,6 +215,24 @@ class PersonaBase:
             {"role": "user", "content": user_text},
         ]
         return messages
+
+    # --------------------------------------------------
+    # LLM request params（モデル別）
+    # --------------------------------------------------
+    def get_llm_request_params(self, model_name: str) -> Dict[str, Any]:
+        """
+        Persona JSON の llm_request_defaults から、指定モデル用の追加パラメータを返す。
+
+        例: {"reasoning": {...}, "include_reasoning": False, ...}
+
+        - model_name は "gpt52" 等のLyra側IDを想定
+        - 無ければ空dict
+        """
+        raw = self.raw.get("llm_request_defaults") or {}
+        if not isinstance(raw, dict):
+            return {}
+        params = raw.get(str(model_name)) or {}
+        return params if isinstance(params, dict) else {}
 
     # --------------------------------------------------
     # emotion_profiles（JSON）系
@@ -483,7 +499,7 @@ class PersonaBase:
         EmotionResult + world_state から
         LLM 用の「感情・関係性ヘッダテキスト」を構築する。
 
-        実装本体は actors/persona/persona_base/build_emotion_header.py に分離。
+        実装本体は actors/persona.persona_base.build_emotion_header.py に分離。
         """
         from actors.persona.persona_base.build_emotion_header import (
             build_emotion_header_core,
@@ -508,7 +524,7 @@ class PersonaBase:
     ) -> str:
         """
         互換性維持用ラッパー。
-        実装本体は actors/persona/persona_base/build_default_guideline.py。
+        実装本体は actors/persona.persona_base.build_default_guideline.py。
         """
         from actors.persona.persona_base.build_default_guideline import (
             build_default_guideline,
