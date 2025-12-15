@@ -1,9 +1,9 @@
-# llm2/llm_ai/llm_adapters/hermes_old.py
+# llm/llm_ai/llm_adapters/hermes_old.py
 from __future__ import annotations
 
 import os
 
-from llm2.llm_ai.llm_adapters.openrouter_chat import OpenRouterChatAdapter
+from llm.llm_ai.llm_adapters.openrouter_chat import OpenRouterChatAdapter
 
 
 HERMES_MODEL_OLD_DEFAULT = os.getenv(
