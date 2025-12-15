@@ -1,7 +1,7 @@
 # llm2/llm_ai/llm_registers/register_hermes_old.py
 from __future__ import annotations
 
-from llm2.llm_ai.llm_adapters.hermes_old import HermesOldAdapter
+from llm.llm_ai.llm_adapters.hermes_old import HermesOldAdapter
 
 
 def register_hermes_old(llm_ai: Any) -> None:
