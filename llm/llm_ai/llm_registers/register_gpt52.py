@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from llm2.llm_ai.llm_adapters.openai_chat import OpenAIChatAdapter
+from llm.llm_ai.llm_adapters.openai_chat import OpenAIChatAdapter
 
 
 def register_gpt52(llm_ai: Any) -> None:
