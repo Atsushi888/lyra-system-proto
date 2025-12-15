@@ -8,18 +8,18 @@ import os
 from llm.llm_ai import LLMAI
 
 # register 群
-from llm2.llm_ai.llm_registers.register_gpt51 import register_gpt51
-from llm2.llm_ai.llm_registers.register_gpt4o import register_gpt4o
-from llm2.llm_ai.llm_registers.register_grok import register_grok
-from llm2.llm_ai.llm_registers.register_gemini import register_gemini
-from llm2.llm_ai.llm_registers.register_hermes_old import register_hermes_old
-from llm2.llm_ai.llm_registers.register_hermes_new import register_hermes_new
-from llm2.llm_ai.llm_registers.register_llama_unc import register_llama_unc
+from llm.llm_ai.llm_registers.register_gpt51 import register_gpt51
+from llm.llm_ai.llm_registers.register_gpt4o import register_gpt4o
+from llm.llm_ai.llm_registers.register_grok import register_grok
+from llm.llm_ai.llm_registers.register_gemini import register_gemini
+from llm.llm_ai.llm_registers.register_hermes_old import register_hermes_old
+from llm.llm_ai.llm_registers.register_hermes_new import register_hermes_new
+from llm.llm_ai.llm_registers.register_llama_unc import register_llama_unc
 
 # ※ gpt52 を起こす場合：この register が存在する前提
 #   まだ無いなら作ってね（register_gpt51 と同様の構造でOK）
 try:
-    from llm2.llm_ai.llm_registers.register_gpt52 import register_gpt52  # type: ignore
+    from llm.llm_ai.llm_registers.register_gpt52 import register_gpt52  # type: ignore
     _HAS_GPT52 = True
 except Exception:
     register_gpt52 = None  # type: ignore
@@ -31,7 +31,7 @@ class LLMManager:
     互換レイヤ。
 
     - 旧来の LLMManager API を維持
-    - 実体は llm2.llm_ai.LLMAI に委譲
+    - 実体は llm.llm_ai.LLMAI に委譲
 
     モデルの「登録」を環境変数で制御する。
     → 登録されないモデルは UI に出ない / 呼び出せない（ゾンビ封印）
