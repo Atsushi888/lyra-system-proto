@@ -25,7 +25,6 @@ class AnswerTalker:
     """
     ★ デバッグ強化版
     - どの段階で止まっても llm_meta に痕跡を残す
-    - AIManager の設定を毎ターン ModelsAI2 に必ず渡す（同期漏れ防止）
     """
 
     def __init__(
@@ -49,7 +48,10 @@ class AnswerTalker:
         self.llm_meta.setdefault("errors", [])
 
         self.persona_ai = PersonaAI(persona_id=getattr(persona, "char_id", "default"))
-        self.models_ai = ModelsAI2(self.llm_manager)
+
+        # ★ここが変更：persona を渡す
+        self.models_ai = ModelsAI2(self.llm_manager, persona=self.persona)
+
         self.emotion_ai = EmotionAI(self.llm_manager, model_name="gpt51")
         self.scene_ai = SceneAI(state=self.state)
         self.mixer_ai = MixerAI(
@@ -64,34 +66,6 @@ class AnswerTalker:
             persona_id=getattr(persona, "char_id", "default"),
             model_name=memory_model,
         )
-
-    def _read_ai_manager_settings(self) -> Dict[str, Any]:
-        """
-        AIManager の state を “そのまま信じず” 正規化して取り出す。
-        """
-        ai_mgr = st.session_state.get("ai_manager")
-        if not isinstance(ai_mgr, dict):
-            ai_mgr = {}
-
-        select_mode = ai_mgr.get("select_mode", "Auto")
-        if not isinstance(select_mode, str):
-            select_mode = "Auto"
-
-        priority = ai_mgr.get("priority", [])
-        if not isinstance(priority, list):
-            priority = []
-        priority = [str(x) for x in priority if str(x)]
-
-        enabled_map = ai_mgr.get("enabled_models", {})
-        if not isinstance(enabled_map, dict):
-            enabled_map = {}
-        enabled_map = {str(k): bool(v) for k, v in enabled_map.items()}
-
-        return {
-            "select_mode": select_mode,
-            "priority": priority,
-            "enabled_map": enabled_map,
-        }
 
     def speak(
         self,
@@ -114,17 +88,6 @@ class AnswerTalker:
         try:
             InitAI.ensure_minimum(state=self.state, persona=self.persona)
 
-            # --- AIManager settings を毎ターン取得し、llm_meta にも残す ---
-            ai_settings = self._read_ai_manager_settings()
-            self.llm_meta["ai_manager_settings"] = ai_settings
-
-            # 念のため：LLMManager 側にも enabled_map を反映（UI押下漏れでも整合させる）
-            try:
-                if isinstance(ai_settings.get("enabled_map"), dict) and ai_settings["enabled_map"]:
-                    self.llm_manager.set_enabled_models(ai_settings["enabled_map"])
-            except Exception as e:
-                self.llm_meta["ai_manager_sync_error"] = str(e)
-
             emotion_override = self.mixer_ai.build_emotion_override()
             self.llm_meta["emotion_override"] = emotion_override
 
@@ -133,10 +96,6 @@ class AnswerTalker:
                 mode_current=judge_mode or "normal",
                 emotion_override=emotion_override,
                 reply_length_mode=self.llm_meta.get("reply_length_mode", "auto"),
-                # ★ここが今回の本丸：AIManagerの値を必ず渡す
-                select_mode=ai_settings.get("select_mode", "Auto"),
-                priority=ai_settings.get("priority", []),
-                enabled_map=ai_settings.get("enabled_map", {}),
             )
             self.llm_meta["models"] = results
 
