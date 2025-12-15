@@ -1,7 +1,7 @@
 # llm2/llm_ai/llm_adapters/gpt4o.py
 from __future__ import annotations
 
-from llm2.llm_ai.llm_adapters.openai_chat import OpenAIChatAdapter
+from llm.llm_ai.llm_adapters.openai_chat import OpenAIChatAdapter
 
 
 class GPT4oAdapter(OpenAIChatAdapter):
