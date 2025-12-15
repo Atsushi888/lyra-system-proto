@@ -1,7 +1,7 @@
 # components/ai_manager.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import streamlit as st
 
 from llm.llm_manager import LLMManager
@@ -46,18 +46,27 @@ class AIManager:
         self.state.setdefault("x_rated", False)
         self.state.setdefault("suppress_warnings", False)
 
-        # モード（将来拡張用）
-        self.state.setdefault("select_mode", "Auto")  # "Auto" or "Manual"
+        # ★初期モード：Manual（要求仕様）
+        self.state.setdefault("select_mode", "Manual")  # "Auto" or "Manual"
 
         # reply length mode（既存キーに合わせる）
         st.session_state.setdefault("reply_length_mode", "auto")
 
-        # enabled models map（LLM props 由来で初期化）
         props = self.llm_manager.get_model_props() or {}
-        enabled_map: Dict[str, bool] = {}
-        for name, p in props.items():
-            enabled_map[name] = bool(p.get("enabled", True))
-        self.state.setdefault("enabled_models", enabled_map)
+
+        # ★enabled_models：初期は gpt52 のみ True（要求仕様）
+        # 既に dict があるなら尊重（上書きしない）
+        if "enabled_models" not in self.state or not isinstance(self.state.get("enabled_models"), dict):
+            enabled_map: Dict[str, bool] = {}
+            for name in props.keys():
+                enabled_map[name] = (name == "gpt52")
+            self.state["enabled_models"] = enabled_map
+        else:
+            # 欠けているキーだけ補完
+            enabled_map = self.state.get("enabled_models") or {}
+            if isinstance(enabled_map, dict):
+                for name in props.keys():
+                    enabled_map.setdefault(name, (name == "gpt52"))
 
         # priority list
         if "priority" not in self.state or not isinstance(self.state["priority"], list):
@@ -114,10 +123,12 @@ class AIManager:
 
         # ========== Global switches ==========
         with st.expander("⚙️ 動作モード", expanded=True):
+            # ★デフォルト Manual だが、UIは選べる
+            cur_mode = self.state.get("select_mode", "Manual")
             self.state["select_mode"] = st.radio(
                 "AI 選択モード",
                 options=["Auto", "Manual"],
-                index=0 if self.state.get("select_mode", "Auto") == "Auto" else 1,
+                index=0 if cur_mode == "Auto" else 1,
                 horizontal=True,
             )
 
@@ -205,7 +216,7 @@ class AIManager:
 
             for name in ordered:
                 p = props.get(name, {}) or {}
-                default_on = bool(p.get("enabled", True))
+                default_on = (name == "gpt52")  # ★初期思想：gpt52のみ
                 current_on = bool(enabled_map.get(name, default_on))
                 enabled_map[name] = st.checkbox(
                     f"{name}",
