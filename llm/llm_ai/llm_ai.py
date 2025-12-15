@@ -1,4 +1,3 @@
-# llm/llm_ai/llm_ai.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -79,6 +78,11 @@ class LLMAI:
 
         auto_vendor, auto_extra = self._infer_vendor_extra(name)
 
+        # adapter 側に supported_parameters を持たせている場合にも拾えるようにする
+        adapter_supported = getattr(adapter, "supported_parameters", None)
+        if isinstance(adapter_supported, list) and adapter_supported:
+            auto_extra = {**auto_extra, "supported_parameters": list(adapter_supported)}
+
         cfg = LLMModelConfig(
             name=name,
             adapter=adapter,
@@ -94,6 +98,8 @@ class LLMAI:
     def _infer_vendor_extra(model_name: str) -> Tuple[str, Dict[str, Any]]:
         if model_name in ("gpt51", "gpt4o"):
             return "openai", {"env_key": "OPENAI_API_KEY", "model_family": model_name}
+        if model_name == "gpt52":
+            return "openai", {"env_key": "OPENAI_API_KEY", "model_family": "gpt52"}
         if model_name == "grok":
             return "xai", {"env_key": "GROK_API_KEY", "model_family": "grok"}
         if model_name == "gemini":
@@ -142,13 +148,23 @@ class LLMAI:
     def get_model_props(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
         for name, cfg in self._models.items():
+            extra = dict(cfg.extra)
+
+            # ★ここが重要：ModelsAI2 側が参照できるようにトップレベルにも出す
+            supported = extra.get("supported_parameters")
+            if isinstance(supported, list):
+                supported_parameters = list(supported)
+            else:
+                supported_parameters = []
+
             out[name] = {
                 "vendor": cfg.vendor,
                 "priority": cfg.priority,
                 "enabled": cfg.enabled,
-                "extra": dict(cfg.extra),
+                "extra": extra,
                 "params": dict(cfg.params),
                 "defaults": dict(cfg.params),
+                "supported_parameters": supported_parameters,
             }
         return out
 
@@ -156,13 +172,21 @@ class LLMAI:
         items = sorted(self._models.items(), key=lambda kv: kv[1].priority, reverse=True)
         out: Dict[str, Dict[str, Any]] = {}
         for name, cfg in items:
+            extra = dict(cfg.extra)
+            supported = extra.get("supported_parameters")
+            if isinstance(supported, list):
+                supported_parameters = list(supported)
+            else:
+                supported_parameters = []
+
             out[name] = {
                 "vendor": cfg.vendor,
                 "priority": cfg.priority,
                 "enabled": cfg.enabled,
-                "extra": dict(cfg.extra),
+                "extra": extra,
                 "params": dict(cfg.params),
                 "defaults": dict(cfg.params),
+                "supported_parameters": supported_parameters,
             }
         return out
 
