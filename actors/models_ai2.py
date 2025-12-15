@@ -13,29 +13,31 @@ class ModelsAI2:
     """
     複数 LLM から一斉に回答案を集めるためのクラス（デバッグ強化版）。
 
-    ★ 新方針（v0.5）
-    - 実行対象モデルは「AIManagerの設定」を最優先で決める
-      - enabled_models(map) / priority(list) / select_mode("Auto"/"Manual")
-    - Manual: 有効モデルのうち priority 最上位 1つだけ実行
-    - Auto  : 有効モデルを priority 順で全て実行
-    - 実行されなかったモデル（disabled / not_selected）は results に痕跡を残す
-    - 例外が出ても「results が空」になることを絶対に防ぐ
+    ★ 方針
+    - 例外が出ても「models が空」になることを絶対に防ぐ
+    - 各モデルごとに status / error / traceback を必ず残す
+    - Persona 由来の request params を注入できる
+    - モデルの supported_parameters があれば、それで安全にフィルタして渡す
     """
 
     def __init__(
         self,
         llm_manager: LLMManager,
         *,
-        enabled_models: Optional[List[str]] = None,  # 旧互換：固定リスト指定（使うならこれが最優先）
+        enabled_models: Optional[List[str]] = None,
+        persona: Any = None,
     ) -> None:
         self.llm_manager = llm_manager
-        self.model_props: Dict[str, Dict[str, Any]] = llm_manager.get_model_props() or {}
+        self.persona = persona
+        self.model_props: Dict[str, Dict[str, Any]] = llm_manager.get_model_props()
 
-        # 旧互換：enabled_models が明示されていたら、そのリストを“候補集合”として使う
         if enabled_models is not None:
-            self._fixed_enabled_models = list(enabled_models)
+            self.enabled_models = list(enabled_models)
         else:
-            self._fixed_enabled_models = None
+            self.enabled_models = [
+                name for name, props in self.model_props.items()
+                if props.get("enabled", True)
+            ]
 
     # ---------------------------------------
     # 内部ヘルパ：LLM からの戻り値を正規化
@@ -70,78 +72,52 @@ class ModelsAI2:
         return {"text": text, "usage": usage, "raw": raw}
 
     # ---------------------------------------
-    # 内部ヘルパ：実行対象モデルの決定
+    # Persona params
     # ---------------------------------------
-    def _decide_active_models(
-        self,
-        *,
-        select_mode: str,
-        priority: Optional[List[str]],
-        enabled_map: Optional[Dict[str, bool]],
-    ) -> Dict[str, Any]:
+    def _get_persona_request_params(self, model_name: str) -> Dict[str, Any]:
+        p = self.persona
+        if p is None:
+            return {}
+        fn = getattr(p, "get_llm_request_params", None)
+        if callable(fn):
+            try:
+                params = fn(model_name)
+                return params if isinstance(params, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    # ---------------------------------------
+    # supported_parameters で安全フィルタ
+    # ---------------------------------------
+    def _filter_request_params(self, model_name: str, params: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        Returns:
-          {
-            "all_models": [...props keys...],
-            "ordered_models": [...priority applied...],
-            "enabled_models": [...enabled only...],
-            "active_models": [...actually executed...],
-            "disabled_models": [...not enabled...],
-            "not_selected_models": [...enabled but excluded by Manual...],
-            "select_mode": "auto" | "manual",
-          }
+        model_props[model_name]["supported_parameters"] が list[str] であれば、
+        params のトップレベルキーをそこに含まれるものだけ通す。
+
+        返り値: (accepted, rejected)
         """
-        props = self.model_props or {}
-        all_models: List[str] = list(props.keys())
+        if not params:
+            return {}, {}
 
-        # priority の適用（未知は後ろへ）
-        pri = list(priority or [])
-        ordered: List[str] = [m for m in pri if m in props]
-        for m in all_models:
-            if m not in ordered:
-                ordered.append(m)
+        p = self.model_props.get(model_name, {}) or {}
+        supported = p.get("supported_parameters")
 
-        # enabled 判定（AIManager enabled_map があれば最優先）
-        enabled_models: List[str] = []
-        disabled_models: List[str] = []
+        if not isinstance(supported, list) or not supported:
+            # supported が分からないなら、全通し（互換優先）
+            return dict(params), {}
 
-        for m in ordered:
-            # 旧互換：固定リストがあるなら、それ以外は候補から落とす（disabled扱いではなく “not_in_fixed”）
-            if self._fixed_enabled_models is not None and m not in self._fixed_enabled_models:
-                continue
+        supported_set = {str(x) for x in supported}
 
-            if isinstance(enabled_map, dict) and m in enabled_map:
-                is_on = bool(enabled_map.get(m))
+        accepted: Dict[str, Any] = {}
+        rejected: Dict[str, Any] = {}
+        for k, v in params.items():
+            if str(k) in supported_set:
+                accepted[k] = v
             else:
-                # props の enabled を既定に
-                is_on = bool((props.get(m) or {}).get("enabled", True))
+                rejected[k] = v
 
-            if is_on:
-                enabled_models.append(m)
-            else:
-                disabled_models.append(m)
-
-        mode = (select_mode or "Auto").strip().lower()
-        if mode not in ("auto", "manual"):
-            mode = "auto"
-
-        # Manual は先頭1つだけ、Auto は全部
-        if mode == "manual":
-            active_models = enabled_models[:1]
-            not_selected_models = enabled_models[1:]
-        else:
-            active_models = enabled_models[:]
-            not_selected_models = []
-
-        return {
-            "all_models": all_models,
-            "ordered_models": ordered,
-            "enabled_models": enabled_models,
-            "active_models": active_models,
-            "disabled_models": disabled_models,
-            "not_selected_models": not_selected_models,
-            "select_mode": mode,
-        }
+        return accepted, rejected
 
     # ---------------------------------------
     # メイン
@@ -153,116 +129,29 @@ class ModelsAI2:
         mode_current: str = "normal",
         emotion_override: Optional[Dict[str, Any]] = None,
         reply_length_mode: str = "auto",
-        # ★新：AIManager（または上位層）から渡す
-        select_mode: str = "Auto",                    # "Auto" / "Manual"
-        priority: Optional[List[str]] = None,         # 優先順位
-        enabled_map: Optional[Dict[str, bool]] = None # enabled_models マップ
     ) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
 
-        if not messages:
+        if not self.enabled_models:
             results["_system"] = {
                 "status": "error",
                 "text": "",
-                "error": "messages is empty",
+                "error": "enabled_models is empty",
                 "traceback": None,
             }
             return results
 
-        decision = self._decide_active_models(
-            select_mode=select_mode,
-            priority=priority,
-            enabled_map=enabled_map,
-        )
+        for model_name in self.enabled_models:
+            persona_params = self._get_persona_request_params(model_name)
+            req_params, ignored_params = self._filter_request_params(model_name, persona_params)
 
-        active_models: List[str] = decision["active_models"]
-        disabled_models: List[str] = decision["disabled_models"]
-        not_selected_models: List[str] = decision["not_selected_models"]
-        ordered_models: List[str] = decision["ordered_models"]
-        enabled_models: List[str] = decision["enabled_models"]
-        select_mode_norm: str = decision["select_mode"]
-
-        # まず system セクションに “今回の選定” を残す（デバッグ最重要）
-        results["_system"] = {
-            "status": "ok",
-            "text": "",
-            "error": None,
-            "traceback": None,
-            "selection": {
-                "select_mode": select_mode_norm,
-                "priority": list(priority or []),
-                "ordered_models": ordered_models,
-                "enabled_models": enabled_models,
-                "active_models": active_models,
-                "disabled_models": disabled_models,
-                "not_selected_models": not_selected_models,
-            },
-        }
-
-        # active が空なら、ここで明示的にエラー痕跡
-        if not active_models:
-            results["_system"]["status"] = "error"
-            results["_system"]["error"] = "no_active_models"
-            # disabled / not_selected も痕跡として入れる（Viewで見たい）
-            for m in disabled_models:
-                results[m] = {
-                    "status": "disabled",
-                    "text": "",
-                    "raw": None,
-                    "usage": None,
-                    "error": "disabled_by_enabled_map",
-                    "traceback": None,
-                    "mode_current": mode_current,
-                    "emotion_override": emotion_override,
-                    "reply_length_mode": reply_length_mode,
-                }
-            for m in not_selected_models:
-                results[m] = {
-                    "status": "skipped",
-                    "text": "",
-                    "raw": None,
-                    "usage": None,
-                    "error": "skipped_by_manual_mode",
-                    "traceback": None,
-                    "mode_current": mode_current,
-                    "emotion_override": emotion_override,
-                    "reply_length_mode": reply_length_mode,
-                }
-            return results
-
-        # disabled / skipped も results に残す（監査用）
-        for m in disabled_models:
-            results[m] = {
-                "status": "disabled",
-                "text": "",
-                "raw": None,
-                "usage": None,
-                "error": "disabled_by_enabled_map",
-                "traceback": None,
-                "mode_current": mode_current,
-                "emotion_override": emotion_override,
-                "reply_length_mode": reply_length_mode,
-            }
-        for m in not_selected_models:
-            results[m] = {
-                "status": "skipped",
-                "text": "",
-                "raw": None,
-                "usage": None,
-                "error": "skipped_by_manual_mode",
-                "traceback": None,
-                "mode_current": mode_current,
-                "emotion_override": emotion_override,
-                "reply_length_mode": reply_length_mode,
-            }
-
-        # 実行本体
-        for model_name in active_models:
             try:
                 completion: CompletionType = self.llm_manager.chat(
                     model=model_name,
                     messages=messages,
+                    **req_params,
                 )
+
                 norm = self._normalize_completion(completion)
 
                 results[model_name] = {
@@ -275,6 +164,8 @@ class ModelsAI2:
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
                     "reply_length_mode": reply_length_mode,
+                    "request_params": req_params,
+                    "ignored_params": ignored_params,
                 }
 
             except Exception as e:
@@ -288,6 +179,8 @@ class ModelsAI2:
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
                     "reply_length_mode": reply_length_mode,
+                    "request_params": req_params,
+                    "ignored_params": ignored_params,
                 }
 
         return results
