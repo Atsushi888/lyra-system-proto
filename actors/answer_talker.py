@@ -25,6 +25,7 @@ class AnswerTalker:
     """
     ★ デバッグ強化版
     - どの段階で止まっても llm_meta に痕跡を残す
+    - AIManager(enabled/select_mode) を speak() 実行直前に必ず LLMManager へ同期
     """
 
     def __init__(
@@ -64,25 +65,38 @@ class AnswerTalker:
             model_name=memory_model,
         )
 
-    # -----------------------------
-    # 内部: messages の system に追記
-    # -----------------------------
-    @staticmethod
-    def _inject_into_system(messages: List[Dict[str, str]], extra_system: str) -> List[Dict[str, str]]:
-        if not extra_system:
-            return messages
+        # 起動時も一度同期
+        self._sync_ai_manager_settings()
 
-        new_messages = list(messages)
-        for i, m in enumerate(new_messages):
-            if isinstance(m, dict) and m.get("role") == "system":
-                base = str(m.get("content") or "")
-                merged = (base.rstrip() + "\n\n" + extra_system.strip()).strip()
-                new_messages[i] = {"role": "system", "content": merged}
-                return new_messages
+    # --------------------------------------------------
+    # ★AIManager → LLMManager 同期（重要）
+    # --------------------------------------------------
+    def _sync_ai_manager_settings(self) -> None:
+        """
+        st.session_state["ai_manager"] の enabled_models / select_mode を
+        実行に使う self.llm_manager へ反映する。
+        persona_id のズレがあっても、ここで“実行側”に強制適用できる。
+        """
+        try:
+            ai_state = st.session_state.get("ai_manager")
+            if not isinstance(ai_state, dict):
+                return
 
-        # system が無ければ先頭に追加（保険）
-        new_messages.insert(0, {"role": "system", "content": extra_system.strip()})
-        return new_messages
+            enabled = ai_state.get("enabled_models")
+            if isinstance(enabled, dict):
+                # ここで実行側LLMManagerへ必ず反映
+                self.llm_manager.set_enabled_models(enabled)
+
+            # ついでに llm_meta にもスナップショットを残す（デバッグ用）
+            self.llm_meta["ai_manager_snapshot"] = {
+                "select_mode": ai_state.get("select_mode"),
+                "enabled_models": enabled,
+                "priority": ai_state.get("priority"),
+                "x_rated": ai_state.get("x_rated"),
+                "suppress_warnings": ai_state.get("suppress_warnings"),
+            }
+        except Exception:
+            return
 
     def speak(
         self,
@@ -91,42 +105,26 @@ class AnswerTalker:
         judge_mode: Optional[str] = None,
     ) -> str:
 
-        if LYRA_DEBUG:
-            st.write(
-                "[DEBUG] system_prompt_used exists:",
-                "system_prompt_used" in self.llm_meta,
-                type(self.llm_meta.get("system_prompt_used")),
-                len(self.llm_meta.get("system_prompt_used") or "")
-            )
-
         if not messages:
             return ""
 
         try:
             InitAI.ensure_minimum(state=self.state, persona=self.persona)
 
-            # ==========================================================
-            # ★ NEW: Memory context を作って system へ注入
-            # ==========================================================
-            memory_context = ""
-            try:
-                memory_context = self.memory_ai.build_memory_context(user_query=user_text, max_items=5) or ""
-                self.llm_meta["memory_context"] = memory_context
-            except Exception as e:
-                self.llm_meta["memory_context_error"] = str(e)
+            # ★実行直前に必ず同期（これで「gpt52だけにしたのに他も返す」を止める）
+            self._sync_ai_manager_settings()
 
-            if memory_context:
-                messages = self._inject_into_system(messages, memory_context)
+            if LYRA_DEBUG:
+                st.write(
+                    "[DEBUG] system_prompt_used exists:",
+                    "system_prompt_used" in self.llm_meta,
+                    type(self.llm_meta.get("system_prompt_used")),
+                    len(self.llm_meta.get("system_prompt_used") or "")
+                )
 
-            # ==========================================================
-            # 既存: emotion_override
-            # ==========================================================
             emotion_override = self.mixer_ai.build_emotion_override()
             self.llm_meta["emotion_override"] = emotion_override
 
-            # ==========================================================
-            # LLMs 実行
-            # ==========================================================
             results = self.models_ai.collect(
                 messages,
                 mode_current=judge_mode or "normal",
@@ -146,38 +144,10 @@ class AnswerTalker:
 
             final_text = composed.get("text") or judge.get("chosen_text") or ""
 
-            # ==========================================================
-            # ★ NEW: Memory 更新（ターン終了時）
-            # round_id は streamlit state でインクリメント管理（無ければ作る）
-            # ==========================================================
-            try:
-                rid = int(self.state.get("round_id") or 0)
-            except Exception:
-                rid = 0
-            rid += 1
-            try:
-                # Mapping の可能性があるので setdefault で落ちないように
-                self.state["round_id"] = rid  # type: ignore[index]
-            except Exception:
-                pass
-
-            try:
-                mem_res = self.memory_ai.update_from_turn(
-                    messages=messages,
-                    final_reply=final_text,
-                    round_id=rid,
-                )
-                self.llm_meta["memory_update"] = mem_res
-            except Exception as e:
-                self.llm_meta["memory_update_error"] = str(e)
-
-            # ==========================================================
-            # emotion（memory_context を渡す）
-            # ==========================================================
             try:
                 emotion_res: EmotionResult = self.emotion_ai.analyze(
                     composer=composed,
-                    memory_context=memory_context or "",
+                    memory_context="",
                     user_text=user_text,
                 )
                 self.llm_meta["emotion"] = emotion_res.to_dict()
