@@ -6,7 +6,7 @@ import os
 import logging
 import requests
 
-from llm2.llm_ai.llm_adapters.base import BaseLLMAdapter
+from llm.llm_ai.llm_adapters.base import BaseLLMAdapter
 
 logger = logging.getLogger(__name__)
 
