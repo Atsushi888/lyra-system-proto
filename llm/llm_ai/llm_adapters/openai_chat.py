@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 import os
 import logging
-import re
 
 from openai import OpenAI as OpenAIClient
 
@@ -18,14 +17,11 @@ logger = logging.getLogger(__name__)
 
 class OpenAIChatAdapter(BaseLLMAdapter):
     """
-    OpenAI ChatCompletion 系（GPT-4o / GPT-5.x など）の共通アダプタ。
+    OpenAI ChatCompletion 系（GPT-4o / GPT-5.1 / GPT-5.2 など）の共通アダプタ。
 
     - OpenAI SDK を直接使用
     - max_tokens / max_completion_tokens の差異を内部で吸収
-
-    ★重要（Lyra向け強化）
-    - reasoning / verbosity など、SDK/環境差で未対応な引数が混ざっても即死させない
-      → TypeError の "unexpected keyword argument 'xxx'" を検出して該当キーを落として再試行する
+    - Persona由来の拡張パラメータ（verbosity 等）を安全に吸収する
     """
 
     def __init__(
@@ -44,16 +40,55 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         )
 
     @staticmethod
-    def _extract_unexpected_kw_from_typeerror(e: TypeError) -> Optional[str]:
+    def _apply_verbosity_hint(kwargs: Dict[str, Any]) -> None:
         """
-        TypeError: got an unexpected keyword argument 'reasoning'
-        みたいな文面から 'reasoning' を抜く。
+        Persona側の "verbosity": "low"/"medium"/"high" を
+        max_completion_tokens の目安に変換して適用する。
+        明示の max_tokens / max_completion_tokens がある場合は尊重して何もしない。
         """
-        msg = str(e)
-        m = re.search(r"unexpected keyword argument\s+'([^']+)'", msg)
-        if not m:
-            return None
-        return m.group(1)
+        if "max_tokens" in kwargs or "max_completion_tokens" in kwargs:
+            kwargs.pop("verbosity", None)
+            return
+
+        v = kwargs.pop("verbosity", None)
+        if not isinstance(v, str):
+            return
+
+        vv = v.strip().lower()
+        # ざっくり目安。必要なら後で調整。
+        if vv == "low":
+            kwargs["max_completion_tokens"] = 256
+        elif vv == "high":
+            kwargs["max_completion_tokens"] = 1024
+        else:
+            # medium / unknown
+            kwargs["max_completion_tokens"] = 512
+
+    @staticmethod
+    def _sanitize_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        OpenAI SDK に流す前に、Lyra内部キーワードや未知キーをなるべく除去する。
+        （SDK差異で TypeError を起こさないため）
+        """
+        k = dict(kwargs or {})
+
+        # Lyra 内部用キーワードは削除
+        for drop in ("mode", "judge_mode"):
+            k.pop(drop, None)
+
+        # include_reasoning はLyra内部のスイッチ扱い（SDKへは送らない）
+        k.pop("include_reasoning", None)
+
+        # reasoning は環境差で死ぬので原則送らない（既存方針維持）
+        k.pop("reasoning", None)
+
+        # verbosity を max_completion_tokens に変換（必要なら）
+        OpenAIChatAdapter._apply_verbosity_hint(k)
+
+        # ここで max_tokens / max_completion_tokens を正規化
+        normalize_max_tokens(k)
+
+        return k
 
     def call(
         self,
@@ -63,9 +98,8 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         if self._client is None:
             raise RuntimeError(f"{self.name}: OpenAI API キーが設定されていません。")
 
-        # Lyra 内部用キーワードは削除
-        for k in ("mode", "judge_mode"):
-            kwargs.pop(k, None)
+        # kwargs を安全化（verbosity等を吸収）
+        kwargs = self._sanitize_kwargs(kwargs)
 
         # TARGET_TOKENS があり、かつ明示指定が無ければ適用
         if (
@@ -74,8 +108,6 @@ class OpenAIChatAdapter(BaseLLMAdapter):
             and "max_completion_tokens" not in kwargs
         ):
             kwargs["max_completion_tokens"] = int(self.TARGET_TOKENS)
-
-        normalize_max_tokens(kwargs)
 
         last_exc: Optional[Exception] = None
 
@@ -89,9 +121,6 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 kwargs["max_tokens"] = min(cur + inc, 2048)
             else:
                 kwargs["max_completion_tokens"] = 512
-
-        # 未対応引数を落として再試行する枠（安全策）
-        dropped_unexpected: List[str] = []
 
         for attempt in range(3):
             try:
@@ -118,24 +147,13 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 return text, usage
 
             except TypeError as e:
-                # ★環境差：未知のキーワードが来ても死なない
-                bad_kw = self._extract_unexpected_kw_from_typeerror(e)
-                if bad_kw and bad_kw in kwargs and bad_kw not in dropped_unexpected:
-                    dropped_unexpected.append(bad_kw)
-                    logger.warning(
-                        "%s: dropping unsupported kw '%s' and retrying (dropped=%s)",
-                        self.name,
-                        bad_kw,
-                        dropped_unexpected,
-                    )
-                    kwargs.pop(bad_kw, None)
-                    last_exc = e
-                    # そのまま次ループで再試行
-                    continue
-
+                # ここに来る場合は「SDKが受け付けない引数」が残っている可能性が高い
                 last_exc = e
                 logger.exception(
-                    "%s: OpenAI call failed (TypeError, attempt=%s)", self.name, attempt + 1
+                    "%s: OpenAI call TypeError (attempt=%s) kwargs=%s",
+                    self.name,
+                    attempt + 1,
+                    {k: type(v).__name__ for k, v in (kwargs or {}).items()},
                 )
 
             except Exception as e:
@@ -145,5 +163,5 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 )
 
         raise RuntimeError(
-            f"{self.name}: OpenAI call failed after retry: {last_exc} (dropped={dropped_unexpected})"
+            f"{self.name}: OpenAI call failed after retry: {last_exc}"
         )
