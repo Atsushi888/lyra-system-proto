@@ -1,4 +1,4 @@
-# llm2/llm_ai/llm_adapters/grok.py
+# llm/llm_ai/llm_adapters/grok.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -6,8 +6,8 @@ import os
 import logging
 import requests
 
-from llm2.llm_ai.llm_adapters.base import BaseLLMAdapter
-from llm2.llm_ai.llm_adapters.utils import split_text_and_usage_from_dict
+from llm.llm_ai.llm_adapters.base import BaseLLMAdapter
+from llm.llm_ai.llm_adapters.utils import split_text_and_usage_from_dict
 
 logger = logging.getLogger(__name__)
 
