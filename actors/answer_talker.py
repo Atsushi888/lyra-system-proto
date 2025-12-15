@@ -64,6 +64,26 @@ class AnswerTalker:
             model_name=memory_model,
         )
 
+    # -----------------------------
+    # 内部: messages の system に追記
+    # -----------------------------
+    @staticmethod
+    def _inject_into_system(messages: List[Dict[str, str]], extra_system: str) -> List[Dict[str, str]]:
+        if not extra_system:
+            return messages
+
+        new_messages = list(messages)
+        for i, m in enumerate(new_messages):
+            if isinstance(m, dict) and m.get("role") == "system":
+                base = str(m.get("content") or "")
+                merged = (base.rstrip() + "\n\n" + extra_system.strip()).strip()
+                new_messages[i] = {"role": "system", "content": merged}
+                return new_messages
+
+        # system が無ければ先頭に追加（保険）
+        new_messages.insert(0, {"role": "system", "content": extra_system.strip()})
+        return new_messages
+
     def speak(
         self,
         messages: List[Dict[str, str]],
@@ -85,9 +105,28 @@ class AnswerTalker:
         try:
             InitAI.ensure_minimum(state=self.state, persona=self.persona)
 
+            # ==========================================================
+            # ★ NEW: Memory context を作って system へ注入
+            # ==========================================================
+            memory_context = ""
+            try:
+                memory_context = self.memory_ai.build_memory_context(user_query=user_text, max_items=5) or ""
+                self.llm_meta["memory_context"] = memory_context
+            except Exception as e:
+                self.llm_meta["memory_context_error"] = str(e)
+
+            if memory_context:
+                messages = self._inject_into_system(messages, memory_context)
+
+            # ==========================================================
+            # 既存: emotion_override
+            # ==========================================================
             emotion_override = self.mixer_ai.build_emotion_override()
             self.llm_meta["emotion_override"] = emotion_override
 
+            # ==========================================================
+            # LLMs 実行
+            # ==========================================================
             results = self.models_ai.collect(
                 messages,
                 mode_current=judge_mode or "normal",
@@ -107,10 +146,38 @@ class AnswerTalker:
 
             final_text = composed.get("text") or judge.get("chosen_text") or ""
 
+            # ==========================================================
+            # ★ NEW: Memory 更新（ターン終了時）
+            # round_id は streamlit state でインクリメント管理（無ければ作る）
+            # ==========================================================
+            try:
+                rid = int(self.state.get("round_id") or 0)
+            except Exception:
+                rid = 0
+            rid += 1
+            try:
+                # Mapping の可能性があるので setdefault で落ちないように
+                self.state["round_id"] = rid  # type: ignore[index]
+            except Exception:
+                pass
+
+            try:
+                mem_res = self.memory_ai.update_from_turn(
+                    messages=messages,
+                    final_reply=final_text,
+                    round_id=rid,
+                )
+                self.llm_meta["memory_update"] = mem_res
+            except Exception as e:
+                self.llm_meta["memory_update_error"] = str(e)
+
+            # ==========================================================
+            # emotion（memory_context を渡す）
+            # ==========================================================
             try:
                 emotion_res: EmotionResult = self.emotion_ai.analyze(
                     composer=composed,
-                    memory_context="",
+                    memory_context=memory_context or "",
                     user_text=user_text,
                 )
                 self.llm_meta["emotion"] = emotion_res.to_dict()
