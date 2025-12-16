@@ -1,3 +1,4 @@
+# actors/models_ai2.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -13,10 +14,12 @@ class ModelsAI2:
     """
     複数 LLM から一斉に回答案を集めるためのクラス（デバッグ強化版）。
 
-    ★ 方針
-    - 例外が出ても「models が空」になることを絶対に防ぐ
-    - 各モデルごとに status / error / traceback を必ず残す
-    - Persona(JSON)の llm_request_defaults をモデル呼び出しに反映できるようにする
+    ✅ 改良方針（最小侵襲）
+    - enabled_models を __init__ 時に固定しない（AI Manager 変更に追従）
+    - 例外が出ても results が空になるのを防ぐ
+    - 各モデルごとに status / error / traceback / call_kwargs を必ず残す
+    - persona(JSON) の llm_request_defaults をモデル呼び出しに反映できる
+    - _meta に「今回投げたモデル一覧」を必ず残す（デバッグの要）
     """
 
     def __init__(
@@ -29,15 +32,14 @@ class ModelsAI2:
         self.llm_manager = llm_manager
         self.persona = persona
 
-        self.model_props: Dict[str, Dict[str, Any]] = llm_manager.get_model_props()
+        # enabled_models を「固定したい場合のみ」保持
+        # None の場合は collect() の度に最新の model_props を見て enabled を解決する
+        self._enabled_models_override: Optional[List[str]] = (
+            list(enabled_models) if enabled_models is not None else None
+        )
 
-        if enabled_models is not None:
-            self.enabled_models = list(enabled_models)
-        else:
-            self.enabled_models = [
-                name for name, props in self.model_props.items()
-                if props.get("enabled", True)
-            ]
+        # persona defaults の fallback で model_family を見るために一応保持（毎回 refresh もする）
+        self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
 
     # ---------------------------------------
     # 内部ヘルパ：LLM からの戻り値を正規化
@@ -72,16 +74,11 @@ class ModelsAI2:
         return {"text": text, "usage": usage, "raw": raw}
 
     # ---------------------------------------
-    # 内部ヘルパ：Persona defaults を取り出す
+    # 内部ヘルパ：Persona defaults を取り出す（モデル別）
     # ---------------------------------------
     def _get_persona_call_defaults(self, model_name: str) -> Dict[str, Any]:
         """
-        persona JSON の llm_request_defaults を、対象モデル名で引いて返す。
-
-        想定:
-          persona.raw["llm_request_defaults"]["gpt52"] = {...}
-
-        persona が無い/形式が違う/未定義なら空dict。
+        persona.raw["llm_request_defaults"]["gpt52"] = {...} を想定。
         """
         p = self.persona
         if p is None:
@@ -95,13 +92,12 @@ class ModelsAI2:
         if not isinstance(defs, dict):
             return {}
 
-        # "gpt52" などモデル名キー直指定
+        # 1) モデル名キー直指定（gpt52 など）
         d = defs.get(model_name)
         if isinstance(d, dict):
             return dict(d)
 
-        # フォールバック：model_family で拾いたい場合に備える（将来用）
-        # 例: props[model_name]["extra"]["model_family"]
+        # 2) フォールバック：model_family（将来用）
         try:
             extra = (self.model_props.get(model_name) or {}).get("extra") or {}
             fam = extra.get("model_family")
@@ -113,17 +109,27 @@ class ModelsAI2:
         return {}
 
     # ---------------------------------------
-    # 内部ヘルパ：kwargs を安全に合成
+    # 内部ヘルパ：None 値は落とす（安全）
     # ---------------------------------------
     @staticmethod
-    def _merge_kwargs(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-        out = dict(base)
-        for k, v in (override or {}).items():
-            # None は「指定なし」として無視（潰さない）
-            if v is None:
-                continue
-            out[k] = v
-        return out
+    def _drop_none_kwargs(d: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: v for k, v in (d or {}).items() if v is not None}
+
+    # ---------------------------------------
+    # enabled_models 解決（AI Manager 追従）
+    # ---------------------------------------
+    def _resolve_enabled_models(self, model_props: Dict[str, Dict[str, Any]]) -> List[str]:
+        if self._enabled_models_override is not None:
+            return list(self._enabled_models_override)
+
+        enabled: List[str] = []
+        for name, props in (model_props or {}).items():
+            try:
+                if props.get("enabled", True):
+                    enabled.append(name)
+            except Exception:
+                enabled.append(name)
+        return enabled
 
     # ---------------------------------------
     # メイン
@@ -138,8 +144,38 @@ class ModelsAI2:
     ) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
 
-        if not self.enabled_models:
-            # ★ ここが重要：enabled_models 空でも必ず痕跡を残す
+        if not messages:
+            results["_system"] = {
+                "status": "error",
+                "text": "",
+                "error": "messages is empty",
+                "traceback": None,
+            }
+            return results
+
+        # ✅ 毎回最新を取得（enabled追従のため）
+        try:
+            self.model_props = self.llm_manager.get_model_props()
+        except Exception as e:
+            results["_system"] = {
+                "status": "error",
+                "text": "",
+                "error": f"llm_manager.get_model_props() failed: {e}",
+                "traceback": traceback.format_exc(limit=8),
+            }
+            return results
+
+        target_models = self._resolve_enabled_models(self.model_props)
+
+        # ✅ まず _meta を必ず残す（「何を投げたか」可視化）
+        results["_meta"] = {
+            "status": "ok",
+            "enabled_models": list(target_models),
+            "mode_current": mode_current,
+            "reply_length_mode": reply_length_mode,
+        }
+
+        if not target_models:
             results["_system"] = {
                 "status": "error",
                 "text": "",
@@ -148,14 +184,10 @@ class ModelsAI2:
             }
             return results
 
-        for model_name in self.enabled_models:
-            # Persona由来の呼び出しデフォルト（モデル別）
+        for model_name in target_models:
+            # Persona defaults
             persona_defaults = self._get_persona_call_defaults(model_name)
-
-            # このcollect呼び出し側（AnswerTalker）から渡ってきたメタは
-            # LLMへは直接渡さない（ただし将来必要ならここで制御可能）
-            # → いまは persona_defaults のみを LLM kwargs として渡す。
-            call_kwargs: Dict[str, Any] = dict(persona_defaults)
+            call_kwargs: Dict[str, Any] = self._drop_none_kwargs(dict(persona_defaults))
 
             try:
                 completion: CompletionType = self.llm_manager.chat(
@@ -176,7 +208,7 @@ class ModelsAI2:
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
                     "reply_length_mode": reply_length_mode,
-                    "call_kwargs": call_kwargs,  # ★デバッグ用：実際に渡したkwargs
+                    "call_kwargs": call_kwargs,
                 }
 
             except Exception as e:
@@ -186,11 +218,11 @@ class ModelsAI2:
                     "raw": None,
                     "usage": None,
                     "error": str(e),
-                    "traceback": traceback.format_exc(limit=6),
+                    "traceback": traceback.format_exc(limit=8),
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
                     "reply_length_mode": reply_length_mode,
-                    "call_kwargs": call_kwargs,  # ★失敗時も残す
+                    "call_kwargs": call_kwargs,
                 }
 
         return results
