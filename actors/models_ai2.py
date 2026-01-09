@@ -11,14 +11,15 @@ CompletionType = Union[Dict[str, Any], Tuple[Any, ...], str]
 
 class ModelsAI2:
     """
-    複数 LLM から一斉に回答案を集めるためのクラス（デバッグ強化版）。
+    複数 LLM から一斉に回答案を集めるクラス（デバッグ強化版 / AI Manager 追従版）。
 
-    ✅ 方針
-    - AI Manager の enabled を確実に反映（enabled=True のみ呼ぶ）
-    - APIキーが必要なモデルは has_key=True のみ呼ぶ
-    - enabled_models_override が指定されても、無効/鍵なしは除外（安全）
-    - persona(JSON) の llm_request_defaults をモデル呼び出しに反映
-    - _meta に「今回投げた/除外した」一覧を必ず残す
+    重要方針:
+    - “呼んでいいモデル”の正は llm_manager.get_available_models()
+      （has_key を含めて判定できるため）
+    - ただし available_models は「一覧」なので enabled=False は必ず除外する
+    - enabled_models が override で渡された場合は、その集合だけを狙う
+      さらに available/enabled/has_key と交差させる（ゾンビ起動を封じる）
+    - _meta に available/selected/dropped を必ず残す
     """
 
     def __init__(
@@ -31,17 +32,17 @@ class ModelsAI2:
         self.llm_manager = llm_manager
         self.persona = persona
 
-        # enabled_models を「固定したい場合のみ」保持
-        # None の場合は collect() の度に最新状態に追従
+        # override 指定がある場合は「固定」
         self._enabled_models_override: Optional[List[str]] = (
-            list(enabled_models) if enabled_models is not None else None
+            [str(x) for x in enabled_models] if enabled_models is not None else None
         )
 
-        # model_family 参照などのために保持（collect内で更新）
+        # Persona defaults の fallback（model_family参照など）用に保持
+        # collect() 内で毎回 refresh する
         self.model_props: Dict[str, Dict[str, Any]] = {}
 
     # ---------------------------------------
-    # 内部ヘルパ：LLM からの戻り値を正規化
+    # LLM 戻り値の正規化
     # ---------------------------------------
     @staticmethod
     def _normalize_completion(completion: CompletionType) -> Dict[str, Any]:
@@ -73,7 +74,7 @@ class ModelsAI2:
         return {"text": text, "usage": usage, "raw": raw}
 
     # ---------------------------------------
-    # 内部ヘルパ：Persona defaults を取り出す（モデル別）
+    # Persona defaults（モデル別）
     # ---------------------------------------
     def _get_persona_call_defaults(self, model_name: str) -> Dict[str, Any]:
         """
@@ -91,70 +92,88 @@ class ModelsAI2:
         if not isinstance(defs, dict):
             return {}
 
-        # 1) モデル名キー直指定（gpt52 など）
+        # 1) モデル名キー直指定
         d = defs.get(model_name)
         if isinstance(d, dict):
             return dict(d)
 
-        # 2) フォールバック：model_family（将来用）
+        # 2) フォールバック：model_family
         try:
             extra = (self.model_props.get(model_name) or {}).get("extra") or {}
             fam = extra.get("model_family")
-            if isinstance(fam, str) and fam in defs and isinstance(defs.get(fam), dict):
+            if isinstance(fam, str) and isinstance(defs.get(fam), dict):
                 return dict(defs[fam])
         except Exception:
             pass
 
         return {}
 
-    # ---------------------------------------
-    # 内部ヘルパ：None 値は落とす（安全）
-    # ---------------------------------------
     @staticmethod
     def _drop_none_kwargs(d: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in (d or {}).items() if v is not None}
 
     # ---------------------------------------
-    # enabled_models 解決（AI Manager 追従）
+    # “呼んでいいモデル”を確定する（核心）
     # ---------------------------------------
     def _resolve_target_models(
         self,
-        props: Dict[str, Dict[str, Any]],
-    ) -> Tuple[List[str], Dict[str, List[str]]]:
+        available: Dict[str, Dict[str, Any]],
+    ) -> Tuple[List[str], Dict[str, Any]]:
         """
-        props は get_available_models() の戻り値を想定（enabled/has_key を含む）
         Returns:
-          (target_models, filtered_detail)
+          (target_models, meta_detail)
         """
-        all_models = list((props or {}).keys())
+        available_names: List[str] = [str(k) for k in (available or {}).keys()]
 
-        # override がある場合はそれを候補の基準にする（ただし後段で enabled/has_key で除外）
+        enabled_names: List[str] = []
+        dropped: Dict[str, str] = {}
+
+        # available の中から enabled & has_key を満たすものだけ残す
+        for name in available_names:
+            p = available.get(name, {}) if isinstance(available, dict) else {}
+            if not isinstance(p, dict):
+                enabled_names.append(name)
+                continue
+
+            if not p.get("enabled", True):
+                dropped[name] = "disabled"
+                continue
+
+            if "has_key" in p and not bool(p.get("has_key", True)):
+                dropped[name] = "missing_api_key"
+                continue
+
+            enabled_names.append(name)
+
+        # override があるならそれを最優先。ただし enabled_names と交差。
         if self._enabled_models_override is not None:
-            candidates = [m for m in self._enabled_models_override if m in props]
-        else:
-            candidates = all_models
+            override = [str(x) for x in self._enabled_models_override if str(x).strip()]
+            target: List[str] = []
+            for m in override:
+                if m in enabled_names:
+                    target.append(m)
+                else:
+                    # “指定したのに呼べない”理由を可能な範囲で残す
+                    if m not in available_names:
+                        dropped[m] = "not_registered_or_not_available"
+                    else:
+                        # available にはいるが enabled/has_key で落ちているケース
+                        dropped.setdefault(m, "filtered_out")
+            return target, {
+                "available_models": available_names,
+                "enabled_models_after_filter": enabled_names,
+                "override_models": override,
+                "dropped_models": dropped,
+                "resolution_mode": "override_intersection",
+            }
 
-        filtered_disabled: List[str] = []
-        filtered_no_key: List[str] = []
-        target: List[str] = []
-
-        for name in candidates:
-            p = props.get(name) or {}
-            enabled = bool(p.get("enabled", True))
-            has_key = bool(p.get("has_key", True))
-
-            if not enabled:
-                filtered_disabled.append(name)
-                continue
-            if not has_key:
-                filtered_no_key.append(name)
-                continue
-
-            target.append(name)
-
-        return target, {
-            "filtered_disabled": filtered_disabled,
-            "filtered_no_key": filtered_no_key,
+        # override なし：enabled_names が target
+        return enabled_names, {
+            "available_models": available_names,
+            "enabled_models_after_filter": enabled_names,
+            "override_models": None,
+            "dropped_models": dropped,
+            "resolution_mode": "enabled_from_available",
         }
 
     # ---------------------------------------
@@ -179,9 +198,11 @@ class ModelsAI2:
             }
             return results
 
-        # ✅ 毎回最新を取得（enabled/has_key も含めて判断するため）
+        # 1) available を毎回取得（enabled/has_key もここに載る）
         try:
-            self.model_props = self.llm_manager.get_available_models()
+            available = self.llm_manager.get_available_models() or {}
+            if not isinstance(available, dict):
+                available = {}
         except Exception as e:
             results["_system"] = {
                 "status": "error",
@@ -191,28 +212,35 @@ class ModelsAI2:
             }
             return results
 
-        target_models, filtered = self._resolve_target_models(self.model_props)
+        # 2) model_props は Persona defaults の model_family 参照用（補助）
+        try:
+            props = self.llm_manager.get_model_props() or {}
+            self.model_props = props if isinstance(props, dict) else {}
+        except Exception:
+            self.model_props = {}
 
-        # ✅ まず _meta を必ず残す
+        # 3) target_models を確定（ここが “他AIが走る” を止める本丸）
+        target_models, meta_detail = self._resolve_target_models(available)
+
+        # 4) _meta を必ず残す
         results["_meta"] = {
             "status": "ok",
             "mode_current": mode_current,
-            "reply_length_mode": reply_length_mode,
-            "all_models": list((self.model_props or {}).keys()),
-            "enabled_models_override": list(self._enabled_models_override) if self._enabled_models_override is not None else None,
+            "reply_length_mode": str(reply_length_mode or "auto"),
             "target_models": list(target_models),
-            **filtered,
+            **meta_detail,
         }
 
         if not target_models:
             results["_system"] = {
                 "status": "error",
                 "text": "",
-                "error": "no enabled+available models after filtering (enabled/has_key)",
+                "error": "No target models resolved (all filtered or override mismatch)",
                 "traceback": None,
             }
             return results
 
+        # 5) 呼び出し
         for model_name in target_models:
             persona_defaults = self._get_persona_call_defaults(model_name)
             call_kwargs: Dict[str, Any] = self._drop_none_kwargs(dict(persona_defaults))
@@ -235,7 +263,7 @@ class ModelsAI2:
                     "traceback": None,
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
-                    "reply_length_mode": reply_length_mode,
+                    "reply_length_mode": str(reply_length_mode or "auto"),
                     "call_kwargs": call_kwargs,
                 }
 
@@ -249,7 +277,7 @@ class ModelsAI2:
                     "traceback": traceback.format_exc(limit=8),
                     "mode_current": mode_current,
                     "emotion_override": emotion_override,
-                    "reply_length_mode": reply_length_mode,
+                    "reply_length_mode": str(reply_length_mode or "auto"),
                     "call_kwargs": call_kwargs,
                 }
 
