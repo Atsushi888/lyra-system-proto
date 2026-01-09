@@ -20,8 +20,8 @@ class OpenAIChatAdapter(BaseLLMAdapter):
     """
     OpenAI ChatCompletion 系（GPT-4o / GPT-5.1 / GPT-5.2 など）の共通アダプタ。
 
-    - OpenAI SDK を直接使用
-    - max_tokens / max_completion_tokens の差異を内部で吸収
+    - OpenAI SDK を直接使用します
+    - max_tokens / max_completion_tokens の差異を内部で吸収します
     - Persona由来の拡張パラメータ（verbosity 等）を安全に吸収します
     """
 
@@ -73,11 +73,11 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         """
         k = dict(kwargs or {})
 
-        # Lyra 内部用キーワードは削除
+        # Lyra 内部用キーワードは削除します
         for drop in ("mode", "judge_mode"):
             k.pop(drop, None)
 
-        # include_reasoning はLyra内部のスイッチ扱い（SDKへは送らない）
+        # include_reasoning はLyra内部のスイッチ扱い（SDKへは送りません）
         k.pop("include_reasoning", None)
 
         # reasoning は環境差で死ぬため、原則送らない（既存方針維持）
@@ -86,7 +86,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         # verbosity を max_completion_tokens に変換（必要なら）
         OpenAIChatAdapter._apply_verbosity_hint(k)
 
-        # ここで max_tokens / max_completion_tokens を正規化
+        # ここで max_tokens / max_completion_tokens を正規化します
         normalize_max_tokens(k)
 
         return k
@@ -102,11 +102,22 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         # kwargs を安全化（verbosity等を吸収）
         kwargs = self._sanitize_kwargs(kwargs)
 
-        # ★ GPT-5.2 系は presence_penalty / frequency_penalty を受け付けないため、
-        #   送信直前で必ず除去します（400エラー回避）。
-        if "5.2" in (self.model_id or "") or self.name == "gpt52":
+        # ★ GPT-5.2 系は、環境/ルーティングによって受理パラメータが厳しく、
+        #   temperature 等が「既定値のみ許可」になることがあります。
+        #   そのため、送信直前で安全側に倒して除去します（400エラー回避）。
+        is_gpt52 = ("5.2" in (self.model_id or "")) or (self.name == "gpt52")
+
+        if is_gpt52:
+            # penalty 系は非対応のため除去します
             kwargs.pop("presence_penalty", None)
             kwargs.pop("frequency_penalty", None)
+
+            # temperature は既定値(1)以外が弾かれるケースがあるため除去します
+            # ※「送らない」方が安全です（SDK/サーバ側既定に委ねます）
+            kwargs.pop("temperature", None)
+
+            # top_p も同様に弾かれる可能性があるため、保険として除去します
+            kwargs.pop("top_p", None)
 
         # TARGET_TOKENS があり、かつ明示指定が無ければ適用
         if (
