@@ -10,13 +10,13 @@ class JudgeAI3:
     複数 LLM の回答候補（models）から、
     「どのモデルのテキストを採用するか」を決める審判クラス。
 
-    v0.5.0 方針:
-      - models: { model_name: {"status": "ok", "text": "...", ...}, ... }
-      - preferred_length_mode: "auto" / "short" / "normal" / "long" / "story"
-      - priority: ["gpt52","gpt51",...] のような「モデル優先順位」
-        → usable(=status ok & textあり) の中から、priorityの先頭を優先採用。
-        → priorityで選べない場合のみ、従来の length_score にフォールバック。
+    v0.5.1 (hotfix)
+      - _meta/_system などメタ行を候補から除外
+      - 例外が起きても落とさず error を返す
+      - 実行時にこのファイルが読まれているか判定できるよう version を返す
     """
+
+    VERSION = "0.5.1-hotfix"
 
     def __init__(self, mode: str = "normal") -> None:
         self.mode = (mode or "normal").lower()
@@ -32,168 +32,176 @@ class JudgeAI3:
         models: Dict[str, Any],
         user_text: str = "",
         preferred_length_mode: Optional[str] = None,
-        priority: Optional[List[str]] = None,   # ★追加
+        priority: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        models: ModelsAI2.collect() の結果（llm_meta["models"]）を想定。
-        user_text: プレイヤーの直近発話（任意）。渡されなければ長さ150相当で計算。
-        preferred_length_mode:
-            UserSettings などから渡される「発話長さモード」。
-            "auto" / "short" / "normal" / "long" / "story"
-        priority:
-            AIManager などから渡される「モデル優先順位」。
-            例: ["gpt52","gpt51","grok","gemini","gpt4o"]
-        """
-        if not isinstance(models, dict) or not models:
-            return {
-                "status": "error",
-                "error": "no_models",
-                "chosen_model": "",
-                "chosen_text": "",
-                "reason": "models is empty or not a dict",
-                "candidates": [],
-            }
-
-        length_mode = (preferred_length_mode or "auto").lower()
-        user_len = len(user_text or "")
-        target_len = self._calc_preferred_length(
-            user_len=user_len,
-            length_mode=length_mode,
-        )
-
-        prio: List[str] = [str(x) for x in (priority or []) if str(x).strip()]
-        prio_rank: Dict[str, int] = {name: i for i, name in enumerate(prio)}
-
-        candidates: List[Dict[str, Any]] = []
-
-        for name, info in models.items():
-            if not isinstance(info, dict):
-                continue
-
-            status = str(info.get("status") or "unknown")
-            text = (info.get("text") or "").strip()
-            length = len(text)
-
-            if not text or status != "ok":
-                score = -1.0
-                length_score = 0.0
-            else:
-                length_score = self._score_length(
-                    length=length,
-                    target_length=target_len,
-                )
-                score = length_score
-
-            candidates.append(
-                {
-                    "name": name,
-                    "score": float(score),
-                    "length": length,
-                    "text": text,
-                    "status": status,
-                    "details": {
-                        "target_length": target_len,
-                        "length_mode": length_mode,
-                        "length_score": float(length_score),
-                        "priority_rank": prio_rank.get(name, 10**9),  # ★追加（UIデバッグ用）
-                    },
+        try:
+            if not isinstance(models, dict) or not models:
+                return {
+                    "status": "error",
+                    "error": "no_models",
+                    "chosen_model": "",
+                    "chosen_text": "",
+                    "reason": "models is empty or not a dict",
+                    "candidates": [],
+                    "judge_version": self.VERSION,
                 }
+
+            length_mode = (preferred_length_mode or "auto").lower()
+            user_len = len(user_text or "")
+            target_len = self._calc_preferred_length(
+                user_len=user_len,
+                length_mode=length_mode,
             )
 
-        if not candidates:
-            return {
-                "status": "error",
-                "error": "no_candidates_built",
-                "chosen_model": "",
-                "chosen_text": "",
-                "reason": "no candidates could be constructed from models",
-                "candidates": [],
-            }
+            prio: List[str] = [str(x) for x in (priority or []) if str(x).strip()]
+            prio_rank: Dict[str, int] = {name: i for i, name in enumerate(prio)}
 
-        usable: List[Dict[str, Any]] = [
-            c for c in candidates
-            if c["status"] == "ok" and c["text"]
-        ]
+            candidates: List[Dict[str, Any]] = []
 
-        if not usable:
-            return {
-                "status": "error",
-                "error": "no_usable_candidate",
-                "chosen_model": "",
-                "chosen_text": "",
-                "reason": "no candidates had status=ok and non-empty text",
-                "candidates": candidates,
-            }
+            for name, info in models.items():
+                # ✅ 重要：ModelsAI2の _meta/_system 等を除外
+                if isinstance(name, str) and name.startswith("_"):
+                    continue
 
-        # ------------------------------------------------------
-        # ① priority があるなら「優先順位の先頭」を採用（最重要）
-        # ------------------------------------------------------
-        if prio:
-            by_name = {c["name"]: c for c in usable}
-            chosen = None
-            for name in prio:
-                c = by_name.get(name)
-                if c is not None:
-                    chosen = c
-                    break
+                if not isinstance(info, dict):
+                    continue
 
-            if chosen is not None:
-                chosen_model = chosen["name"]
-                chosen_text = chosen["text"]
-                chosen_len = chosen["length"]
-                selection_strategy = "priority_first"
+                status = str(info.get("status") or "unknown")
+                text = (info.get("text") or "").strip()
+                length = len(text)
 
-                reason = (
-                    f"selection={selection_strategy}, "
-                    f"priority={prio}, "
-                    f"preferred_length={target_len}, "
-                    f"length_mode={length_mode}, "
-                    f"user_length={user_len}, "
-                    f"chosen_model={chosen_model}, "
-                    f"chosen_length={chosen_len}"
+                if not text or status != "ok":
+                    score = -1.0
+                    length_score = 0.0
+                else:
+                    length_score = self._score_length(length=length, target_length=target_len)
+                    score = length_score
+
+                candidates.append(
+                    {
+                        "name": name,
+                        "score": float(score),
+                        "length": length,
+                        "text": text,
+                        "status": status,
+                        "details": {
+                            "target_length": target_len,
+                            "length_mode": length_mode,
+                            "length_score": float(length_score),
+                            "priority_rank": prio_rank.get(name, 10**9),
+                        },
+                    }
                 )
 
+            if not candidates:
                 return {
-                    "status": "ok",
-                    "error": "",
-                    "chosen_model": chosen_model,
-                    "chosen_text": chosen_text,
-                    "reason": reason,
-                    "candidates": candidates,
+                    "status": "error",
+                    "error": "no_candidates_built",
+                    "chosen_model": "",
+                    "chosen_text": "",
+                    "reason": "no candidates could be constructed from models",
+                    "candidates": [],
+                    "judge_version": self.VERSION,
                 }
 
-        # ------------------------------------------------------
-        # ② priority がない / 使える候補が priority に居ない → 従来通り
-        # ------------------------------------------------------
-        if length_mode == "story":
-            best = max(usable, key=lambda c: c["length"])
-            selection_strategy = "story_max_length"
-        else:
-            best = max(usable, key=lambda c: c["score"])
-            selection_strategy = "length_score"
+            usable: List[Dict[str, Any]] = [
+                c for c in candidates if c.get("status") == "ok" and (c.get("text") or "").strip()
+            ]
 
-        chosen_model = best["name"]
-        chosen_text = best["text"]
-        chosen_len = best["length"]
+            if not usable:
+                return {
+                    "status": "error",
+                    "error": "no_usable_candidate",
+                    "chosen_model": "",
+                    "chosen_text": "",
+                    "reason": "no candidates had status=ok and non-empty text",
+                    "candidates": candidates,
+                    "judge_version": self.VERSION,
+                }
 
-        reason = (
-            f"selection={selection_strategy}, "
-            f"priority={prio if prio else 'none'}, "
-            f"preferred_length={target_len}, "
-            f"length_mode={length_mode}, "
-            f"user_length={user_len}, "
-            f"chosen_model={chosen_model}, "
-            f"chosen_length={chosen_len}"
-        )
+            # ------------------------------------------------------
+            # ① priority があるなら「優先順位の先頭」を採用（最重要）
+            # ------------------------------------------------------
+            if prio:
+                by_name = {c["name"]: c for c in usable}
+                chosen = None
+                for nm in prio:
+                    c = by_name.get(nm)
+                    if c is not None:
+                        chosen = c
+                        break
 
-        return {
-            "status": "ok",
-            "error": "",
-            "chosen_model": chosen_model,
-            "chosen_text": chosen_text,
-            "reason": reason,
-            "candidates": candidates,
-        }
+                if chosen is not None:
+                    chosen_model = chosen["name"]
+                    chosen_text = chosen["text"]
+                    chosen_len = chosen["length"]
+                    selection_strategy = "priority_first"
+
+                    reason = (
+                        f"selection={selection_strategy}, "
+                        f"priority={prio}, "
+                        f"preferred_length={target_len}, "
+                        f"length_mode={length_mode}, "
+                        f"user_length={user_len}, "
+                        f"chosen_model={chosen_model}, "
+                        f"chosen_length={chosen_len}"
+                    )
+
+                    return {
+                        "status": "ok",
+                        "error": "",
+                        "chosen_model": chosen_model,
+                        "chosen_text": chosen_text,
+                        "reason": reason,
+                        "candidates": candidates,
+                        "judge_version": self.VERSION,
+                    }
+
+            # ------------------------------------------------------
+            # ② priority がない / 使える候補が priority に居ない → 従来通り
+            # ------------------------------------------------------
+            if length_mode == "story":
+                best = max(usable, key=lambda c: c["length"])
+                selection_strategy = "story_max_length"
+            else:
+                best = max(usable, key=lambda c: c["score"])
+                selection_strategy = "length_score"
+
+            chosen_model = best["name"]
+            chosen_text = best["text"]
+            chosen_len = best["length"]
+
+            reason = (
+                f"selection={selection_strategy}, "
+                f"priority={prio if prio else 'none'}, "
+                f"preferred_length={target_len}, "
+                f"length_mode={length_mode}, "
+                f"user_length={user_len}, "
+                f"chosen_model={chosen_model}, "
+                f"chosen_length={chosen_len}"
+            )
+
+            return {
+                "status": "ok",
+                "error": "",
+                "chosen_model": chosen_model,
+                "chosen_text": chosen_text,
+                "reason": reason,
+                "candidates": candidates,
+                "judge_version": self.VERSION,
+            }
+
+        except Exception as e:
+            # ✅ Round0 を殺さない：Judge が落ちても error を返す
+            return {
+                "status": "error",
+                "error": f"judge_exception: {type(e).__name__}: {e}",
+                "chosen_model": "",
+                "chosen_text": "",
+                "reason": "exception_in_judge_run",
+                "candidates": [],
+                "judge_version": self.VERSION,
+            }
 
     # ==========================================================
     # ターゲット長計算
