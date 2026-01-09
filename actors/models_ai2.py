@@ -14,12 +14,11 @@ class ModelsAI2:
     """
     複数 LLM から一斉に回答案を集めるためのクラス（デバッグ強化版）。
 
-    ✅ 改良方針（最小侵襲）
-    - enabled_models を __init__ 時に固定しない（AI Manager 変更に追従）
-    - 例外が出ても results が空になるのを防ぐ
-    - 各モデルごとに status / error / traceback / call_kwargs を必ず残す
-    - persona(JSON) の llm_request_defaults をモデル呼び出しに反映できる
-    - _meta に「今回投げたモデル一覧」を必ず残す（デバッグの要）
+    ✅ 改良点（重要）
+    - enabled_models の解決は get_available_models() を正とする
+      （AI Manager の “有効/無効” を確実に反映するため）
+    - get_model_props() は補助情報（model_family 等）のために取得するに留める
+    - _meta に available_models / enabled_models / overrides を必ず残す
     """
 
     def __init__(
@@ -33,13 +32,14 @@ class ModelsAI2:
         self.persona = persona
 
         # enabled_models を「固定したい場合のみ」保持
-        # None の場合は collect() の度に最新の model_props を見て enabled を解決する
+        # None の場合は collect() の度に最新の available_models を見て追従する
         self._enabled_models_override: Optional[List[str]] = (
             list(enabled_models) if enabled_models is not None else None
         )
 
-        # persona defaults の fallback で model_family を見るために一応保持（毎回 refresh もする）
-        self.model_props: Dict[str, Dict[str, Any]] = self.llm_manager.get_model_props()
+        # persona defaults の fallback で model_family を見るために保持
+        # （collect() 内で毎回 refresh する）
+        self.model_props: Dict[str, Dict[str, Any]] = {}
 
     # ---------------------------------------
     # 内部ヘルパ：LLM からの戻り値を正規化
@@ -116,19 +116,35 @@ class ModelsAI2:
         return {k: v for k, v in (d or {}).items() if v is not None}
 
     # ---------------------------------------
-    # enabled_models 解決（AI Manager 追従）
+    # enabled_models 解決（AI Manager 追従の “正”）
     # ---------------------------------------
-    def _resolve_enabled_models(self, model_props: Dict[str, Dict[str, Any]]) -> List[str]:
+    def _resolve_enabled_models_from_available(
+        self,
+        available_models: Dict[str, Dict[str, Any]],
+    ) -> List[str]:
+        """
+        get_available_models() を正として enabled を決める。
+
+        available_models は基本的に「呼び出し可能（有効）」のみが返る設計が望ましいが、
+        念のため enabled フラグが含まれている場合にも対応する。
+        """
         if self._enabled_models_override is not None:
+            # 手動固定（AI Manager 追従しないモード）
             return list(self._enabled_models_override)
 
         enabled: List[str] = []
-        for name, props in (model_props or {}).items():
+        for name, props in (available_models or {}).items():
             try:
-                if props.get("enabled", True):
+                if props is None:
+                    enabled.append(name)
+                elif isinstance(props, dict):
+                    if props.get("enabled", True):
+                        enabled.append(name)
+                else:
                     enabled.append(name)
             except Exception:
                 enabled.append(name)
+
         return enabled
 
     # ---------------------------------------
@@ -153,24 +169,35 @@ class ModelsAI2:
             }
             return results
 
-        # ✅ 毎回最新を取得（enabled追従のため）
+        # ✅ 毎回最新を取得（AI Manager 追従のため）
         try:
-            self.model_props = self.llm_manager.get_model_props()
+            available = self.llm_manager.get_available_models() or {}
         except Exception as e:
             results["_system"] = {
                 "status": "error",
                 "text": "",
-                "error": f"llm_manager.get_model_props() failed: {e}",
+                "error": f"llm_manager.get_available_models() failed: {e}",
                 "traceback": traceback.format_exc(limit=8),
             }
             return results
 
-        target_models = self._resolve_enabled_models(self.model_props)
+        # get_model_props は “補助情報” として取得（model_family 用など）
+        try:
+            self.model_props = self.llm_manager.get_model_props() or {}
+        except Exception:
+            # ここが落ちても「呼び出し」はできるので続行
+            self.model_props = {}
+
+        target_models = self._resolve_enabled_models_from_available(available)
 
         # ✅ まず _meta を必ず残す（「何を投げたか」可視化）
         results["_meta"] = {
             "status": "ok",
+            "available_models": list((available or {}).keys()),
             "enabled_models": list(target_models),
+            "enabled_models_override": (
+                list(self._enabled_models_override) if self._enabled_models_override else None
+            ),
             "mode_current": mode_current,
             "reply_length_mode": reply_length_mode,
         }
@@ -179,13 +206,12 @@ class ModelsAI2:
             results["_system"] = {
                 "status": "error",
                 "text": "",
-                "error": "enabled_models is empty",
+                "error": "enabled_models is empty (after resolving from available_models)",
                 "traceback": None,
             }
             return results
 
         for model_name in target_models:
-            # Persona defaults
             persona_defaults = self._get_persona_call_defaults(model_name)
             call_kwargs: Dict[str, Any] = self._drop_none_kwargs(dict(persona_defaults))
 
