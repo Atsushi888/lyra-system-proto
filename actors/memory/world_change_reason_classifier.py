@@ -1,14 +1,17 @@
 # actors/memory/world_change_reason_classifier.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from llm.llm_manager import LLMManager
 
 
+ChatReturn = Union[str, Dict[str, Any], Tuple[Any, ...]]
+
+
 class WorldChangeReasonClassifier:
     """
-    世界変化が起きたが、明確な reasons（発言トリガ）が抽出できなかった場合に、
+    世界変化が検出されたが、明確な reasons（発言トリガ）が抽出できなかった場合に、
     その原因を 2 択で分類する補助分類器。
 
     Returns:
@@ -21,19 +24,15 @@ class WorldChangeReasonClassifier:
         *,
         persona_id: str = "default",
         preferred_model: str = "gpt52",
-        llm: Optional[LLMManager] = None,  # ★外部から注入できるように（MemoryAI互換）
+        llm_manager: Optional[LLMManager] = None,
     ) -> None:
         self.persona_id = persona_id
         self.preferred_model = preferred_model
-        self._llm: LLMManager = llm or LLMManager.get_or_create(persona_id=persona_id)
-
-        # 長い会話で暴発しないためのクリップ設定
-        self.MAX_LINES = 28
-        self.MAX_CHARS_PER_LINE = 600
+        self._llm = llm_manager or LLMManager.get_or_create(persona_id=persona_id)
 
     def classify(
         self,
-        messages: List[Dict[str, Any]],
+        messages: List[Dict[str, str]],
         final_reply: str,
     ) -> str:
         model = self._pick_model()
@@ -47,7 +46,7 @@ class WorldChangeReasonClassifier:
 
         user_prompt = self._build_prompt(messages, final_reply)
 
-        text, _ = self._llm.chat(
+        completion: ChatReturn = self._llm.chat(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -57,6 +56,7 @@ class WorldChangeReasonClassifier:
             max_tokens=16,
         )
 
+        text = self._normalize_text(completion)
         s = (text or "").strip().lower()
 
         if "interpersonal" in s:
@@ -67,9 +67,6 @@ class WorldChangeReasonClassifier:
         # 判定不能時の安全側フォールバック
         return "external_event"
 
-    # -------------------------------------------------
-    # internals
-    # -------------------------------------------------
     def _pick_model(self) -> str:
         props = self._llm.get_available_models() or {}
 
@@ -77,62 +74,47 @@ class WorldChangeReasonClassifier:
             self.preferred_model,
             "gpt52",
             "gpt51",
-            "gpt4o",
             "gemini",
             "grok",
         ]
         for m in candidates:
-            if m in props:
+            if m in props and (props.get(m) or {}).get("enabled", True):
                 return m
         return self.preferred_model
 
     @staticmethod
-    def _clip(s: str, n: int) -> str:
-        if not s:
-            return ""
-        s = str(s)
-        return s if len(s) <= n else (s[: n - 1] + "…")
+    def _normalize_text(completion: ChatReturn) -> str:
+        if isinstance(completion, dict):
+            return str(completion.get("text") or completion.get("content") or "")
+        if isinstance(completion, (tuple, list)):
+            return "" if not completion else str(completion[0] or "")
+        return "" if completion is None else str(completion)
 
+    @staticmethod
     def _build_prompt(
-        self,
-        messages: List[Dict[str, Any]],
+        messages: List[Dict[str, str]],
         final_reply: str,
     ) -> str:
-        """
-        - 直近側を優先して最大 MAX_LINES まで拾う
-        - 1行の長さを MAX_CHARS_PER_LINE にクリップ
-        - 役割は user / assistant のみ対象
-        """
-        picked: List[str] = []
+        lines: List[str] = []
 
-        for m in reversed(messages or []):
-            if not isinstance(m, dict):
-                continue
+        for m in messages or []:
             role = m.get("role")
             if role not in ("user", "assistant"):
                 continue
             content = (m.get("content") or "").strip()
-            if not content:
-                continue
+            if content:
+                lines.append(f"<{role.upper()}> {content}")
 
-            content = self._clip(content, self.MAX_CHARS_PER_LINE)
-            picked.append(f"<{str(role).upper()}> {content}")
-
-            if len(picked) >= self.MAX_LINES:
-                break
-
-        picked.reverse()
-
-        fr = self._clip((final_reply or "").strip(), self.MAX_CHARS_PER_LINE)
+        fr = (final_reply or "").strip()
         if fr:
-            picked.append(f"<ASSISTANT_FINAL> {fr}")
+            lines.append(f"<ASSISTANT_FINAL> {fr}")
 
         return (
-            "A world-level change has been detected, but no single utterance can be used "
-            "as its explicit reason.\n\n"
-            "Classify the primary cause as EXACTLY one of:\n"
-            "- interpersonal_complexity (complex relationships, implicit subtext, multi-party conflict)\n"
-            "- external_event (disaster, accident, environmental/social events)\n\n"
-            "Conversation (most recent, clipped):\n"
-            + "\n".join(picked)
+            "A world-level change has been detected, but no single utterance "
+            "can be used as its explicit reason.\n\n"
+            "Classify the primary cause as ONE of:\n"
+            "1) interpersonal_complexity\n"
+            "2) external_event\n\n"
+            "Conversation:\n"
+            + "\n".join(lines)
         )
