@@ -1,5 +1,4 @@
 # actors/answer_talker.py
-
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Mapping
@@ -29,6 +28,10 @@ class AnswerTalker:
     - 段階ごとに llm_meta に痕跡を残す
     - MemoryAI（新旧）互換で初期化
     - speak() の最後で MemoryAI.update_from_turn() を必ず走らせる
+
+    重要な修正:
+    - AIManager と同じ LLMManager(persona_id="default") を使い、enabled が必ず効くようにする
+    - MemoryAI も default に統一（UI表示と保存先のズレを解消）
     """
 
     def __init__(
@@ -44,8 +47,14 @@ class AnswerTalker:
         # Init
         InitAI.ensure_all(state=self.state, persona=self.persona)
 
-        persona_id = getattr(persona, "char_id", "default")
-        self.llm_manager = llm_manager or LLMManager.get_or_create(persona_id)
+        # -----------------------------
+        # ★重要：LLMの統一persona_id
+        # -----------------------------
+        # AIManager が default を操作している前提で統一する
+        self.runtime_persona_id = "default"
+
+        # LLMManager（default）
+        self.llm_manager = llm_manager or LLMManager.get_or_create(self.runtime_persona_id)
 
         # meta
         self.llm_meta: Dict[str, Any] = self.state.setdefault("llm_meta", {})
@@ -58,13 +67,16 @@ class AnswerTalker:
             self.state["round_id"] = 0
 
         # AIs
-        self.persona_ai = PersonaAI(persona_id=persona_id)
+        # PersonaAI はキャラIDで良い（プロンプト置換など）
+        persona_id_for_prompt = getattr(persona, "char_id", "default")
+        self.persona_ai = PersonaAI(persona_id=persona_id_for_prompt)
 
-        # persona を渡す（ModelsAI2 が persona の request params 等を見る想定）
+        # ModelsAI2（enabled は内部で available_models.enabled を尊重）
         self.models_ai = ModelsAI2(self.llm_manager, persona=self.persona)
 
         # Emotion / Scene / Mixer
-        self.emotion_ai = EmotionAI(self.llm_manager, model_name="gpt51")
+        # ※「gpt52だけ運用」したいなら、ここも gpt52 に寄せるのが安全
+        self.emotion_ai = EmotionAI(self.llm_manager, model_name="gpt52")
         self.scene_ai = SceneAI(state=self.state)
         self.mixer_ai = MixerAI(
             state=self.state,
@@ -74,12 +86,12 @@ class AnswerTalker:
 
         # Judge / Composer
         self.judge_ai = JudgeAI3(mode="normal")
-        self.composer_ai = ComposerAI(self.llm_manager, refine_model="gpt51")
+        self.composer_ai = ComposerAI(self.llm_manager, refine_model="gpt52")
 
-        # MemoryAI（新旧互換）
+        # MemoryAI（保存先を default に統一：UIと一致させる）
         self.memory_ai = self._create_memory_ai(
             persona=persona,
-            persona_id=persona_id,
+            persona_id=self.runtime_persona_id,
             memory_model=memory_model,
         )
 
@@ -93,30 +105,25 @@ class AnswerTalker:
         persona_id: str,
         memory_model: str,
     ) -> Any:
-        """
-        MemoryAI が v0.x（llm_manager必須）/ v1.1（llm_manager不要）どちらでも
-        起動できるようにする互換初期化。
-
-        - v1.1想定: MemoryAI(*, persona_id, persona_raw, base_dir, max_store_items)
-        - 旧想定:   MemoryAI(llm_manager, persona_id, model_name, ...)
-        """
         persona_raw = getattr(persona, "raw", None)
         if not isinstance(persona_raw, dict):
             persona_raw = {}
 
-        # まず v1.1 形式を試す（keyword-only）
+        # v1.1+（keyword-only）を先に試す
         try:
             return MemoryAI(
+                self.llm_manager,            # ★共有（分類器の二重生成回避）
                 persona_id=persona_id,
                 persona_raw=persona_raw,
+                model_name=memory_model,
             )
         except TypeError:
+            # 旧形式へ
             pass
         except Exception:
-            # ここは落とさずフォールバックへ
             pass
 
-        # 次に「あなたの現在の memory_ai.py（旧形式）」を試す
+        # 旧形式（positional互換）
         try:
             return MemoryAI(
                 self.llm_manager,
@@ -124,9 +131,48 @@ class AnswerTalker:
                 model_name=memory_model,
             )
         except Exception as e:
-            # ここで MemoryAI が死ぬと会話全体が死ぬので、最終手段として None
             self.llm_meta.setdefault("memory_init_error", str(e))
             return None
+
+    # =========================================================
+    # 内部：AIManagerの enabled / priority を LLMManagerへ同期
+    # =========================================================
+    def _sync_ai_manager_settings(self) -> Dict[str, Any]:
+        ai_state = st.session_state.get("ai_manager")
+        if not isinstance(ai_state, dict):
+            return {}
+
+        enabled = ai_state.get("enabled_models")
+        priority = ai_state.get("priority")
+
+        if isinstance(enabled, dict):
+            try:
+                self.llm_manager.set_enabled_models(enabled)
+            except Exception:
+                pass
+
+        out: Dict[str, Any] = {}
+        if isinstance(priority, list):
+            out["priority"] = [str(x) for x in priority if str(x).strip()]
+        return out
+
+    # =========================================================
+    # 内部：Judgeに渡す候補だけ抽出（_meta/_system除外）
+    # =========================================================
+    @staticmethod
+    def _extract_judge_candidates(models_result: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        out: Dict[str, Dict[str, Any]] = {}
+        for name, info in (models_result or {}).items():
+            if not isinstance(name, str) or name.startswith("_"):
+                continue
+            if not isinstance(info, dict):
+                continue
+            out[name] = {
+                **info,
+                "status": info.get("status", "unknown"),
+                "text": info.get("text", "") or "",
+            }
+        return out
 
     # =========================================================
     # speak
@@ -140,15 +186,9 @@ class AnswerTalker:
         if not messages:
             return ""
 
-        # 事前ログ（デバッグ）
-        if LYRA_DEBUG:
-            sys_used = self.llm_meta.get("system_prompt_used")
-            st.write(
-                "[DEBUG] system_prompt_used exists:",
-                "system_prompt_used" in self.llm_meta,
-                type(sys_used),
-                len(sys_used or "") if isinstance(sys_used, str) else "(n/a)",
-            )
+        # ★毎ターン同期（UIで殺した設定を確実に効かせる）
+        sync = self._sync_ai_manager_settings()
+        priority = sync.get("priority")
 
         # round_id を確定（この speak のターン番号）
         try:
@@ -170,7 +210,6 @@ class AnswerTalker:
             memory_context = ""
             try:
                 if self.memory_ai is not None and hasattr(self.memory_ai, "build_memory_context"):
-                    # 旧MemoryAI(v0.2)互換：max_items を持ってるなら使う
                     memory_context = str(
                         self.memory_ai.build_memory_context(
                             user_query=user_text or "",
@@ -207,10 +246,16 @@ class AnswerTalker:
                 raise RuntimeError("ModelsAI2.collect returned empty dict")
 
             # -----------------------------------------
-            # Judge
+            # Judge（_meta/_systemを除外して渡す）
             # -----------------------------------------
             self.llm_meta["stage"] = "judge"
-            judge = self.judge_ai.run(results, user_text=user_text)
+            judge_candidates = self._extract_judge_candidates(results)
+            judge = self.judge_ai.run(
+                judge_candidates,
+                user_text=user_text,
+                preferred_length_mode=str(st.session_state.get("reply_length_mode", "auto") or "auto"),
+                priority=priority,
+            )
             self.llm_meta["judge"] = judge
 
             # -----------------------------------------
@@ -238,7 +283,7 @@ class AnswerTalker:
                 self.llm_meta["emotion_error"] = str(e)
 
             # -----------------------------------------
-            # Memory update（最重要：必ず走らせて meta に残す）
+            # Memory update（必ず走らせて meta に残す）
             # -----------------------------------------
             self.llm_meta["stage"] = "memory_update"
             try:
@@ -249,12 +294,6 @@ class AnswerTalker:
                         "added": 0,
                     }
                 else:
-                    # v1.1（keyword-only）想定
-                    if "messages" in getattr(self.memory_ai.update_from_turn, "__code__", ()).__dict__.get("co_varnames", ()):
-                        # ↑ これは信用しない（環境差がある）
-                        pass
-
-                    # とにかく両対応で呼ぶ（keyword → 失敗したら旧positionalへ）
                     try:
                         mu = self.memory_ai.update_from_turn(
                             messages=messages,
