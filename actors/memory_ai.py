@@ -1,30 +1,22 @@
 # actors/memory_ai.py
-
 from __future__ import annotations
 
 import json
 import os
+import logging
+import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from llm.llm_manager import LLMManager  # インターフェースは残すが、内部では使わない
+from llm.llm_manager import LLMManager  # インターフェースは残します（v0.2では未使用）
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class MemoryRecord:
-    """
-    長期記憶 1 件分の構造。
-
-    - id:        一意なID（作成時刻 + ラウンド番号など）
-    - round_id:  会話ログ上のラウンド番号
-    - importance:重要度 1〜5（5が最重要）
-    - summary:   記憶の要約（日本語）
-    - tags:      "関係性", "感情", "設定" などのタグ
-    - created_at:ISO8601 形式の作成日時（UTC）
-    - source_user:      ユーザー発話（元テキスト）
-    - source_assistant: アシスタントの最終返答（元テキスト＝ComposerAI出力）
-    """
     id: str
     round_id: int
     importance: int
@@ -40,47 +32,21 @@ class MemoryAI:
     Lyra-System 用の記憶管理クラス（v0.2 / ComposerAI 直結版）。
 
     役割:
-      - 1ターンの会話（ユーザー発話 + ComposerAI の最終返答）から、
-        「長期記憶として残しておくべきスナップショット」を生成する
-      - 生成した MemoryRecord を JSON ファイルとして永続化する
-      - 次のターン用に「重要そうな記憶のまとめテキスト」を返す
-
-    特徴:
-      - もはや内部で LLM を呼び出さない（安定性と速度を優先）
-      - 「どのテキストを記憶に使うか」は ComposerAI の最終出力に完全依存
-      - importance / tags は、現段階ではシンプルな固定値ロジック
-        （あとからヒューリスティックや別AIによる分類に差し替えやすい設計）
+      - 1ターン分（ユーザー発話 + 最終返答）から MemoryRecord を生成します
+      - JSON ファイルへ永続化します
+      - 次ターン用の memory context を組み立てます
     """
 
     def __init__(
         self,
-        llm_manager: Optional[LLMManager],  # インターフェース互換のため引数は残すが未使用
+        llm_manager: Optional[LLMManager],
         persona_id: str = "default",
         base_dir: str = "data/memory",
-        model_name: str = "gpt4o",         # 互換性のため残しているが利用しない
+        model_name: str = "gpt4o",         # 互換性のため残します（v0.2では未使用）
         max_store_items: int = 200,
-        temperature: float = 0.2,          # 互換性のため残しているが利用しない
+        temperature: float = 0.2,          # 同上
         max_tokens: int = 400,             # 同上
     ) -> None:
-        """
-        Parameters
-        ----------
-        llm_manager:
-            互換性のため残しているが、v0.2 では内部で LLM 呼び出しを行わない。
-
-        persona_id:
-            記憶ファイルを分けるための ID。
-            例: Persona.char_id ("floria_ja" など)
-
-        base_dir:
-            記憶ファイルを保存するディレクトリ。
-
-        model_name / temperature / max_tokens:
-            v0.1 との互換性維持のため残しているが、v0.2 では使用しない。
-
-        max_store_items:
-            記憶の最大保持件数。超えた分は低重要度・古いものから削除する。
-        """
         self.llm_manager = llm_manager
         self.persona_id = persona_id
         self.base_dir = base_dir
@@ -89,30 +55,46 @@ class MemoryAI:
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
 
-        os.makedirs(self.base_dir, exist_ok=True)
-        self.file_path = os.path.join(self.base_dir, f"{self.persona_id}.json")
+        # --- 保存先を絶対パスに固定します（相対パス罠を避けます） ---
+        module_dir = Path(__file__).resolve().parent
+        base_path = Path(base_dir)
+        if not base_path.is_absolute():
+            base_path = (module_dir / base_path).resolve()
+
+        self.base_path: Path = base_path
+
+        # まずは指定先を作成します
+        try:
+            self.base_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            # 万一作れない場合は /tmp に逃がします（Streamlit Cloud 対策）
+            logger.exception("MemoryAI: base_dir mkdir failed, fallback to /tmp: %s", e)
+            self.base_path = Path("/tmp/lyra_memory").resolve()
+            self.base_path.mkdir(parents=True, exist_ok=True)
+
+        self.file_path: Path = self.base_path / f"{self.persona_id}.json"
 
         # メモリ本体
         self.memories: List[MemoryRecord] = []
         self.load()
+
+        logger.warning("MemoryAI initialized: persona_id=%s file_path=%s", self.persona_id, str(self.file_path))
 
     # ============================
     # 永続化
     # ============================
     def load(self) -> None:
         """
-        JSON ファイルから記憶を読み込む。
-        無ければ空リストのまま。
+        JSON ファイルから記憶を読み込みます。存在しなければ空です。
         """
-        if not os.path.exists(self.file_path):
+        if not self.file_path.exists():
             self.memories = []
             return
 
         try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            # 壊れていたら空からやり直す
+            data = json.loads(self.file_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.exception("MemoryAI.load failed (reset to empty): %s", e)
             self.memories = []
             return
 
@@ -122,40 +104,48 @@ class MemoryAI:
                 if not isinstance(item, dict):
                     continue
                 try:
-                    mem = MemoryRecord(
-                        id=str(item.get("id", "")),
-                        round_id=int(item.get("round_id", 0)),
-                        importance=int(item.get("importance", 1)),
-                        summary=str(item.get("summary", "")),
-                        tags=list(item.get("tags", []))
-                        if isinstance(item.get("tags"), list)
-                        else [],
-                        created_at=str(item.get("created_at", "")),
-                        source_user=str(item.get("source_user", "")),
-                        source_assistant=str(item.get("source_assistant", "")),
+                    mems.append(
+                        MemoryRecord(
+                            id=str(item.get("id", "")),
+                            round_id=int(item.get("round_id", 0)),
+                            importance=int(item.get("importance", 1)),
+                            summary=str(item.get("summary", "")),
+                            tags=list(item.get("tags", [])) if isinstance(item.get("tags"), list) else [],
+                            created_at=str(item.get("created_at", "")),
+                            source_user=str(item.get("source_user", "")),
+                            source_assistant=str(item.get("source_assistant", "")),
+                        )
                     )
-                    mems.append(mem)
                 except Exception:
-                    # 1件壊れていても他は読み込む
                     continue
 
         self.memories = mems
+        logger.warning("MemoryAI.load ok: total=%s file=%s", len(self.memories), str(self.file_path))
 
     def save(self) -> None:
         """
-        現在の記憶を JSON として保存する。
+        現在の記憶を JSON として保存します（原子的に書き換えます）。
         """
         data = [asdict(m) for m in self.memories]
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        try:
+            # テンポラリに書いてから置換します
+            self.base_path.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile("w", delete=False, dir=str(self.base_path), encoding="utf-8") as tf:
+                json.dump(data, tf, ensure_ascii=False, indent=2)
+                tmp_name = tf.name
+
+            os.replace(tmp_name, str(self.file_path))
+            logger.warning("MemoryAI.save ok: total=%s file=%s", len(self.memories), str(self.file_path))
+
+        except Exception as e:
+            logger.exception("MemoryAI.save failed: %s", e)
+            raise
 
     # ============================
     # 公開: 記憶一覧取得（ビュー用）
     # ============================
     def get_all_records(self) -> List[MemoryRecord]:
-        """
-        デバッグビュー用：現在保持している MemoryRecord をそのまま返す。
-        """
         return list(self.memories)
 
     # ============================
@@ -167,44 +157,12 @@ class MemoryAI:
         final_reply: str,
         round_id: int,
     ) -> Dict[str, Any]:
-        """
-        1ターン分の会話から、長期記憶に残す内容を生成する。
+        # 呼ばれているかの確認ログ（重要）
+        logger.warning("MemoryAI.update_from_turn called: round_id=%s user_len=%s final_len=%s",
+                       round_id, len(self._extract_last_user_content(messages)), len(final_reply or ""))
 
-        v0.2 では:
-          - 追加の LLM 呼び出しは行わない
-          - ComposerAI の最終返答（final_reply）をベースに 1 件の MemoryRecord を生成
-          - summary は final_reply からのシンプルなトリミング
-          - importance や tags は、今は固定ロジック（将来拡張を見越して関数化）
-
-        Parameters
-        ----------
-        messages:
-            Persona.build_messages(user_text) で組んだ messages。
-            少なくとも最後に user ロールが含まれていることを想定。
-
-        final_reply:
-            ComposerAI による最終返答テキスト。
-
-        round_id:
-            このターンのラウンド番号（ログ上の通し番号）。
-
-        Returns
-        -------
-        Dict[str, Any]:
-            {
-              "status": "ok" | "skip" | "error",
-              "added": int,
-              "total": int,
-              "reason": str,
-              "raw_reply": str,  # v0.1 互換のため final_reply をそのまま入れておく
-              "records": [MemoryRecord ... を dict 化したもの],
-              "error": Optional[str],
-            }
-        """
-        # ユーザー側の最後の発話も保存しておく
         user_text = self._extract_last_user_content(messages)
 
-        # 何も材料がなければスキップ
         if not user_text and not final_reply:
             return {
                 "status": "skip",
@@ -216,11 +174,8 @@ class MemoryAI:
                 "error": None,
             }
 
-        # summary の素材：優先順位は「final_reply > user_text」
         base_text = (final_reply or "").strip() or (user_text or "").strip()
-
         if not base_text:
-            # 念のための二重防御
             return {
                 "status": "skip",
                 "added": 0,
@@ -231,19 +186,10 @@ class MemoryAI:
                 "error": None,
             }
 
-        # ---- ここが v0.2 の肝：summary / importance / tags をローカルで決める ----
-
-        # summary は、長すぎると扱いづらいので先頭 160 文字程度にトリミング
         max_summary_len = 160
-        if len(base_text) > max_summary_len:
-            summary = base_text[: max_summary_len - 1] + "…"
-        else:
-            summary = base_text
+        summary = base_text[: max_summary_len - 1] + "…" if len(base_text) > max_summary_len else base_text
 
-        # importance は現段階では固定値（将来ここにヒューリスティックを入れる）
         importance = self._estimate_importance(user_text=user_text, final_reply=final_reply)
-
-        # tags も現段階ではシンプルに ["設定"] など。将来拡張用のフック。
         tags = self._estimate_tags(user_text=user_text, final_reply=final_reply)
 
         created_at = datetime.now(timezone.utc).isoformat()
@@ -261,10 +207,9 @@ class MemoryAI:
         )
 
         self.memories.append(rec)
-
-        # importance が低いものから順に間引く
         self._trim_memories(max_items=self.max_store_items)
-        # 保存
+
+        # 保存（失敗時は例外ログが出ます）
         self.save()
 
         return {
@@ -280,82 +225,45 @@ class MemoryAI:
     # ============================
     # 公開: コンテキスト構築
     # ============================
-    def build_memory_context(
-        self,
-        user_query: str,
-        max_items: int = 5,
-    ) -> str:
-        """
-        次のターンの system に差し込む用の「記憶コンテキスト」を組み立てる。
-
-        v0.2 でもロジックは v0.1 と同じ：
-          - importance の高い順
-          - 同じ importance 内では新しい順
-        で最大 max_items 件を取り出し、箇条書きテキストにまとめる。
-        """
+    def build_memory_context(self, user_query: str, max_items: int = 5) -> str:
         if not self.memories:
             return ""
 
-        # importance / created_at でソート
-        sorted_mems = sorted(
-            self.memories,
-            key=lambda m: (m.importance, m.created_at),
-            reverse=True,
-        )
-
+        sorted_mems = sorted(self.memories, key=lambda m: (m.importance, m.created_at), reverse=True)
         picked = sorted_mems[:max_items]
         if not picked:
             return ""
 
-        lines: List[str] = []
-        for m in picked:
-            lines.append(f"- {m.summary}")
-
-        # ここはペルソナ依存の文言でもよいが、汎用的に記述
-        context = "これまでに覚えている大切なこと:\n" + "\n".join(lines)
-        return context
+        lines = [f"- {m.summary}" for m in picked]
+        return "これまでに覚えている大切なこと:\n" + "\n".join(lines)
 
     # ============================
-    # 内部: 重要度＆タグの簡易推定
+    # 内部: 重要度＆タグ推定
     # ============================
     @staticmethod
     def _estimate_importance(user_text: str, final_reply: str) -> int:
-        """
-        v0.2 ではシンプルなヒューリスティック。
-        将来的に、別の軽量モデルやルールベースに差し替え可能。
-        """
         text = (user_text or "") + " " + (final_reply or "")
-
-        # ざっくりしたキーワードベースのブースト（必要なら調整）
         high_keywords = ["約束", "好き", "愛してる", "結婚", "子ども", "永遠", "大事", "重要"]
         low_keywords = ["おはよう", "こんにちは", "こんばんは", "おやすみ", "テスト", "試験"]
 
-        imp = 3  # デフォルト
-
+        imp = 3
         if any(k in text for k in high_keywords):
             imp = 5
         elif any(k in text for k in low_keywords):
             imp = 2
-
         return imp
 
     @staticmethod
     def _estimate_tags(user_text: str, final_reply: str) -> List[str]:
-        """
-        v0.2 ではごく簡単なタグ付け。
-        将来、タグ分類用の小さなモデルなどに差し替えやすい構造にしておく。
-        """
         text = (user_text or "") + " " + (final_reply or "")
 
         tags: List[str] = []
-
         if any(k in text for k in ["好き", "愛してる", "キス", "抱きしめ", "関係", "恋人"]):
             tags.append("関係性")
         if any(k in text for k in ["悲しい", "嬉しい", "楽しい", "寂しい", "怖い", "不安"]):
             tags.append("感情")
         if not tags:
             tags.append("設定")
-
         return tags
 
     # ============================
@@ -363,10 +271,6 @@ class MemoryAI:
     # ============================
     @staticmethod
     def _extract_last_user_content(messages: List[Dict[str, Any]]) -> str:
-        """
-        messages から最後の user メッセージの content を抽出。
-        見つからなければ空文字。
-        """
         if not isinstance(messages, list):
             return ""
         for msg in reversed(messages):
@@ -375,20 +279,7 @@ class MemoryAI:
         return ""
 
     def _trim_memories(self, max_items: int = 200) -> None:
-        """
-        記憶数が max_items を超えた場合、
-        importance が低く古いものから削除する。
-        """
         if len(self.memories) <= max_items:
             return
-
-        # importance 昇順 / created_at 昇順 = 「低重要度かつ古いもの」が前
-        sorted_mems = sorted(
-            self.memories,
-            key=lambda m: (m.importance, m.created_at),
-            reverse=False,
-        )
-
-        # 後ろ max_items 件だけ残す
-        keep = sorted_mems[-max_items:]
-        self.memories = keep
+        sorted_mems = sorted(self.memories, key=lambda m: (m.importance, m.created_at), reverse=False)
+        self.memories = sorted_mems[-max_items:]
