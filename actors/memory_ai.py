@@ -5,11 +5,15 @@ import json
 import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
-from llm.llm_manager import LLMManager
 from actors.persona.world_change_detector import WorldChangeDetector
 from actors.memory.world_change_reason_classifier import WorldChangeReasonClassifier
+
+try:
+    from llm.llm_manager import LLMManager
+except Exception:  # pragma: no cover
+    LLMManager = Any  # type: ignore
 
 
 @dataclass
@@ -23,51 +27,48 @@ class MemoryRecord:
     source_user: str
     source_assistant: str
 
-    # v1.1 追加
+    # v1.1+
     world_change_reasons: Optional[List[str]] = None
     reason_unavailable: Optional[str] = None
 
 
 class MemoryAI:
     """
-    長期記憶管理（v1.1）
+    長期記憶管理（v1.2 / 互換強化）
 
-    - importance=5（世界変化）を最優先で処理
-    - reasons が無い場合は外部分類器で reason_unavailable を付与
-
-    互換性:
-    - 旧呼び出し: MemoryAI(llm_manager, persona_id=..., model_name=...)
-      を受けられるようにしてある
+    - importance=5（世界変化）を最優先で扱う
+    - reasons が取れない場合は外部分類器で reason_unavailable を付与
+    - AnswerTalker の旧シグネチャ呼び出しにも耐える（llm_manager / model_name）
     """
 
     def __init__(
         self,
-        llm_manager: Optional[LLMManager] = None,  # ★互換：AnswerTalker が位置引数で渡す
+        llm_manager: Optional[LLMManager] = None,   # ★旧呼び出し互換（positional もOK）
         *,
         persona_id: str,
         persona_raw: Optional[Dict[str, Any]] = None,
         base_dir: str = "data/memory",
         max_store_items: int = 200,
-        model_name: str = "gpt52",  # ★互換：AnswerTalker が渡す
+        # ★旧呼び出し互換：AnswerTalker が model_name=memory_model を渡してくる
+        model_name: Optional[str] = None,
+        preferred_reason_model: Optional[str] = None,
     ) -> None:
-        self.persona_id = persona_id
+        self.persona_id = str(persona_id or "default")
         self.persona_raw = persona_raw or {}
-        self.max_store_items = max_store_items
+        self.max_store_items = int(max_store_items)
 
         os.makedirs(base_dir, exist_ok=True)
-        self.file_path = os.path.join(base_dir, f"{persona_id}.json")
+        self.file_path = os.path.join(base_dir, f"{self.persona_id}.json")
 
         self.memories: List[MemoryRecord] = []
 
-        # world change detector（ルールベース）
         self._detector = WorldChangeDetector(self.persona_raw)
 
-        # reason classifier（LLM）
-        # - llm_manager が渡されない場合は classifier 内で get_or_create する
+        # ★分類器：可能なら同じ llm_manager を共有（persona_id ズレや二重生成を避ける）
         self._reason_classifier = WorldChangeReasonClassifier(
-            persona_id=persona_id,
-            preferred_model=model_name,
-            llm=llm_manager,
+            persona_id=self.persona_id,
+            preferred_model=(preferred_reason_model or model_name or "gpt52"),
+            llm_manager=llm_manager,
         )
 
         self.load()
@@ -98,7 +99,7 @@ class MemoryAI:
                         round_id=int(d.get("round_id", 0)),
                         importance=int(d.get("importance", 1)),
                         summary=str(d.get("summary", "")),
-                        tags=list(d.get("tags", [])),
+                        tags=list(d.get("tags", [])) if isinstance(d.get("tags", []), list) else [],
                         created_at=str(d.get("created_at", "")),
                         source_user=str(d.get("source_user", "")),
                         source_assistant=str(d.get("source_assistant", "")),
@@ -136,14 +137,14 @@ class MemoryAI:
             return {"status": "skip", "added": 0}
 
         created_at = datetime.now(timezone.utc).isoformat()
-        mem_id = f"{created_at}_{round_id}"
+        mem_id = f"{created_at}_{int(round_id)}"
 
-        importance = 5 if wc.get("is_world_change") else 4
+        importance = 5 if bool(wc.get("is_world_change")) else 4
 
         rec = MemoryRecord(
             id=mem_id,
-            round_id=round_id,
-            importance=importance,
+            round_id=int(round_id),
+            importance=int(importance),
             summary=base_text[:160] + ("…" if len(base_text) > 160 else ""),
             tags=["世界変化"] if importance == 5 else ["設定"],
             created_at=created_at,
@@ -154,11 +155,11 @@ class MemoryAI:
         if importance == 5:
             reasons = wc.get("reasons") or []
             if isinstance(reasons, list) and reasons:
-                rec.world_change_reasons = [str(x) for x in reasons][:10]
+                rec.world_change_reasons = [str(x) for x in reasons][:8]
             else:
-                # reasons が空＝「世界変化っぽいが明示トリガが拾えない」時のみ分類器を使う
                 rec.reason_unavailable = self._reason_classifier.classify(
-                    messages, final_reply
+                    messages=[{"role": str(m.get("role")), "content": str(m.get("content", ""))} for m in (messages or []) if isinstance(m, dict)],
+                    final_reply=final_reply,
                 )
 
         self.memories.append(rec)
@@ -174,17 +175,20 @@ class MemoryAI:
     # ---------------- helpers ----------------
 
     @staticmethod
-    def _extract_last_user(messages: List[Dict[str, Any]]) -> str:
-        for m in reversed(messages or []):
-            if isinstance(m, dict) and m.get("role") == "user":
-                return str(m.get("content") or "")
+    def _extract_last_user(messages: Sequence[Dict[str, Any]]) -> str:
+        for m in reversed(list(messages or [])):
+            try:
+                if m.get("role") == "user":
+                    return str(m.get("content") or "")
+            except Exception:
+                continue
         return ""
 
     def _trim(self) -> None:
         if len(self.memories) <= self.max_store_items:
             return
-        # importance 昇順→created_at 昇順で並べ、後ろ（重要/新しい）を残す
-        self.memories.sort(key=lambda m: (int(m.importance or 0), str(m.created_at or "")))
+        # 重要度が高いほど残す、同重要度なら新しいほど残す
+        self.memories.sort(key=lambda m: (int(getattr(m, "importance", 0)), str(getattr(m, "created_at", ""))))
         self.memories = self.memories[-self.max_store_items :]
 
     def get_all_records(self) -> List[MemoryRecord]:
