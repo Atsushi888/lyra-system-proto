@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional
 
 from llm.llm_manager import LLMManager
 from actors.models_ai2 import ModelsAI2
@@ -36,8 +36,7 @@ class NarratorManager:
 
     重要:
     - ModelsAI2.collect() は `_meta` / `_system` を混ぜて返すことがある。
-      それをそのまま JudgeAI3 に渡すと、Judge 側の実装によっては
-      「available 未定義」などの分岐を踏んで落ちることがある。
+      それをそのまま JudgeAI3 に渡すと、Judge 側の実装によっては誤判定/例外が起き得る。
       → ここで “Judge に渡す候補” を必ず正規化してから渡す。
     """
 
@@ -92,34 +91,39 @@ class NarratorManager:
         """
         props: Dict[str, Dict[str, Any]] = {}
 
+        # 1) 可能なら available を使う（has_key も含めて判定可能）
         if hasattr(self.llm_manager, "get_available_models"):
             try:
                 props = self.llm_manager.get_available_models() or {}
             except Exception:
                 props = {}
+
+        # 2) available が取れない/空なら props にフォールバック
         if not props:
             try:
-                # LLMManager 実装差異に備えて両方試す
                 if hasattr(self.llm_manager, "get_model_props"):
-                    props = self.llm_manager.get_model_props() or {}
-                elif hasattr(self.llm_manager, "get_model_props"):
                     props = self.llm_manager.get_model_props() or {}
             except Exception:
                 props = {}
 
         enabled: List[str] = []
         for name, p in (props or {}).items():
+            if not isinstance(p, dict):
+                continue
+
             try:
-                if not isinstance(p, dict):
-                    continue
                 if not p.get("enabled", True):
                     continue
-                # get_available_models() 系は has_key が入る
-                if "has_key" in p and not p.get("has_key", True):
+
+                # get_available_models() 系は has_key が入る（無ければ True 扱い）
+                if "has_key" in p and not bool(p.get("has_key", True)):
                     continue
+
                 enabled.append(str(name))
             except Exception:
-                enabled.append(str(name))
+                # 例外時でも安全側：そのモデルは一旦「候補に入れる」より、
+                # Narrator系は落とす方が事故が少ないので除外する
+                continue
 
         # priority を反映（指定されたものを先頭に）
         if self._priority:
@@ -150,7 +154,6 @@ class NarratorManager:
             if not isinstance(info, dict):
                 continue
 
-            # できるだけ揃える（Judge 側の想定差異を吸収）
             status = info.get("status", "unknown")
             text = info.get("text", "") or ""
 
@@ -166,13 +169,27 @@ class NarratorManager:
     def _pick_first_text(cands: Dict[str, Dict[str, Any]]) -> str:
         """
         Judge が失敗した場合のフォールバック。
+        - status=ok を優先
+        - text が空ならスキップ
         """
+        # 1) ok 優先
+        for _, info in (cands or {}).items():
+            if not isinstance(info, dict):
+                continue
+            if str(info.get("status") or "").lower() != "ok":
+                continue
+            t = (info.get("text") or "").strip()
+            if t:
+                return t
+
+        # 2) それでも無ければ text があるもの
         for _, info in (cands or {}).items():
             if not isinstance(info, dict):
                 continue
             t = (info.get("text") or "").strip()
             if t:
                 return t
+
         return ""
 
     # ----------------------------------------
@@ -199,7 +216,8 @@ class NarratorManager:
         # ✅ その時点の enabled_models を確定（AI Manager のON/OFFに追従）
         enabled_models = self._resolve_enabled_models()
 
-        # ✅ 多AI合議制は維持：enabled_models が複数なら複数、1個なら「1個で合議」
+        # ✅ 多AI合議制は維持：
+        #    enabled_models が複数なら複数、1個なら「1個で合議」。
         #    （構造は維持、候補集合だけが変わる）
         models_ai = ModelsAI2(
             llm_manager=self.llm_manager,
@@ -211,18 +229,26 @@ class NarratorManager:
             messages,
             mode_current=mode_current,
             emotion_override=None,
+            # reply_length_mode は Narrator 側で今すぐ必須ではないが、
+            # 将来UI連動する場合に備えて呼び出し口は残しておく
+            reply_length_mode=str(self.state.get("reply_length_mode", "auto") or "auto"),
         )
 
         # ✅ Judge に渡す候補を正規化（"_meta" 等を混ぜない）
         judge_candidates = self._extract_judge_candidates(models_result)
 
-        # Judge で1本選ぶ（Judge 側が候補ゼロで落ちる実装でも、ここで守る）
+        # Judge で1本選ぶ
         judge_result: Dict[str, Any] = {}
         chosen_text = ""
 
         if judge_candidates:
             try:
-                judge_result = self.judge_ai.run(judge_candidates)
+                # priority を Judge にも渡せる（Judge原本が priority 対応済み）
+                judge_result = self.judge_ai.run(
+                    judge_candidates,
+                    preferred_length_mode=str(self.state.get("reply_length_mode", "auto") or "auto"),
+                    priority=list(self._priority) if self._priority else None,
+                )
                 chosen_text = (judge_result.get("chosen_text") or "").strip()
             except Exception as e:
                 judge_result = {
