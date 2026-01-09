@@ -2,10 +2,31 @@
 
 from __future__ import annotations
 
+import importlib
+import traceback
+
 import streamlit as st
 
-from auth.roles import Role
-from components.mode_switcher import ModeSwitcher
+
+def safe_import(module_name: str):
+    """
+    Streamlit Cloud でログが握り潰される/見えないケースに備えて、
+    import 失敗時の traceback を UI に強制表示する。
+    """
+    try:
+        return importlib.import_module(module_name)
+    except Exception:
+        st.error(f"❌ import failed: {module_name}")
+        st.code(traceback.format_exc())
+        st.stop()
+
+
+# ===== ここを safe_import 経由にして、落ちた地点を確実に炙り出す =====
+roles_mod = safe_import("auth.roles")
+Role = roles_mod.Role
+
+ms_mod = safe_import("components.mode_switcher")
+ModeSwitcher = ms_mod.ModeSwitcher
 
 
 class LyraSystem:
@@ -18,7 +39,7 @@ class LyraSystem:
     """
 
     def __init__(self) -> None:
-        # ページ全体設定
+        # ページ全体設定（※ Streamlit は set_page_config を最初に1回だけ推奨）
         st.set_page_config(
             page_title="Lyra System",
             layout="wide",
@@ -41,13 +62,13 @@ class LyraSystem:
         role = Role.ADMIN
         # role = Role.USER
 
-        # サイドバーに「開発中・認証バイパス中」の注意を出しておく
-        # with st.sidebar:
-            # st.markdown("### 画面切替")
-            # st.caption("※ 現在は **認証バイパス中（開発モード）** です。")
-
-        # 画面切り替え本体を実行
-        self.switcher.render(user_role=role)
+        # 画面切り替え本体を実行（実行時例外も UI に吐く）
+        try:
+            self.switcher.render(user_role=role)
+        except Exception:
+            st.error("❌ runtime error in ModeSwitcher.render()")
+            st.code(traceback.format_exc())
+            st.stop()
 
 
 if __name__ == "__main__":
