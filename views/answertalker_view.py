@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from typing import Any, Dict, MutableMapping, List
-
 import os
 import json
 import streamlit as st
@@ -12,34 +11,18 @@ from actors.actor import Actor
 from actors.answer_talker import AnswerTalker
 from actors.persona.persona_classes.persona_riseria_ja import Persona
 
-
-# 環境変数でデバッグモードを切り替え
 LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
 
 
 class AnswerTalkerView:
     """
-    AnswerTalker / ModelsAI / JudgeAI3 / ComposerAI / MemoryAI の
-    デバッグ・閲覧用ビュー（閲覧専用）
-
-    注意：
-    - AnswerTalker は InitAI 経由で session_state を補修/初期化しうるため、
-      ここから st.session_state を AnswerTalker に渡すと
-      “見るだけのつもりが状態を書き換える” 副作用が起きうる。
-    - したがって AnswerTalker にはローカル state を渡し、
-      st.session_state の llm_meta を安全に閲覧する。
+    AnswerTalker / ModelsAI / JudgeAI3 / ComposerAI / MemoryAI のデバッグ・閲覧用ビュー（閲覧専用）
     """
 
     TITLE = "🧩 AnswerTalker（AI統合テスト）"
 
     @staticmethod
     def _render_any_as_textarea(label: str, value: Any, height: int = 220) -> None:
-        """
-        llm_meta は過渡的に型が変わることがある。
-        - str: text_area
-        - dict/list: pretty json を text_area
-        - その他: str() を text_area
-        """
         if isinstance(value, str):
             st.text_area(label, value=value, height=height, label_visibility="collapsed")
             return
@@ -75,28 +58,15 @@ class AnswerTalkerView:
         return f"(unknown: {s})"
 
     @staticmethod
-    def _safe_container_border() -> bool:
-        """
-        Streamlit のバージョンによって st.container(border=...) が未対応な場合があるため、
-        安全に判定してから使う。
-        """
+    def _container_border():
+        # streamlit のバージョン差で container(border=...) が無い環境でも落とさない
         try:
-            # border 引数が受けられるかは実行してみるのが最も確実
-            _ = st.container(border=False)
-            return True
-        except TypeError:
-            return False
+            return st.container(border=True)
         except Exception:
-            return False
+            return st.container()
 
     @staticmethod
     def _render_world_change_records(records: List[Any]) -> None:
-        """
-        importance=5 の世界変化記憶を別枠で表示する。
-
-        - world_change_reasons / reason_unavailable が存在しない古いレコードでも落とさない
-        - created_at 降順で表示
-        """
         wc: List[Any] = []
         for r in records:
             try:
@@ -111,24 +81,16 @@ class AnswerTalkerView:
             pass
 
         st.markdown("### 🌍 世界変化記憶（importance=5）")
-
         if not wc:
             st.info("世界変化記憶はまだありません。")
             return
-
-        can_border = AnswerTalkerView._safe_container_border()
 
         for i, r in enumerate(wc, start=1):
             summary = getattr(r, "summary", "") or ""
             created_at = getattr(r, "created_at", "") or ""
             rid = getattr(r, "round_id", None)
 
-            if can_border:
-                container_ctx = st.container(border=True)
-            else:
-                container_ctx = st.container()
-
-            with container_ctx:
+            with AnswerTalkerView._container_border():
                 st.markdown(f"**{i}. {summary}**")
                 st.caption(f"created_at: {created_at} / round_id: {rid}")
 
@@ -142,11 +104,8 @@ class AnswerTalkerView:
                     for t in reasons[:5]:
                         st.markdown(f"- {t}")
                 else:
-                    reason_unavailable = getattr(r, "reason_unavailable", None)
-                    st.write(
-                        "**Reason unavailable:**",
-                        AnswerTalkerView._label_reason_unavailable(reason_unavailable),
-                    )
+                    rnu = getattr(r, "reason_unavailable", None)
+                    st.write("**Reason unavailable:**", AnswerTalkerView._label_reason_unavailable(rnu))
 
                 with st.expander("Source (raw)", expanded=False):
                     su = getattr(r, "source_user", "") or ""
@@ -159,40 +118,34 @@ class AnswerTalkerView:
                         st.text(sa)
 
     def __init__(self) -> None:
-        # --- プレイヤー名（UserSettings 由来）を取得 ---
         player_name = st.session_state.get("player_name", "アツシ")
 
-        # Actor と AnswerTalker を初期化（Persona には player_name を渡す）
         persona = Persona(player_name=player_name)
         self.actor = Actor("floria", persona)
 
-        # ★閲覧専用ビューなので session_state を AnswerTalker に渡さない
+        # ★閲覧専用：session_state を AnswerTalker に渡さない
         local_state: MutableMapping[str, Any] = {}
 
-        self.answer_talker = AnswerTalker(persona, state=local_state)
+        self.answer_talker = AnswerTalker(
+            persona,
+            state=local_state,
+        )
 
     def render(self) -> None:
         st.header(self.TITLE)
 
-        # 現在のユーザー設定の軽い表示（任意・デバッグ補助）
         player_name = st.session_state.get("player_name", "アツシ")
         reply_length_mode = st.session_state.get("reply_length_mode", "auto")
-        st.caption(
-            f"現在のプレイヤー名: **{player_name}**  /  "
-            f"発話長さモード: **{reply_length_mode}**"
-        )
+        st.caption(f"現在のプレイヤー名: **{player_name}**  /  発話長さモード: **{reply_length_mode}**")
 
         st.info(
-            "この画面では、Actor に紐づく AnswerTalker が保持している llm_meta の内容 "
-            "（system_prompt / emotion_override / models / judge / composer / emotion / memory）を参照できます。\n\n"
-            "※ この画面からは AnswerTalker.speak() や MemoryAI.update_from_turn() などは実行しません。"
+            "この画面では llm_meta の内容（system_prompt / emotion_override / models / judge / composer / emotion / memory）を参照できます。\n\n"
+            "※ この画面から speak() や MemoryAI.update_from_turn() は実行しません。"
         )
 
         llm_meta: Dict[str, Any] = st.session_state.get("llm_meta", {}) or {}
 
-        # ---- 今回使用された system_prompt ----
         st.subheader("今回使用された system_prompt（affection / ドキドキ💓反映後）")
-
         if "system_prompt_used" not in llm_meta:
             st.info("system_prompt_used はまだありません。（キー未作成）")
         else:
@@ -203,7 +156,6 @@ class AnswerTalkerView:
             )
             self._render_any_as_textarea("system_prompt_used", sys_used, height=220)
 
-        # ---- emotion_override ----
         st.subheader("emotion_override（MixerAI → ModelsAI に渡した感情オーバーライド）")
         emo_override = llm_meta.get("emotion_override") or {}
         if not emo_override:
@@ -211,10 +163,8 @@ class AnswerTalkerView:
         else:
             st.json(emo_override)
 
-        # ---- models ----
         st.subheader("llm_meta に登録された AI 回答一覧（models）")
         models = llm_meta.get("models", {})
-
         if not models:
             st.info("models 情報はまだありません。")
         else:
@@ -238,7 +188,6 @@ class AnswerTalkerView:
                         st.markdown("**preview:**")
                         st.code(text[:1000])
 
-        # ---- judge ----
         st.subheader("JudgeAI3 の判定結果（llm_meta['judge']）")
         judge = llm_meta.get("judge", {})
         if not judge:
@@ -255,40 +204,8 @@ class AnswerTalkerView:
             chosen_text = (judge.get("chosen_text") or "").strip()
             if chosen_text:
                 with st.expander("採用テキスト（chosen_text）", expanded=True):
-                    st.text_area(
-                        "chosen_text",
-                        value=chosen_text,
-                        height=260,
-                        label_visibility="collapsed",
-                    )
+                    st.text_area("chosen_text", value=chosen_text, height=260, label_visibility="collapsed")
 
-            raw_candidates = judge.get("candidates") or []
-            with st.expander("候補モデル一覧（candidates / scores）", expanded=False):
-                if isinstance(raw_candidates, dict):
-                    for cand_name, cand_info in raw_candidates.items():
-                        score = cand_info.get("score", "-")
-                        preview = (cand_info.get("text") or "")[:800]
-                        st.markdown(f"### {cand_name}  |  score = `{score}`")
-                        st.write(preview)
-                        st.markdown("---")
-                elif isinstance(raw_candidates, list):
-                    for i, cand in enumerate(raw_candidates, start=1):
-                        cand_name = cand.get("name", f"cand-{i}")
-                        score = cand.get("score", "-")
-                        length = cand.get("length", 0)
-                        preview = (cand.get("text") or "")[:800]
-                        st.markdown(
-                            f"### 候補 {i}: `{cand_name}`  |  score = `{score}`  |  length = {length}"
-                        )
-                        details = cand.get("details") or {}
-                        if details:
-                            with st.expander("details", expanded=False):
-                                st.json(details)
-                        st.markdown("---")
-                else:
-                    st.write("candidates の形式が想定外です:", type(raw_candidates))
-
-        # ---- composer ----
         st.subheader("ComposerAI の最終結果（llm_meta['composer']）")
         comp = llm_meta.get("composer", {})
         if not comp:
@@ -297,88 +214,21 @@ class AnswerTalkerView:
             st.write(f"- status: `{comp.get('status', 'unknown')}`")
             st.write(f"- source_model: `{comp.get('source_model', '')}`")
             st.write(f"- mode: `{comp.get('mode', '')}`")
-
-            base_src = comp.get("base_source_model")
-            if base_src:
-                st.write(f"- base_source_model: `{base_src}`")
-
-            dev_force = comp.get("dev_force_model")
-            if dev_force:
-                st.write(f"- dev_force_model: `{dev_force}`")
-
             st.write(f"- is_modified: `{comp.get('is_modified', False)}`")
-
-            summary = comp.get("summary")
-            if summary:
-                with st.expander("サマリ（summary）", expanded=True):
-                    st.text_area(
-                        "composer_summary",
-                        value=str(summary),
-                        height=200,
-                        label_visibility="collapsed",
-                    )
-
-            with st.expander("Refiner 情報", expanded=False):
-                st.write(f"- refiner_model: `{comp.get('refiner_model', None)}`")
-                st.write(f"- refiner_used: `{comp.get('refiner_used', False)}`")
-                st.write(f"- refiner_status: `{comp.get('refiner_status', '')}`")
-                ref_err = comp.get("refiner_error")
-                if ref_err:
-                    st.error(f"refiner_error: {ref_err}")
 
             base_text = (comp.get("base_text") or "").strip()
             final_text = (comp.get("text") or "").strip()
 
             if base_text:
                 with st.expander("Refiner 前のテキスト（base_text）", expanded=False):
-                    st.text_area(
-                        "composer_base_text",
-                        value=base_text,
-                        height=260,
-                        label_visibility="collapsed",
-                    )
-
+                    st.text_area("composer_base_text", value=base_text, height=260, label_visibility="collapsed")
             if final_text:
                 with st.expander("最終返答テキスト（composer.text）", expanded=True):
-                    st.text_area(
-                        "composer_text",
-                        value=final_text,
-                        height=260,
-                        label_visibility="collapsed",
-                    )
+                    st.text_area("composer_text", value=final_text, height=260, label_visibility="collapsed")
 
-        # ---- Composer 用スタイルヒント（persona 由来） ----
-        style_hint = llm_meta.get("composer_style_hint") or ""
-        if style_hint:
-            st.subheader("Composer 用スタイルヒント（persona 由来）")
-            with st.expander("composer_style_hint", expanded=False):
-                st.text_area(
-                    "composer_style_hint",
-                    value=style_hint,
-                    height=260,
-                    label_visibility="collapsed",
-                )
-
-        # ---- Judge モード状態 ----
-        st.subheader("Judge モード状態")
-        current_mode_meta = llm_meta.get("judge_mode", None)
-        next_mode_meta = llm_meta.get("judge_mode_next", None)
-        session_mode = st.session_state.get("judge_mode", None)
-
-        cols_mode = st.columns(3)
-        with cols_mode[0]:
-            st.write(f"llm_meta['judge_mode']: `{current_mode_meta}`")
-        with cols_mode[1]:
-            st.write(f"llm_meta['judge_mode_next']: `{next_mode_meta}`")
-        with cols_mode[2]:
-            st.write(f"session_state['judge_mode']: `{session_mode}`")
-
-        # ---- EmotionAI ----
         st.subheader("EmotionAI の解析結果（llm_meta['emotion']）")
-
         emo = llm_meta.get("emotion") or {}
         emo_err = llm_meta.get("emotion_error")
-
         if emo_err:
             st.error(f"EmotionAI error: {emo_err}")
 
@@ -398,121 +248,68 @@ class AnswerTalkerView:
                 st.write(f"sadness:   {emo.get('sadness', 0.0):.2f}")
                 st.write(f"excitement:{emo.get('excitement', 0.0):.2f}")
 
-            with st.expander("raw_text（EmotionAI の LLM 出力）", expanded=False):
-                st.code(emo.get("raw_text", ""), language="json")
-
-        # ---- MemoryAI ----
         st.subheader("MemoryAI の状態（長期記憶）")
-        memory_ctx = llm_meta.get("memory_context") or ""
-        mem_update = llm_meta.get("memory_update") or {}
-
         memory_ai = getattr(self.answer_talker, "memory_ai", None)
 
         if memory_ai is None:
             st.warning("AnswerTalker.memory_ai が初期化されていません。")
+            return
+
+        persona_id = getattr(memory_ai, "persona_id", "default")
+        max_records = getattr(memory_ai, "max_store_items", 0)
+        storage_file = getattr(memory_ai, "file_path", "(unknown)")
+        st.write(f"- persona_id: `{persona_id}`")
+        st.write(f"- max_records: `{max_records}`")
+        st.write(f"- storage_file: `{storage_file}`")
+
+        try:
+            records = memory_ai.get_all_records()
+        except Exception as e:
+            records = []
+            st.warning(f"MemoryRecord の取得に失敗しました: {e}")
+
+        if not records:
+            st.info("現在、保存済みの MemoryRecord はありません。")
         else:
-            persona_id = getattr(memory_ai, "persona_id", "default")
-            max_records = getattr(memory_ai, "max_store_items", 0)
-            storage_file = getattr(memory_ai, "file_path", "(unknown)")
-            st.write(f"- persona_id: `{persona_id}`")
-            st.write(f"- max_records: `{max_records}`")
-            st.write(f"- storage_file: `{storage_file}`")
+            self._render_world_change_records(records)
+            st.markdown("---")
 
-            try:
-                records = memory_ai.get_all_records()
-            except Exception as e:
-                records = []
-                st.warning(f"MemoryRecord の取得に失敗しました: {e}")
+            st.markdown("#### 保存済み MemoryRecord 一覧（全件）")
+            for i, r in enumerate(records, start=1):
+                imp = getattr(r, "importance", 0)
+                summ = getattr(r, "summary", "") or ""
+                summ_head = (summ[:32] + "...") if len(summ) > 32 else summ
 
-            if not records:
-                st.info("現在、保存済みの MemoryRecord はありません。")
-            else:
-                # ---- 世界変化記憶を上に別枠表示 ----
-                self._render_world_change_records(records)
-                st.markdown("---")
+                with st.expander(f"記憶 {i}: [imp={imp}] {summ_head}", expanded=False):
+                    st.write(f"- id: `{getattr(r, 'id', '')}`")
+                    st.write(f"- round_id: {getattr(r, 'round_id', 0)}")
+                    st.write(f"- importance: {imp}")
+                    st.write(f"- created_at: {getattr(r, 'created_at', '')}")
+                    tags = getattr(r, "tags", None) or []
+                    st.write(f"- tags: {', '.join(tags) if tags else '(なし)'}")
 
-                st.markdown("#### 保存済み MemoryRecord 一覧（全件）")
-                for i, r in enumerate(records, start=1):
-                    imp = getattr(r, "importance", 0)
-                    summ = getattr(r, "summary", "") or ""
-                    summ_head = (summ[:32] + "...") if len(summ) > 32 else summ
-
-                    with st.expander(f"記憶 {i}: [imp={imp}] {summ_head}", expanded=False):
-                        st.write(f"- id: `{getattr(r, 'id', '')}`")
-                        st.write(f"- round_id: {getattr(r, 'round_id', 0)}")
-                        st.write(f"- importance: {imp}")
-                        st.write(f"- created_at: {getattr(r, 'created_at', '')}")
-                        tags = getattr(r, "tags", None) or []
-                        st.write(f"- tags: {', '.join(tags) if tags else '(なし)'}")
-
-                        # World change detail（存在すれば）
+                    if int(imp or 0) >= 5:
                         wcr = getattr(r, "world_change_reasons", None)
                         rnu = getattr(r, "reason_unavailable", None)
-                        if int(imp or 0) >= 5:
-                            st.markdown("**world_change:**")
-                            if isinstance(wcr, list) and wcr:
-                                st.write("- world_change_reasons:")
-                                st.json(wcr)
-                            else:
-                                st.write(
-                                    "- reason_unavailable:",
-                                    self._label_reason_unavailable(rnu),
-                                )
-
-                        st.write("**summary:**")
-                        st.write(summ)
-
-                        su = getattr(r, "source_user", "") or ""
-                        sa = getattr(r, "source_assistant", "") or ""
-                        if su:
-                            st.write("\n**source_user:**")
-                            st.text(su)
-                        if sa:
-                            st.write("\n**source_assistant:**")
-                            st.text(sa)
-
-            st.markdown("---")
-            st.markdown("### MemoryAI ファイル診断（JSON）")
-
-            if st.button("記憶ファイルを診断する", key="memfile_check_at"):
-                path = storage_file
-                st.write(f"対象ファイル: `{path}`")
-
-                if not path or path == "(unknown)":
-                    st.error("MemoryAI.file_path が正しく設定されていません。")
-                elif not os.path.exists(path):
-                    st.error("ファイルが存在しません。まだ一度も記憶が保存されていない可能性があります。")
-                else:
-                    st.success("ファイルは存在します。")
-
-                    size = os.path.getsize(path)
-                    st.write(f"- ファイルサイズ: `{size}` バイト")
-
-                    try:
-                        with open(path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    except Exception as e:
-                        st.error(f"JSON の読み込みに失敗しました: {e}")
-                    else:
-                        if isinstance(data, list):
-                            st.write(f"- JSON はリストです。要素数: `{len(data)}`")
-                            if data:
-                                st.write("- 先頭3件のプレビュー:")
-                                st.json(data[:3])
-                            else:
-                                st.info("リストは空です（記憶が 0 件です）。")
+                        st.markdown("**world_change:**")
+                        if isinstance(wcr, list) and wcr:
+                            st.write("- world_change_reasons:")
+                            st.json(wcr)
                         else:
-                            st.write(f"- JSON の型: `{type(data)}`")
-                            st.json(data)
+                            st.write("- reason_unavailable:", self._label_reason_unavailable(rnu))
 
-        st.subheader("llm_meta 内のメモリ関連メタ情報")
-        st.write(f"- memory_context:\n\n```text\n{memory_ctx}\n```")
-        st.write("- memory_update（直近ターンの記憶更新結果）:")
-        st.json(mem_update)
+                    st.write("**summary:**")
+                    st.write(summ)
+
+                    su = getattr(r, "source_user", "") or ""
+                    sa = getattr(r, "source_assistant", "") or ""
+                    if su:
+                        st.write("\n**source_user:**")
+                        st.text(su)
+                    if sa:
+                        st.write("\n**source_assistant:**")
+                        st.text(sa)
 
 
 def create_answertalker_view() -> AnswerTalkerView:
-    """
-    ModeSwitcher から呼ぶためのシンプルなファクトリ関数。
-    """
     return AnswerTalkerView()
