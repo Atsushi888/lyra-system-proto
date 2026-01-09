@@ -1,7 +1,7 @@
 # views/answertalker_view.py
 from __future__ import annotations
 
-from typing import Any, Dict, MutableMapping, Optional, List
+from typing import Any, Dict, MutableMapping, List
 
 import os
 import json
@@ -20,13 +20,12 @@ LYRA_DEBUG = os.getenv("LYRA_DEBUG", "0") == "1"
 class AnswerTalkerView:
     """
     AnswerTalker / ModelsAI / JudgeAI3 / ComposerAI / MemoryAI の
-    デバッグ・閲覧用ビュー。
+    デバッグ・閲覧用ビュー（閲覧専用）
 
     注意：
-    - このビューは「閲覧専用」。
     - AnswerTalker は InitAI 経由で session_state を補修/初期化しうるため、
       ここから st.session_state を AnswerTalker に渡すと
-      “見るだけのつもりが状態を書き換える” 副作用が起きる。
+      “見るだけのつもりが状態を書き換える” 副作用が起きうる。
     - したがって AnswerTalker にはローカル state を渡し、
       st.session_state の llm_meta を安全に閲覧する。
     """
@@ -42,12 +41,7 @@ class AnswerTalkerView:
         - その他: str() を text_area
         """
         if isinstance(value, str):
-            st.text_area(
-                label,
-                value=value,
-                height=height,
-                label_visibility="collapsed",
-            )
+            st.text_area(label, value=value, height=height, label_visibility="collapsed")
             return
 
         if isinstance(value, (dict, list)):
@@ -81,6 +75,21 @@ class AnswerTalkerView:
         return f"(unknown: {s})"
 
     @staticmethod
+    def _safe_container_border() -> bool:
+        """
+        Streamlit のバージョンによって st.container(border=...) が未対応な場合があるため、
+        安全に判定してから使う。
+        """
+        try:
+            # border 引数が受けられるかは実行してみるのが最も確実
+            _ = st.container(border=False)
+            return True
+        except TypeError:
+            return False
+        except Exception:
+            return False
+
+    @staticmethod
     def _render_world_change_records(records: List[Any]) -> None:
         """
         importance=5 の世界変化記憶を別枠で表示する。
@@ -107,12 +116,19 @@ class AnswerTalkerView:
             st.info("世界変化記憶はまだありません。")
             return
 
+        can_border = AnswerTalkerView._safe_container_border()
+
         for i, r in enumerate(wc, start=1):
             summary = getattr(r, "summary", "") or ""
             created_at = getattr(r, "created_at", "") or ""
             rid = getattr(r, "round_id", None)
 
-            with st.container(border=True):
+            if can_border:
+                container_ctx = st.container(border=True)
+            else:
+                container_ctx = st.container()
+
+            with container_ctx:
                 st.markdown(f"**{i}. {summary}**")
                 st.caption(f"created_at: {created_at} / round_id: {rid}")
 
@@ -146,19 +162,14 @@ class AnswerTalkerView:
         # --- プレイヤー名（UserSettings 由来）を取得 ---
         player_name = st.session_state.get("player_name", "アツシ")
 
-        # Actor と AnswerTalker を初期化
-        # Persona には player_name を渡しておく
+        # Actor と AnswerTalker を初期化（Persona には player_name を渡す）
         persona = Persona(player_name=player_name)
         self.actor = Actor("floria", persona)
 
-        # ★重要：閲覧専用ビューなので session_state を AnswerTalker に渡さない
-        #   → AnswerTalker 生成による session_state への副作用を遮断する
+        # ★閲覧専用ビューなので session_state を AnswerTalker に渡さない
         local_state: MutableMapping[str, Any] = {}
 
-        self.answer_talker = AnswerTalker(
-            persona,
-            state=local_state,
-        )
+        self.answer_talker = AnswerTalker(persona, state=local_state)
 
     def render(self) -> None:
         st.header(self.TITLE)
@@ -190,7 +201,6 @@ class AnswerTalkerView:
                 f"system_prompt_used type={type(sys_used).__name__} / "
                 f"len={len(sys_used) if isinstance(sys_used, str) else '(n/a)'}"
             )
-            # 空文字でも「空が入っている」こと自体が重要なので必ず出す
             self._render_any_as_textarea("system_prompt_used", sys_used, height=220)
 
         # ---- emotion_override ----
@@ -308,7 +318,6 @@ class AnswerTalkerView:
                         label_visibility="collapsed",
                     )
 
-            # Refiner 情報
             with st.expander("Refiner 情報", expanded=False):
                 st.write(f"- refiner_model: `{comp.get('refiner_model', None)}`")
                 st.write(f"- refiner_used: `{comp.get('refiner_used', False)}`")
@@ -317,7 +326,6 @@ class AnswerTalkerView:
                 if ref_err:
                     st.error(f"refiner_error: {ref_err}")
 
-            # base_text / 最終テキスト比較
             base_text = (comp.get("base_text") or "").strip()
             final_text = (comp.get("text") or "").strip()
 
@@ -419,29 +427,23 @@ class AnswerTalkerView:
             if not records:
                 st.info("現在、保存済みの MemoryRecord はありません。")
             else:
-                # ---- 追加：世界変化記憶を上に別枠表示 ----
+                # ---- 世界変化記憶を上に別枠表示 ----
                 self._render_world_change_records(records)
                 st.markdown("---")
 
                 st.markdown("#### 保存済み MemoryRecord 一覧（全件）")
                 for i, r in enumerate(records, start=1):
-                    # 後方互換：古い record でも落とさない
                     imp = getattr(r, "importance", 0)
                     summ = getattr(r, "summary", "") or ""
                     summ_head = (summ[:32] + "...") if len(summ) > 32 else summ
 
-                    with st.expander(
-                        f"記憶 {i}: [imp={imp}] {summ_head}",
-                        expanded=False,
-                    ):
+                    with st.expander(f"記憶 {i}: [imp={imp}] {summ_head}", expanded=False):
                         st.write(f"- id: `{getattr(r, 'id', '')}`")
                         st.write(f"- round_id: {getattr(r, 'round_id', 0)}")
                         st.write(f"- importance: {imp}")
                         st.write(f"- created_at: {getattr(r, 'created_at', '')}")
                         tags = getattr(r, "tags", None) or []
-                        st.write(
-                            f"- tags: {', '.join(tags) if tags else '(なし)'}"
-                        )
+                        st.write(f"- tags: {', '.join(tags) if tags else '(なし)'}")
 
                         # World change detail（存在すれば）
                         wcr = getattr(r, "world_change_reasons", None)
@@ -479,9 +481,7 @@ class AnswerTalkerView:
                 if not path or path == "(unknown)":
                     st.error("MemoryAI.file_path が正しく設定されていません。")
                 elif not os.path.exists(path):
-                    st.error(
-                        "ファイルが存在しません。まだ一度も記憶が保存されていない可能性があります。"
-                    )
+                    st.error("ファイルが存在しません。まだ一度も記憶が保存されていない可能性があります。")
                 else:
                     st.success("ファイルは存在します。")
 
