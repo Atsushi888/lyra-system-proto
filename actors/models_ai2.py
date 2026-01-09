@@ -1,32 +1,24 @@
 # actors/models_ai2.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union, Mapping
+from typing import Any, Dict, List, Optional, Tuple, Union
 import traceback
 
-try:
-    import streamlit as st  # type: ignore
-    _HAS_ST = True
-except Exception:
-    st = None  # type: ignore
-    _HAS_ST = False
-
 from llm.llm_manager import LLMManager
-
 
 CompletionType = Union[Dict[str, Any], Tuple[Any, ...], str]
 
 
 class ModelsAI2:
     """
-    複数 LLM から一斉に回答案を集めるクラス（AI Manager 追従 + デバッグ強化）。
+    複数 LLM から一斉に回答案を集めるためのクラス（デバッグ強化版）。
 
-    ✅ 重要仕様
-    - AI Manager（st.session_state["ai_manager"]["enabled_models"]）を「正」として毎回同期する
-    - enabled=False のモデルは target から除外（＝呼ばない）
-    - has_key=False（もし付与されていれば）も target から除外（＝呼ばない）
-    - results["_meta"] は最後に入れる（NarratorManager のフォールバック事故回避）
-    - persona(JSON) の llm_request_defaults をモデル呼び出しに反映できる
+    ✅ 方針
+    - AI Manager の enabled を確実に反映（enabled=True のみ呼ぶ）
+    - APIキーが必要なモデルは has_key=True のみ呼ぶ
+    - enabled_models_override が指定されても、無効/鍵なしは除外（安全）
+    - persona(JSON) の llm_request_defaults をモデル呼び出しに反映
+    - _meta に「今回投げた/除外した」一覧を必ず残す
     """
 
     def __init__(
@@ -35,54 +27,18 @@ class ModelsAI2:
         *,
         enabled_models: Optional[List[str]] = None,
         persona: Any = None,
-        state: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.llm_manager = llm_manager
         self.persona = persona
-        self.state: Mapping[str, Any] = state or (st.session_state if _HAS_ST else {})
 
         # enabled_models を「固定したい場合のみ」保持
+        # None の場合は collect() の度に最新状態に追従
         self._enabled_models_override: Optional[List[str]] = (
             list(enabled_models) if enabled_models is not None else None
         )
 
-        # 補助情報（model_family 等）参照用。collect() のたび refresh する。
+        # model_family 参照などのために保持（collect内で更新）
         self.model_props: Dict[str, Dict[str, Any]] = {}
-
-    # ---------------------------------------
-    # 内部ヘルパ：AI Manager の enabled_models を同期
-    # ---------------------------------------
-    def _sync_enabled_from_ai_manager(self) -> Dict[str, Any]:
-        """
-        st.session_state["ai_manager"]["enabled_models"] を LLMManager に反映する。
-        失敗しても落とさない。デバッグ用に結果を返す。
-        """
-        info: Dict[str, Any] = {"status": "skip", "applied": False}
-
-        ai_state = None
-        try:
-            if _HAS_ST:
-                ai_state = st.session_state.get("ai_manager")
-            else:
-                ai_state = self.state.get("ai_manager") if isinstance(self.state, dict) else None
-        except Exception:
-            ai_state = None
-
-        if not isinstance(ai_state, dict):
-            return info
-
-        enabled = ai_state.get("enabled_models")
-        if not isinstance(enabled, dict):
-            return info
-
-        try:
-            if hasattr(self.llm_manager, "set_enabled_models"):
-                self.llm_manager.set_enabled_models(enabled)  # type: ignore[attr-defined]
-                info = {"status": "ok", "applied": True, "enabled_models": dict(enabled)}
-        except Exception as e:
-            info = {"status": "error", "applied": False, "error": str(e)}
-
-        return info
 
     # ---------------------------------------
     # 内部ヘルパ：LLM からの戻り値を正規化
@@ -152,7 +108,7 @@ class ModelsAI2:
         return {}
 
     # ---------------------------------------
-    # None 値は落とす（安全）
+    # 内部ヘルパ：None 値は落とす（安全）
     # ---------------------------------------
     @staticmethod
     def _drop_none_kwargs(d: Dict[str, Any]) -> Dict[str, Any]:
@@ -163,49 +119,43 @@ class ModelsAI2:
     # ---------------------------------------
     def _resolve_target_models(
         self,
-        *,
-        model_props: Dict[str, Dict[str, Any]],
-        available: Dict[str, Dict[str, Any]],
-    ) -> List[str]:
+        props: Dict[str, Dict[str, Any]],
+    ) -> Tuple[List[str], Dict[str, List[str]]]:
         """
-        呼び出すモデル一覧を決める（＝本当に呼ぶ）。
-        - enabled=True のみ
-        - has_key=False が分かる場合は除外
-        - override がある場合はその順序を尊重（ただし enabled/has_key でフィルタ）
+        props は get_available_models() の戻り値を想定（enabled/has_key を含む）
+        Returns:
+          (target_models, filtered_detail)
         """
-        # enabled/has_key を判定できる map
-        enabled_map: Dict[str, bool] = {}
-        for name, props in (model_props or {}).items():
-            if isinstance(props, dict):
-                enabled_map[name] = bool(props.get("enabled", True))
-            else:
-                enabled_map[name] = True
+        all_models = list((props or {}).keys())
 
-        has_key_map: Dict[str, bool] = {}
-        for name, props in (available or {}).items():
-            if isinstance(props, dict):
-                has_key_map[name] = bool(props.get("has_key", True))
-            else:
-                has_key_map[name] = True
-
-        def is_allowed(name: str) -> bool:
-            if enabled_map.get(name, True) is False:
-                return False
-            if has_key_map.get(name, True) is False:
-                return False
-            return True
-
+        # override がある場合はそれを候補の基準にする（ただし後段で enabled/has_key で除外）
         if self._enabled_models_override is not None:
-            # 手動固定（AI Manager 追従しない）
-            return [m for m in list(self._enabled_models_override) if is_allowed(m)]
+            candidates = [m for m in self._enabled_models_override if m in props]
+        else:
+            candidates = all_models
 
-        # 通常：model_props の enabled=True を採用
-        targets: List[str] = []
-        for name in (model_props or {}).keys():
-            if is_allowed(name):
-                targets.append(name)
+        filtered_disabled: List[str] = []
+        filtered_no_key: List[str] = []
+        target: List[str] = []
 
-        return targets
+        for name in candidates:
+            p = props.get(name) or {}
+            enabled = bool(p.get("enabled", True))
+            has_key = bool(p.get("has_key", True))
+
+            if not enabled:
+                filtered_disabled.append(name)
+                continue
+            if not has_key:
+                filtered_no_key.append(name)
+                continue
+
+            target.append(name)
+
+        return target, {
+            "filtered_disabled": filtered_disabled,
+            "filtered_no_key": filtered_no_key,
+        }
 
     # ---------------------------------------
     # メイン
@@ -229,47 +179,40 @@ class ModelsAI2:
             }
             return results
 
-        # 1) AI Manager の enabled_models を毎回同期（ここが「正」）
-        sync_info = self._sync_enabled_from_ai_manager()
-
-        # 2) 毎回最新の props を取得
+        # ✅ 毎回最新を取得（enabled/has_key も含めて判断するため）
         try:
-            self.model_props = self.llm_manager.get_model_props()
+            self.model_props = self.llm_manager.get_available_models()
         except Exception as e:
             results["_system"] = {
                 "status": "error",
                 "text": "",
-                "error": f"llm_manager.get_model_props() failed: {e}",
+                "error": f"llm_manager.get_available_models() failed: {e}",
                 "traceback": traceback.format_exc(limit=8),
             }
             return results
 
-        try:
-            available = self.llm_manager.get_available_models() or {}
-        except Exception:
-            available = {}
+        target_models, filtered = self._resolve_target_models(self.model_props)
 
-        target_models = self._resolve_target_models(model_props=self.model_props, available=available)
+        # ✅ まず _meta を必ず残す
+        results["_meta"] = {
+            "status": "ok",
+            "mode_current": mode_current,
+            "reply_length_mode": reply_length_mode,
+            "all_models": list((self.model_props or {}).keys()),
+            "enabled_models_override": list(self._enabled_models_override) if self._enabled_models_override is not None else None,
+            "target_models": list(target_models),
+            **filtered,
+        }
 
         if not target_models:
             results["_system"] = {
                 "status": "error",
                 "text": "",
-                "error": "enabled_models is empty (after AI Manager sync/filter)",
+                "error": "no enabled+available models after filtering (enabled/has_key)",
                 "traceback": None,
-            }
-            # _meta は最後に入れるが、ここでは入れても順序は関係ない（モデルが無い）
-            results["_meta"] = {
-                "status": "error",
-                "mode_current": mode_current,
-                "reply_length_mode": reply_length_mode,
-                "ai_manager_sync": sync_info,
-                "target_models": [],
-                "all_models": list((self.model_props or {}).keys()),
             }
             return results
 
-        # 3) モデルごとに収集
         for model_name in target_models:
             persona_defaults = self._get_persona_call_defaults(model_name)
             call_kwargs: Dict[str, Any] = self._drop_none_kwargs(dict(persona_defaults))
@@ -309,15 +252,5 @@ class ModelsAI2:
                     "reply_length_mode": reply_length_mode,
                     "call_kwargs": call_kwargs,
                 }
-
-        # 4) _meta は「最後」に入れる（Round0 フォールバック事故対策）
-        results["_meta"] = {
-            "status": "ok",
-            "mode_current": mode_current,
-            "reply_length_mode": reply_length_mode,
-            "ai_manager_sync": sync_info,
-            "target_models": list(target_models),
-            "all_models": list((self.model_props or {}).keys()),
-        }
 
         return results
