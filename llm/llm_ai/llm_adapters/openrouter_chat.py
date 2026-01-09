@@ -7,9 +7,7 @@ import logging
 import requests
 
 from llm.llm_ai.llm_adapters.base import BaseLLMAdapter
-from llm.llm_ai.llm_adapters.utils import (
-    split_text_and_usage_from_dict,
-)
+from llm.llm_ai.llm_adapters.utils import split_text_and_usage_from_dict
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +22,32 @@ class OpenRouterChatAdapter(BaseLLMAdapter):
 
     - requests で直接 OpenRouter API を叩く
     - max_tokens / TARGET_TOKENS の扱いを内部で統一
+    - Persona由来/内部用の未知キーは送信前に除去（400事故防止）
     """
+
+    # OpenRouter(OpenAI互換)で「まず安全に通る」トップレベルキー
+    _ALLOW_PARAMS = {
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "stop",
+        "seed",
+        "presence_penalty",
+        "frequency_penalty",
+        "stream",
+        # 必要ならここに足す（例：response_format 等はモデルで死にやすいので慎重に）
+    }
+
+    # Lyra内部・OpenRouterへは送らないキー
+    _DROP_PARAMS = {
+        "mode",
+        "judge_mode",
+        "verbosity",
+        "include_reasoning",
+        "reasoning",
+        "metadata",
+        "response_format",
+    }
 
     def __init__(
         self,
@@ -38,6 +61,18 @@ class OpenRouterChatAdapter(BaseLLMAdapter):
 
         self._endpoint = OPENROUTER_BASE_URL.rstrip("/") + "/chat/completions"
         self._api_key = os.getenv(env_key, "")
+
+    def _sanitize_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        k = dict(kwargs or {})
+
+        # まず内部キーを確実に落とす
+        for drop in self._DROP_PARAMS:
+            k.pop(drop, None)
+
+        # allowlist で絞る（未知キーを送らない）
+        k = {key: val for key, val in k.items() if key in self._ALLOW_PARAMS and val is not None}
+
+        return k
 
     def call(
         self,
@@ -63,7 +98,9 @@ class OpenRouterChatAdapter(BaseLLMAdapter):
         if self.TARGET_TOKENS is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = int(self.TARGET_TOKENS)
 
-        payload.update(kwargs)
+        # 送信前に sanitize
+        safe_kwargs = self._sanitize_kwargs(kwargs)
+        payload.update(safe_kwargs)
 
         try:
             resp = requests.post(
@@ -75,7 +112,15 @@ class OpenRouterChatAdapter(BaseLLMAdapter):
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
-            logger.exception("%s: OpenRouter call failed", self.name)
+            # 返ってきた本文があるならログに残すとデバッグが一気に楽
+            body = None
+            try:
+                body = resp.text  # type: ignore[name-defined]
+            except Exception:
+                pass
+
+            logger.exception("%s: OpenRouter call failed payload_keys=%s body=%s",
+                             self.name, sorted(payload.keys()), body)
             raise RuntimeError(f"{self.name}: OpenRouter call failed: {e}")
 
         return split_text_and_usage_from_dict(data)
