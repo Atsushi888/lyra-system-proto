@@ -218,7 +218,8 @@ class CouncilManager:
             text = (getattr(line, "text", None) or "").strip()
         except Exception as e:
             text = ""
-            st.warning(f"[DEBUG:Council] Round0 narration error: {e}")
+            st.warning(f"[DEBUG:Council] Round0 narration error: {type(e).__name__}: {e}")
+            st.exception(e)  # ← これを追加（Tracebackを画面に出す）
 
         if not text:
             st.warning("[DEBUG:Council] Round0 narration was empty. Used fallback text.")
