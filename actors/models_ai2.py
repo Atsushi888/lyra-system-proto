@@ -6,6 +6,7 @@ import traceback
 
 from llm.llm_manager import LLMManager
 
+
 CompletionType = Union[Dict[str, Any], Tuple[Any, ...], str]
 
 
@@ -13,13 +14,12 @@ class ModelsAI2:
     """
     複数 LLM から一斉に回答案を集めるためのクラス（デバッグ強化版）。
 
-    ✅ 設計方針（重要）
-    - enabled_models の解決は get_available_models() を正とする
-      （AI Manager の “有効/無効” を確実に反映するため）
-    - get_model_props() は補助情報（model_family 等）のために取得するに留める
+    ✅ 重要方針（ここが肝）
+    - enabled_models の “正” は Streamlit AI Manager（st.session_state["ai_manager"]["enabled_models"]）
+      → UI設定と必ず一致させる
+    - UI設定が読めない/存在しない場合のみ LLMManager 側の available/enabled を参照
+    - _meta に「何を投げたか」「どこ由来で選んだか」を必ず残す
     - persona(JSON) の llm_request_defaults をモデル呼び出しに反映できる
-    - 例外が出ても results が空にならない（_system / _meta を必ず残す）
-    - _meta に available / enabled / override / mode を必ず残す（デバッグの要）
     """
 
     def __init__(
@@ -33,12 +33,12 @@ class ModelsAI2:
         self.persona = persona
 
         # enabled_models を「固定したい場合のみ」保持
-        # None の場合は collect() の度に AI Manager の状態に追従する
+        # None の場合は collect() の度に最新の UI/available を見て追従する
         self._enabled_models_override: Optional[List[str]] = (
             list(enabled_models) if enabled_models is not None else None
         )
 
-        # 補助情報（model_family 等）用：collect() のたびに refresh
+        # model_family などの参照用（collect() 内で毎回 refresh）
         self.model_props: Dict[str, Dict[str, Any]] = {}
 
     # ---------------------------------------
@@ -74,13 +74,6 @@ class ModelsAI2:
         return {"text": text, "usage": usage, "raw": raw}
 
     # ---------------------------------------
-    # 内部ヘルパ：None 値は落とす（安全）
-    # ---------------------------------------
-    @staticmethod
-    def _drop_none_kwargs(d: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in (d or {}).items() if v is not None}
-
-    # ---------------------------------------
     # 内部ヘルパ：Persona defaults を取り出す（モデル別）
     # ---------------------------------------
     def _get_persona_call_defaults(self, model_name: str) -> Dict[str, Any]:
@@ -100,9 +93,9 @@ class ModelsAI2:
             return {}
 
         # 1) モデル名キー直指定（gpt52 など）
-        direct = defs.get(model_name)
-        if isinstance(direct, dict):
-            return dict(direct)
+        d = defs.get(model_name)
+        if isinstance(d, dict):
+            return dict(d)
 
         # 2) フォールバック：model_family（将来用）
         try:
@@ -116,23 +109,54 @@ class ModelsAI2:
         return {}
 
     # ---------------------------------------
-    # enabled_models 解決（AI Manager 追従の “正”）
+    # 内部ヘルパ：None 値は落とす（安全）
+    # ---------------------------------------
+    @staticmethod
+    def _drop_none_kwargs(d: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: v for k, v in (d or {}).items() if v is not None}
+
+    # ---------------------------------------
+    # 最優先：Streamlit AI Manager から enabled_models を読む
+    # ---------------------------------------
+    def _resolve_enabled_models_from_streamlit(self) -> Optional[List[str]]:
+        """
+        Streamlit UI（AI Manager）の enabled_models を最優先で使う。
+        無い/読めない場合は None を返す。
+
+        想定:
+          st.session_state["ai_manager"]["enabled_models"] = {"gpt52": True, "gpt51": False, ...}
+        """
+        try:
+            import streamlit as st  # type: ignore
+        except Exception:
+            return None
+
+        try:
+            ai_state = st.session_state.get("ai_manager")
+            if not isinstance(ai_state, dict):
+                return None
+
+            enabled = ai_state.get("enabled_models")
+            if not isinstance(enabled, dict):
+                return None
+
+            picked = [str(k) for k, v in enabled.items() if bool(v)]
+            # UIで全部OFFにされてるケースもあり得るので、その場合は空listを返す（Noneではない）
+            return picked
+        except Exception:
+            return None
+
+    # ---------------------------------------
+    # 代替：LLMManager.get_available_models() から enabled を決める
     # ---------------------------------------
     def _resolve_enabled_models_from_available(
         self,
         available_models: Dict[str, Dict[str, Any]],
     ) -> List[str]:
         """
-        get_available_models() の結果を正として enabled を決める。
-
-        - override が指定されている場合はそれを最優先（固定運用）
-        - それ以外は available_models の各 props の enabled を見てフィルタ
-          （props が無い/壊れている場合は安全側で含める）
+        available_models を元に enabled を決める。
+        ただし UI がある場合はそちらが“真”なので、これはフォールバック専用。
         """
-        if self._enabled_models_override is not None:
-            # 手動固定（AI Manager 追従しないモード）
-            return [str(x) for x in self._enabled_models_override if str(x).strip()]
-
         enabled: List[str] = []
         for name, props in (available_models or {}).items():
             try:
@@ -145,7 +169,6 @@ class ModelsAI2:
                     enabled.append(name)
             except Exception:
                 enabled.append(name)
-
         return enabled
 
     # ---------------------------------------
@@ -168,17 +191,9 @@ class ModelsAI2:
                 "error": "messages is empty",
                 "traceback": None,
             }
-            results["_meta"] = {
-                "status": "error",
-                "available_models": [],
-                "enabled_models": [],
-                "enabled_override": list(self._enabled_models_override) if self._enabled_models_override else None,
-                "mode_current": mode_current,
-                "reply_length_mode": reply_length_mode,
-            }
             return results
 
-        # 1) available（AI Manager の enabled/has_key を反映する想定の正）
+        # ✅ まず「呼べるモデル一覧」を取得（キー有無も含む）
         try:
             available = self.llm_manager.get_available_models() or {}
             if not isinstance(available, dict):
@@ -190,34 +205,50 @@ class ModelsAI2:
                 "error": f"llm_manager.get_available_models() failed: {e}",
                 "traceback": traceback.format_exc(limit=8),
             }
-            results["_meta"] = {
-                "status": "error",
-                "available_models": [],
-                "enabled_models": [],
-                "enabled_override": list(self._enabled_models_override) if self._enabled_models_override else None,
-                "mode_current": mode_current,
-                "reply_length_mode": reply_length_mode,
-            }
             return results
 
-        # 2) props（model_family 等の補助情報。persona defaults のフォールバックに使う）
+        # ✅ persona defaults の model_family 参照のために props も取る（失敗しても落とさない）
         try:
-            props = self.llm_manager.get_model_props() or {}
-            if not isinstance(props, dict):
-                props = {}
-            self.model_props = props
+            self.model_props = self.llm_manager.get_model_props() or {}
+            if not isinstance(self.model_props, dict):
+                self.model_props = {}
         except Exception:
-            # ここは補助なので落とさない（persona defaults の fallback が弱くなるだけ）
             self.model_props = {}
 
-        target_models = self._resolve_enabled_models_from_available(available)
+        # ✅ target_models の決定（優先順位）
+        # 1) override（固定）
+        from_ui: Optional[List[str]] = None
 
-        # ✅ まず _meta を必ず残す（「available」と「enabled」を分けて見せる）
+        if self._enabled_models_override is not None:
+            target_models = [str(x) for x in self._enabled_models_override if str(x).strip()]
+            source = "override"
+        else:
+            # 2) Streamlit AI Manager（最優先の真）
+            from_ui = self._resolve_enabled_models_from_streamlit()
+            if from_ui is not None:
+                target_models = list(from_ui)
+                source = "streamlit_ai_manager"
+            else:
+                # 3) available の enabled
+                target_models = self._resolve_enabled_models_from_available(available)
+                source = "llm_manager_available"
+
+        # ✅ 安全策：UI/override で指定されたモデルが available に無ければ除外
+        # （存在しないモデルを呼ぶのは無駄なので、ここで落とす）
+        available_keys = set(available.keys())
+        filtered = [m for m in target_models if m in available_keys]
+        dropped = [m for m in target_models if m not in available_keys]
+        target_models = filtered
+
+        # ✅ _meta を必ず残す（デバッグの要）
         results["_meta"] = {
             "status": "ok",
+            "source": source,  # override / streamlit_ai_manager / llm_manager_available
             "available_models": list(available.keys()),
             "enabled_models": list(target_models),
+            "dropped_not_available": dropped,
             "enabled_override": list(self._enabled_models_override) if self._enabled_models_override else None,
+            "enabled_from_ui": list(from_ui) if from_ui is not None else None,
             "mode_current": mode_current,
             "reply_length_mode": reply_length_mode,
         }
@@ -226,12 +257,12 @@ class ModelsAI2:
             results["_system"] = {
                 "status": "error",
                 "text": "",
-                "error": "enabled_models is empty (after resolving from available_models)",
+                "error": "enabled_models is empty (after resolving + filtering by available_models)",
                 "traceback": None,
             }
             return results
 
-        # 3) 各モデル呼び出し
+        # ✅ 各モデルに投げる
         for model_name in target_models:
             persona_defaults = self._get_persona_call_defaults(model_name)
             call_kwargs: Dict[str, Any] = self._drop_none_kwargs(dict(persona_defaults))
