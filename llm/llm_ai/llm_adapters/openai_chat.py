@@ -1,3 +1,4 @@
+# llm/llm_ai/llm_adapters/openai_chat.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,7 +22,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
 
     - OpenAI SDK を直接使用
     - max_tokens / max_completion_tokens の差異を内部で吸収
-    - Persona由来の拡張パラメータ（verbosity 等）を安全に吸収する
+    - Persona由来の拡張パラメータ（verbosity 等）を安全に吸収します
     """
 
     def __init__(
@@ -43,8 +44,8 @@ class OpenAIChatAdapter(BaseLLMAdapter):
     def _apply_verbosity_hint(kwargs: Dict[str, Any]) -> None:
         """
         Persona側の "verbosity": "low"/"medium"/"high" を
-        max_completion_tokens の目安に変換して適用する。
-        明示の max_tokens / max_completion_tokens がある場合は尊重して何もしない。
+        max_completion_tokens の目安に変換して適用します。
+        明示の max_tokens / max_completion_tokens がある場合は尊重し、何もしません。
         """
         if "max_tokens" in kwargs or "max_completion_tokens" in kwargs:
             kwargs.pop("verbosity", None)
@@ -55,7 +56,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
             return
 
         vv = v.strip().lower()
-        # ざっくり目安。必要なら後で調整。
+        # ざっくり目安。必要なら後で調整してください。
         if vv == "low":
             kwargs["max_completion_tokens"] = 256
         elif vv == "high":
@@ -67,7 +68,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
     @staticmethod
     def _sanitize_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """
-        OpenAI SDK に流す前に、Lyra内部キーワードや未知キーをなるべく除去する。
+        OpenAI SDK に流す前に、Lyra内部キーワードや未知キーをなるべく除去します。
         （SDK差異で TypeError を起こさないため）
         """
         k = dict(kwargs or {})
@@ -79,7 +80,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
         # include_reasoning はLyra内部のスイッチ扱い（SDKへは送らない）
         k.pop("include_reasoning", None)
 
-        # reasoning は環境差で死ぬので原則送らない（既存方針維持）
+        # reasoning は環境差で死ぬため、原則送らない（既存方針維持）
         k.pop("reasoning", None)
 
         # verbosity を max_completion_tokens に変換（必要なら）
@@ -100,6 +101,12 @@ class OpenAIChatAdapter(BaseLLMAdapter):
 
         # kwargs を安全化（verbosity等を吸収）
         kwargs = self._sanitize_kwargs(kwargs)
+
+        # ★ GPT-5.2 系は presence_penalty / frequency_penalty を受け付けないため、
+        #   送信直前で必ず除去します（400エラー回避）。
+        if "5.2" in (self.model_id or "") or self.name == "gpt52":
+            kwargs.pop("presence_penalty", None)
+            kwargs.pop("frequency_penalty", None)
 
         # TARGET_TOKENS があり、かつ明示指定が無ければ適用
         if (
@@ -147,7 +154,7 @@ class OpenAIChatAdapter(BaseLLMAdapter):
                 return text, usage
 
             except TypeError as e:
-                # ここに来る場合は「SDKが受け付けない引数」が残っている可能性が高い
+                # ここに来る場合は「SDKが受け付けない引数」が残っている可能性が高いです
                 last_exc = e
                 logger.exception(
                     "%s: OpenAI call TypeError (attempt=%s) kwargs=%s",
