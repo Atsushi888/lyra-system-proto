@@ -169,9 +169,11 @@ class ModelsAI2:
             }
             return results
 
-        # ✅ 毎回最新を取得（AI Manager 追従のため）
+        # ✅ 毎回最新を取得（enabled追従のため）
         try:
-            available = self.llm_manager.get_available_models() or {}
+            # 旧: self.model_props = self.llm_manager.get_model_props()
+            # 新: 呼び出してよいモデルだけを取得
+            self.model_props = self.llm_manager.get_available_models()
         except Exception as e:
             results["_system"] = {
                 "status": "error",
@@ -180,15 +182,9 @@ class ModelsAI2:
                 "traceback": traceback.format_exc(limit=8),
             }
             return results
-
-        # get_model_props は “補助情報” として取得（model_family 用など）
-        try:
-            self.model_props = self.llm_manager.get_model_props() or {}
-        except Exception:
-            # ここが落ちても「呼び出し」はできるので続行
-            self.model_props = {}
-
-        target_models = self._resolve_enabled_models_from_available(available)
+        
+        # target_models は model_props のキー（＝呼べるモデル）だけでOK
+        target_models = list(self.model_props.keys())
 
         # ✅ まず _meta を必ず残す（「何を投げたか」可視化）
         results["_meta"] = {
