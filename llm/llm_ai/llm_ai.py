@@ -190,16 +190,32 @@ class LLMAI:
             }
         return out
 
-    def get_available_models(self) -> Dict[str, Dict[str, Any]]:
-        """
-        env_key が存在するモデルは APIキー有無も付与して返す（env + secrets）。
-        """
-        props = self.get_model_props()
-        for name, p in props.items():
-            extra = p.get("extra") or {}
-            env_key = extra.get("env_key")
-            p["has_key"] = self._has_api_key(str(env_key)) if env_key else True
-        return props
+def get_available_models(self) -> Dict[str, Dict[str, Any]]:
+    """
+    “呼び出してよいモデル” だけを返す。
+
+    条件:
+    - enabled=True
+    - env_key が必要な場合は has_key=True（env + secrets）
+    """
+    props = self.get_model_props()
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, p in props.items():
+        enabled = bool(p.get("enabled", True))
+
+        extra = p.get("extra") or {}
+        env_key = extra.get("env_key")
+
+        has_key = self._has_api_key(str(env_key)) if env_key else True
+        p2 = dict(p)
+        p2["has_key"] = has_key
+
+        if enabled and has_key:
+            out[name] = p2
+
+    return out
+
 
     def set_enabled_models(self, enabled: Dict[str, bool]) -> None:
         for name, flag in enabled.items():
