@@ -19,13 +19,10 @@ def register_gpt52(llm_ai: Any) -> None:
     )
 
     # ★Persona → LLM に渡して良いトップレベルキーだけ許可
-    # ここは Lyra の設計として運用しやすい粒度にしてOK（必要に応じて増やす）
     supported_parameters = [
         "temperature",
         "top_p",
         "max_tokens",
-        "presence_penalty",
-        "frequency_penalty",
         "seed",
         "stop",
         # gpt52系の新パラメータ群（Personaから注入したいもの）
