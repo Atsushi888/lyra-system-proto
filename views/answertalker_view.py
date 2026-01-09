@@ -1,7 +1,7 @@
 # views/answertalker_view.py
 from __future__ import annotations
 
-from typing import Any, Dict, MutableMapping, Optional
+from typing import Any, Dict, MutableMapping, Optional, List
 
 import os
 import json
@@ -65,6 +65,82 @@ class AnswerTalkerView:
             height=height,
             label_visibility="collapsed",
         )
+
+    # =========================================================
+    # World Change（importance=5）表示用ヘルパ
+    # =========================================================
+    @staticmethod
+    def _label_reason_unavailable(code: Any) -> str:
+        s = "" if code is None else str(code)
+        if s == "interpersonal_complexity":
+            return "🤝 対人関係（複合）"
+        if s == "external_event":
+            return "🌪 外的要因（天変地異/不可抗力）"
+        if not s:
+            return "(なし)"
+        return f"(unknown: {s})"
+
+    @staticmethod
+    def _render_world_change_records(records: List[Any]) -> None:
+        """
+        importance=5 の世界変化記憶を別枠で表示する。
+
+        - world_change_reasons / reason_unavailable が存在しない古いレコードでも落とさない
+        - created_at 降順で表示
+        """
+        wc: List[Any] = []
+        for r in records:
+            try:
+                if int(getattr(r, "importance", 0) or 0) >= 5:
+                    wc.append(r)
+            except Exception:
+                continue
+
+        try:
+            wc.sort(key=lambda x: getattr(x, "created_at", "") or "", reverse=True)
+        except Exception:
+            pass
+
+        st.markdown("### 🌍 世界変化記憶（importance=5）")
+
+        if not wc:
+            st.info("世界変化記憶はまだありません。")
+            return
+
+        for i, r in enumerate(wc, start=1):
+            summary = getattr(r, "summary", "") or ""
+            created_at = getattr(r, "created_at", "") or ""
+            rid = getattr(r, "round_id", None)
+
+            with st.container(border=True):
+                st.markdown(f"**{i}. {summary}**")
+                st.caption(f"created_at: {created_at} / round_id: {rid}")
+
+                tags = getattr(r, "tags", []) or []
+                if tags:
+                    st.write("Tags:", ", ".join([str(x) for x in tags]))
+
+                reasons = getattr(r, "world_change_reasons", None)
+                if isinstance(reasons, list) and reasons:
+                    st.write("**Triggered by:**")
+                    for t in reasons[:5]:
+                        st.markdown(f"- {t}")
+                else:
+                    reason_unavailable = getattr(r, "reason_unavailable", None)
+                    st.write(
+                        "**Reason unavailable:**",
+                        AnswerTalkerView._label_reason_unavailable(reason_unavailable),
+                    )
+
+                with st.expander("Source (raw)", expanded=False):
+                    su = getattr(r, "source_user", "") or ""
+                    sa = getattr(r, "source_assistant", "") or ""
+                    if su:
+                        st.markdown("**source_user:**")
+                        st.text(su)
+                    if sa:
+                        st.markdown("**source_assistant:**")
+                        st.text(sa)
 
     def __init__(self) -> None:
         # --- プレイヤー名（UserSettings 由来）を取得 ---
@@ -343,27 +419,55 @@ class AnswerTalkerView:
             if not records:
                 st.info("現在、保存済みの MemoryRecord はありません。")
             else:
-                st.markdown("#### 保存済み MemoryRecord 一覧")
+                # ---- 追加：世界変化記憶を上に別枠表示 ----
+                self._render_world_change_records(records)
+                st.markdown("---")
+
+                st.markdown("#### 保存済み MemoryRecord 一覧（全件）")
                 for i, r in enumerate(records, start=1):
+                    # 後方互換：古い record でも落とさない
+                    imp = getattr(r, "importance", 0)
+                    summ = getattr(r, "summary", "") or ""
+                    summ_head = (summ[:32] + "...") if len(summ) > 32 else summ
+
                     with st.expander(
-                        f"記憶 {i}: [imp={r.importance}] {r.summary[:32]}...",
+                        f"記憶 {i}: [imp={imp}] {summ_head}",
                         expanded=False,
                     ):
-                        st.write(f"- id: `{r.id}`")
-                        st.write(f"- round_id: {r.round_id}")
-                        st.write(f"- importance: {r.importance}")
-                        st.write(f"- created_at: {r.created_at}")
+                        st.write(f"- id: `{getattr(r, 'id', '')}`")
+                        st.write(f"- round_id: {getattr(r, 'round_id', 0)}")
+                        st.write(f"- importance: {imp}")
+                        st.write(f"- created_at: {getattr(r, 'created_at', '')}")
+                        tags = getattr(r, "tags", None) or []
                         st.write(
-                            f"- tags: {', '.join(r.tags) if r.tags else '(なし)'}"
+                            f"- tags: {', '.join(tags) if tags else '(なし)'}"
                         )
+
+                        # World change detail（存在すれば）
+                        wcr = getattr(r, "world_change_reasons", None)
+                        rnu = getattr(r, "reason_unavailable", None)
+                        if int(imp or 0) >= 5:
+                            st.markdown("**world_change:**")
+                            if isinstance(wcr, list) and wcr:
+                                st.write("- world_change_reasons:")
+                                st.json(wcr)
+                            else:
+                                st.write(
+                                    "- reason_unavailable:",
+                                    self._label_reason_unavailable(rnu),
+                                )
+
                         st.write("**summary:**")
-                        st.write(r.summary)
-                        if r.source_user:
+                        st.write(summ)
+
+                        su = getattr(r, "source_user", "") or ""
+                        sa = getattr(r, "source_assistant", "") or ""
+                        if su:
                             st.write("\n**source_user:**")
-                            st.text(r.source_user)
-                        if r.source_assistant:
+                            st.text(su)
+                        if sa:
                             st.write("\n**source_assistant:**")
-                            st.text(r.source_assistant)
+                            st.text(sa)
 
             st.markdown("---")
             st.markdown("### MemoryAI ファイル診断（JSON）")
