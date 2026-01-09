@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from actors.persona.world_change_detector import WorldChangeDetector
 from actors.memory.world_change_reason_classifier import WorldChangeReasonClassifier
+from actors.memory.memory_importance_classifier import MemoryImportanceClassifier
 
 try:
     from llm.llm_manager import LLMManager
@@ -31,23 +32,20 @@ class MemoryRecord:
     world_change_reasons: Optional[List[str]] = None
     reason_unavailable: Optional[str] = None
 
-    # v1.3+（後方互換：既存JSONには無くてもOK）
-    record_type: Optional[str] = None  # "world_change" / "relationship_trace" / "setting"
+    # v1.3+（任意：重要度AIのログを残したい場合）
+    importance_model: Optional[str] = None
+    importance_debug: Optional[Dict[str, Any]] = None
 
 
 class MemoryAI:
     """
-    長期記憶管理（v1.3 / relationship_trace 追加）
+    長期記憶管理（v1.3 / 重要度判定=他AI単発）
 
-    目的：
-    - world_change（importance=5）は従来通り最優先で保存
-    - それ以外は「全部importance=4で保存」をやめる
-    - “関係性の節目（小～中）” を relationship_trace（importance=2）として保存する
-      例：外泊・初めての二人きり・強い信頼表明・告白に近い発言 etc.
-
-    互換：
+    - importance=5（世界変化）を最優先で扱う（従来通り）
+    - 世界変化でない場合でも、「イベント系キーワード」にヒットしたら
+      他AI（単発）で importance(1..4) / summary / tags を判定する
+    - reasons が取れない場合は外部分類器で reason_unavailable を付与
     - AnswerTalker の旧シグネチャ呼び出しにも耐える（llm_manager / model_name）
-    - 既存の保存JSON（record_type無し）も読める
     """
 
     def __init__(
@@ -61,6 +59,7 @@ class MemoryAI:
         # ★旧呼び出し互換：AnswerTalker が model_name=memory_model を渡してくる
         model_name: Optional[str] = None,
         preferred_reason_model: Optional[str] = None,
+        preferred_importance_model: Optional[str] = None,
     ) -> None:
         self.persona_id = str(persona_id or "default")
         self.persona_raw = persona_raw or {}
@@ -71,12 +70,20 @@ class MemoryAI:
 
         self.memories: List[MemoryRecord] = []
 
+        # 世界変化検出（importance=5）
         self._detector = WorldChangeDetector(self.persona_raw)
 
-        # ★分類器：可能なら同じ llm_manager を共有（persona_id ズレや二重生成を避ける）
+        # 世界変化理由の2択分類（reasonsが取れない時だけ）
         self._reason_classifier = WorldChangeReasonClassifier(
             persona_id=self.persona_id,
             preferred_model=(preferred_reason_model or model_name or "gpt52"),
+            llm_manager=llm_manager,
+        )
+
+        # ★追加：重要度(1..4)判定（他AI単発）
+        self._importance_classifier = MemoryImportanceClassifier(
+            persona_id=self.persona_id,
+            preferred_model=(preferred_importance_model or model_name or "gpt52"),
             llm_manager=llm_manager,
         )
 
@@ -114,7 +121,8 @@ class MemoryAI:
                         source_assistant=str(d.get("source_assistant", "")),
                         world_change_reasons=d.get("world_change_reasons"),
                         reason_unavailable=d.get("reason_unavailable"),
-                        record_type=d.get("record_type"),  # v1.3+（無くてもOK）
+                        importance_model=d.get("importance_model"),
+                        importance_debug=d.get("importance_debug"),
                     )
                 )
             except Exception:
@@ -137,216 +145,91 @@ class MemoryAI:
         messages: List[Dict[str, Any]],
         final_reply: str,
         round_id: int,
-        # v1.3+: 追加情報（呼び出し側が渡せるなら精度が上がる。渡されなくても動く）
-        emotion: Optional[Dict[str, Any]] = None,
-        world_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        保存ポリシー（v1.3）：
-        1) world_change を検出したら importance=5 で保存（従来通り）
-        2) そうでなければ relationship_trace を検出したら importance=2 で保存
-        3) どちらでもなければ原則 skip（＝「設定」乱発をやめる）
+        wc = self._detector.detect(messages, final_reply)
 
-        ※「設定」保存を続けたい場合は、ここに別条件で importance=4 を復活させる。
-        """
-
-        # --- 入力整形 ---
         user_text = self._extract_last_user(messages)
-        assistant_text = (final_reply or "").strip()
+        base_text = (final_reply or "").strip() or (user_text or "").strip()
 
-        if not user_text and not assistant_text:
+        if not base_text:
             return {"status": "skip", "added": 0}
 
-        # --- 1) world_change（従来） ---
-        wc = self._detector.detect(messages, final_reply)
-        if bool(wc.get("is_world_change")):
-            rec = self._build_world_change_record(
-                messages=messages,
-                final_reply=final_reply,
-                round_id=round_id,
-                user_text=user_text,
-                wc=wc,
-            )
-            self.memories.append(rec)
-            self._trim()
-            self.save()
-            return {"status": "ok", "added": 1, "importance": 5, "type": "world_change"}
-
-        # --- 2) relationship_trace（新規） ---
-        trace = self._detect_relationship_trace(
-            messages=messages,
-            final_reply=final_reply,
-            emotion=emotion,
-            world_state=world_state,
-        )
-        if trace is not None:
-            rec = self._build_relationship_trace_record(
-                trace=trace,
-                messages=messages,
-                final_reply=final_reply,
-                round_id=round_id,
-                user_text=user_text,
-            )
-            self.memories.append(rec)
-            self._trim()
-            self.save()
-            return {"status": "ok", "added": 1, "importance": rec.importance, "type": "relationship_trace"}
-
-        # --- 3) それ以外は保存しない（重要：ここで“記憶”がログ化するのを止める） ---
-        return {"status": "skip", "added": 0}
-
-    # ---------------- builders ----------------
-
-    def _build_world_change_record(
-        self,
-        *,
-        messages: List[Dict[str, Any]],
-        final_reply: str,
-        round_id: int,
-        user_text: str,
-        wc: Dict[str, Any],
-    ) -> MemoryRecord:
         created_at = datetime.now(timezone.utc).isoformat()
         mem_id = f"{created_at}_{int(round_id)}"
 
-        base_text = (final_reply or "").strip() or (user_text or "").strip()
-        summary = base_text[:160] + ("…" if len(base_text) > 160 else "")
+        # ---------------- importance決定 ----------------
+        if bool(wc.get("is_world_change")):
+            importance = 5
+            summary = base_text[:160] + ("…" if len(base_text) > 160 else "")
+            tags = ["世界変化"]
+            importance_model = None
+            importance_debug = None
+        else:
+            # ★世界変化ではない場合：「イベント系キーワード」ヒットがあれば他AIで判定
+            hit = self._detect_memory_event_keywords(user_text=user_text, final_reply=final_reply)
+
+            if hit:
+                # 他AI単発で importance(1..4), summary, tags を決める
+                cls = self._importance_classifier.classify(
+                    messages=self._normalize_messages_for_classifier(messages),
+                    final_reply=final_reply,
+                    event_keywords_hit=hit,
+                )
+                importance = int(cls.get("importance", 3))
+                summary = str(cls.get("summary") or "").strip() or (base_text[:160] + ("…" if len(base_text) > 160 else ""))
+                tags_raw = cls.get("tags")
+                tags = [str(x) for x in tags_raw] if isinstance(tags_raw, list) else ["イベント"]
+                importance_model = str(cls.get("model") or "")
+                # デバッグは重いので必要最小限（raw_textは残してOK）
+                importance_debug = {
+                    "status": cls.get("status"),
+                    "model": cls.get("model"),
+                    "raw_text": cls.get("raw_text"),
+                    "error": cls.get("error"),
+                    "keywords_hit": hit,
+                }
+            else:
+                # 従来互換：世界変化ではないが、保存するなら設定扱い（importance=4）
+                # （ここを「skip」にしたい場合は、この else を return skip に変える）
+                importance = 4
+                summary = base_text[:160] + ("…" if len(base_text) > 160 else "")
+                tags = ["設定"]
+                importance_model = None
+                importance_debug = None
 
         rec = MemoryRecord(
             id=mem_id,
             round_id=int(round_id),
-            importance=5,
+            importance=int(importance),
             summary=summary,
-            tags=["世界変化"],
+            tags=tags[:8],
             created_at=created_at,
             source_user=user_text,
             source_assistant=(final_reply or ""),
-            record_type="world_change",
+            importance_model=importance_model,
+            importance_debug=importance_debug,
         )
 
-        reasons = wc.get("reasons") or []
-        if isinstance(reasons, list) and reasons:
-            rec.world_change_reasons = [str(x) for x in reasons][:8]
-        else:
-            rec.reason_unavailable = self._reason_classifier.classify(
-                messages=[
-                    {"role": str(m.get("role")), "content": str(m.get("content", ""))}
-                    for m in (messages or [])
-                    if isinstance(m, dict)
-                ],
-                final_reply=final_reply,
-            )
+        # ---------------- 世界変化理由の付与（importance=5のみ） ----------------
+        if int(importance) == 5:
+            reasons = wc.get("reasons") or []
+            if isinstance(reasons, list) and reasons:
+                rec.world_change_reasons = [str(x) for x in reasons][:8]
+            else:
+                rec.reason_unavailable = self._reason_classifier.classify(
+                    messages=self._normalize_messages_for_classifier(messages),
+                    final_reply=final_reply,
+                )
 
-        return rec
-
-    def _build_relationship_trace_record(
-        self,
-        *,
-        trace: Dict[str, Any],
-        messages: List[Dict[str, Any]],
-        final_reply: str,
-        round_id: int,
-        user_text: str,
-    ) -> MemoryRecord:
-        created_at = datetime.now(timezone.utc).isoformat()
-        mem_id = f"{created_at}_{int(round_id)}"
-
-        summary = str(trace.get("summary") or "").strip()
-        if not summary:
-            # 念のため：空ならユーザ or 最終返答の頭を入れて落とさない
-            base_text = (final_reply or "").strip() or (user_text or "").strip()
-            summary = base_text[:160] + ("…" if len(base_text) > 160 else "")
-
-        tags = trace.get("tags")
-        if not isinstance(tags, list):
-            tags = []
-        tags = [str(x) for x in tags if str(x).strip()]
-
-        importance = trace.get("importance", 2)
-        try:
-            importance_i = int(importance)
-        except Exception:
-            importance_i = 2
-        # relationship_trace は 1〜3 に制限（ログ化させない）
-        if importance_i < 1:
-            importance_i = 1
-        if importance_i > 3:
-            importance_i = 3
-
-        return MemoryRecord(
-            id=mem_id,
-            round_id=int(round_id),
-            importance=importance_i,
-            summary=summary[:200] + ("…" if len(summary) > 200 else ""),
-            tags=tags or ["関係変化"],
-            created_at=created_at,
-            source_user=user_text,
-            source_assistant=(final_reply or ""),
-            record_type="relationship_trace",
-        )
-
-    # ---------------- relationship_trace detector ----------------
-
-    def _detect_relationship_trace(
-        self,
-        *,
-        messages: List[Dict[str, Any]],
-        final_reply: str,
-        emotion: Optional[Dict[str, Any]] = None,
-        world_state: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        まずはルールベース（“拾う” ことを優先）。
-        後でLLM要約に差し替える余地は残す。
-
-        例：外泊・初めての二人きり・強い信頼表明など
-        """
-
-        blob = self._build_text_blob(messages=messages, final_reply=final_reply)
-
-        # --- 外泊/泊まり：今回の件の主対象 ---
-        overnight_keywords = [
-            "外泊", "泊", "泊ま", "泊め", "家に", "家で", "昨夜", "朝になっ",
-            "遅くな", "雨", "帰れなく", "終電", "一晩",
-        ]
-        hit_overnight = any(k in blob for k in overnight_keywords)
-
-        if not hit_overnight:
-            return None
-
-        # --- emotion gate（あれば精度UP / 無ければ通す） ---
-        aff = self._safe_float(emotion.get("affection") if isinstance(emotion, dict) else None, default=None)
-        ten = self._safe_float(emotion.get("tension") if isinstance(emotion, dict) else None, default=None)
-
-        # affection が明確に低いなら見送り（あれば）
-        if aff is not None and aff < 0.55:
-            return None
-
-        # --- 要約（意味だけ残す） ---
-        # world_state があれば「雨」「遅くなった」など補助できるが、ここでは固定でも十分
-        summary = (
-            "彼女は外泊という小さな一線を越え、"
-            "『この人のそばなら大丈夫だ』という安心と信頼を得た。"
-            "何も起きなかったこと自体が、静かな関係の前進として残った。"
-        )
-
-        tags = [
-            "relationship_trace",
-            "外泊",
-            "信頼",
-            "安心",
-            "何もなかった",
-        ]
-
-        # 緊張が高いなら少し重みを上げる（任意）
-        importance = 2
-        if ten is not None and ten >= 0.45:
-            importance = 3
+        self.memories.append(rec)
+        self._trim()
+        self.save()
 
         return {
-            "summary": summary,
-            "importance": importance,
-            "tags": tags,
+            "status": "ok",
+            "added": 1,
+            "importance": int(importance),
+            "tags": rec.tags,
         }
 
     # ---------------- helpers ----------------
@@ -362,37 +245,64 @@ class MemoryAI:
         return ""
 
     @staticmethod
-    def _build_text_blob(*, messages: List[Dict[str, Any]], final_reply: str) -> str:
-        parts: List[str] = []
+    def _normalize_messages_for_classifier(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        out: List[Dict[str, str]] = []
         for m in messages or []:
             if not isinstance(m, dict):
                 continue
-            r = m.get("role")
-            if r not in ("user", "assistant"):
-                continue
-            c = str(m.get("content") or "")
-            if c.strip():
-                parts.append(c.strip())
-        fr = (final_reply or "").strip()
-        if fr:
-            parts.append(fr)
-        return "\n".join(parts)
-
-    @staticmethod
-    def _safe_float(v: Any, default: Optional[float] = 0.0) -> Optional[float]:
-        if v is None:
-            return default
-        try:
-            return float(v)
-        except Exception:
-            return default
+            role = str(m.get("role") or "")
+            content = str(m.get("content") or "")
+            if role and content:
+                out.append({"role": role, "content": content})
+        return out
 
     def _trim(self) -> None:
         if len(self.memories) <= self.max_store_items:
             return
         # 重要度が高いほど残す、同重要度なら新しいほど残す
-        self.memories.sort(key=lambda m: (int(getattr(m, "importance", 0)), str(getattr(m, "created_at", ""))))
+        self.memories.sort(
+            key=lambda m: (int(getattr(m, "importance", 0)), str(getattr(m, "created_at", "")))
+        )
         self.memories = self.memories[-self.max_store_items :]
 
     def get_all_records(self) -> List[MemoryRecord]:
         return list(self.memories)
+
+    # ---------------- memory-event keyword detection ----------------
+
+    def _detect_memory_event_keywords(self, *, user_text: str, final_reply: str) -> List[str]:
+        """
+        「世界変化ではないが記憶に残すべきイベント」を拾うための軽量キーワード検出。
+
+        - persona_raw["memory_event_keywords"] があれば追加
+        - デフォルトは「外泊」を確実に拾える語を入れておく
+        """
+        defaults = [
+            "外泊",
+            "泊ま",
+            "お泊まり",
+            "宿泊",
+            "帰れない",
+            "終電",
+            "夜を明か",
+            "泊まり",
+        ]
+
+        extra = self.persona_raw.get("memory_event_keywords", [])
+        extra_list: List[str] = [str(x) for x in extra] if isinstance(extra, list) else []
+
+        keywords = list(dict.fromkeys(defaults + extra_list))  # preserve order + unique
+
+        hay = (user_text or "").strip()
+        if not hay:
+            hay = ""
+        fr = (final_reply or "").strip()
+
+        hit: List[str] = []
+        for k in keywords:
+            if not k:
+                continue
+            if (k in hay) or (k in fr):
+                hit.append(k)
+
+        return hit[:8]
